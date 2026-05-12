@@ -1,3 +1,4 @@
 .DS_Store
-参赛文件/
-参赛信息/
+compiler
+*.o
+*.s
