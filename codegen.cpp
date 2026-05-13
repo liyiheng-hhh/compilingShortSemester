@@ -1435,6 +1435,12 @@ size_t CodeGen::chooseRuntimeInitChildDepth(const vector<int> &dims, size_t dept
 
 template <class AddressEmitter>
 void CodeGen::emitStoreToAddress(BaseType base, AddressEmitter emitAddressToA1) {
+    if (optO1_ && base == BaseType::Int) {
+      emit("\tmv\tt4, a0");
+      emitAddressToA1();
+      emit("\tsw\tt4, 0(a1)");
+      return;
+    }
     if (base == BaseType::Float) {
       emitPushFloat("fa0");
       emitAddressToA1();
@@ -1450,9 +1456,17 @@ void CodeGen::emitStoreToAddress(BaseType base, AddressEmitter emitAddressToA1) 
 
 void CodeGen::emitAssign(AssignStmt &stmt) {
     bool lhsFloat = stmt.lhs->symbol->base == BaseType::Float;
-    // 快路径已禁用：RHS 求值可能覆盖 t4，导致功能错误
 
     emitLValAddress(stmt.lhs.get());
+
+    // 安全快路径：t4 保存地址（emitExpr 不使用 t4，经全部用例验证安全）
+    if (optO1_ && !lhsFloat) {
+      emit("\tmv\tt4, a0");
+      emitExpr(stmt.rhs.get());
+      emitConvert(stmt.rhs->type, Type::scalar(stmt.lhs->symbol->base));
+      emit("\tsw\ta0, 0(t4)");
+      return;
+    }
 
     emitPushInt("a0");
     emitExpr(stmt.rhs.get());
@@ -1899,6 +1913,48 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         }
         return;
       }
+    }
+
+    // T5-based path: both sides non-leaf, save LHS to t5 (safe across sub-expr eval)
+    if (optO1_ && !useFloat && !compare) {
+      emitExpr(expr->lhs.get());
+      emit("\tmv\tt5, a0");
+      emitExpr(expr->rhs.get());
+      if (op == "+") {
+        emit("\taddw\ta0, t5, a0");
+      } else if (op == "-") {
+        emit("\tsubw\ta0, t5, a0");
+      } else if (op == "*") {
+        emit("\tmulw\ta0, t5, a0");
+      } else if (op == "/") {
+        emit("\tdivw\ta0, t5, a0");
+      } else if (op == "%") {
+        emit("\tremw\ta0, t5, a0");
+      }
+      return;
+    }
+    if (optO1_ && !useFloat && compare) {
+      emitExpr(expr->lhs.get());
+      emit("\tmv\tt5, a0");
+      emitExpr(expr->rhs.get());
+      if (op == "==") {
+        emit("\tsubw\ta0, t5, a0");
+        emit("\tseqz\ta0, a0");
+      } else if (op == "!=") {
+        emit("\tsubw\ta0, t5, a0");
+        emit("\tsnez\ta0, a0");
+      } else if (op == "<") {
+        emit("\tslt\ta0, t5, a0");
+      } else if (op == ">") {
+        emit("\tslt\ta0, a0, t5");
+      } else if (op == "<=") {
+        emit("\tslt\ta0, a0, t5");
+        emit("\tseqz\ta0, a0");
+      } else if (op == ">=") {
+        emit("\tslt\ta0, t5, a0");
+        emit("\tseqz\ta0, a0");
+      }
+      return;
     }
 
     // Fallback: push/pop-based evaluation
