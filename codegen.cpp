@@ -2320,7 +2320,14 @@ void CodeGen::emitCond(Expr *expr, const string &trueLabel, const string &falseL
       }
     }
     emitExpr(expr);
-    emitBoolFromValue(expr->type);
+    // Comparison results are already 0/1, skip redundant snez
+    bool isCompare = false;
+    if (expr->kind == ExprKind::Binary) {
+      string op = static_cast<BinaryExpr *>(expr)->op;
+      isCompare = (op == "==" || op == "!=" || op == "<" || op == ">" ||
+                   op == "<=" || op == ">=");
+    }
+    if (!isCompare) emitBoolFromValue(expr->type);
     emit("\tbnez\ta0, " + trueLabel);
     emit("\tj\t" + falseLabel);
   }
