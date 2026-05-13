@@ -1,0 +1,11 @@
+int main() {
+  int a;
+  a = 5;
+  putint(a > 0);
+  putch(10);
+  putint(0 < a);
+  putch(10);
+  putint(a == 5);
+  putch(10);
+  return 0;
+}

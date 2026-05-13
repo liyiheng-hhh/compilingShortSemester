@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ast.h"
+#include "ir.h"
 #include "semantic.h"
 
 #include <sstream>
@@ -15,13 +16,14 @@ using std::vector;
 
 class CodeGen {
 public:
-  CodeGen(Program &program, const Semantic &semantic);
+  CodeGen(Program &program, const Semantic &semantic, bool optO1 = false);
 
   string run();
 
 private:
   Program &program_;
   const Semantic &semantic_;
+  bool optO1_ = false;
   std::ostringstream out_;
   int labelId_ = 0;
   Function *currentFunction_ = nullptr;
@@ -29,6 +31,23 @@ private:
   vector<string> continueLabels_;
   vector<pair<string, float>> floatLiterals_;
   vector<pair<string, string>> stringLiterals_;
+
+  int irVregCount_ = 0;
+  int irSpillBase_ = 0;
+  int irTotalFrame_ = 0;
+  vector<char> irVFloat_;
+
+  int irVregSlotOffset(int vid) const;
+
+  void emitIrLoadVreg(int vid, bool asFloat);
+
+  void emitIrStoreVreg(int vid, bool asFloat);
+
+  void emitIrFunction(FuncDef &def, IRFunction &ir);
+
+  void emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in, size_t instIdx);
+
+  void emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in, size_t instIdx);
 
   void emit(const string &line = "");
 

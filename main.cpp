@@ -10,14 +10,13 @@
 using namespace std;
 
 static int compileFile(const string &input, const string &output, bool optO1) {
-  (void)optO1;
   string source = readFile(input);
   Lexer lexer(source);
   Parser parser(lexer.run());
   Program program = parser.parseProgram();
   Semantic semantic(program);
   semantic.run();
-  CodeGen codegen(program, semantic);
+  CodeGen codegen(program, semantic, optO1);
   writeFile(output, codegen.run());
   return 0;
 }

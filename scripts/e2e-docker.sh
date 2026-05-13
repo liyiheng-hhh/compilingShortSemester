@@ -6,8 +6,10 @@
 #   docker run --rm -v "$PWD:/work" ubuntu:24.04 bash /work/scripts/e2e-docker.sh
 # 挂载官方 .sy 目录并比对 golden（需每个用例旁有同名 .out）：
 #   docker run --rm -v "$PWD:/work" -e SY_TEST_DIR=/work/path/to/sy_tests ubuntu:24.04 bash /work/scripts/e2e-docker.sh
+# 多个目录（空格分隔）：
+#   -e SY_TEST_DIRS="/work/examples/golden_smoke /work/examples/golden_o1_const"
 #
-# 可选：LINK_FLAGS（默认 -static -mcmodel=medany）、APT_MIRROR_HTTP
+# 可选：LINK_FLAGS（默认 -static -mcmodel=medany）、APT_MIRROR_HTTP、USE_O1=1（传给批量脚本）
 
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -72,4 +74,13 @@ if [[ -n "${SY_TEST_DIR:-}" && -d "${SY_TEST_DIR}" ]]; then
   echo ""
   echo "=== Batch functional tests: SY_TEST_DIR=$SY_TEST_DIR ==="
   bash /work/scripts/run_sy_tests.sh "$SY_TEST_DIR"
+fi
+if [[ -n "${SY_TEST_DIRS:-}" ]]; then
+  echo ""
+  echo "=== Batch (multiple dirs SY_TEST_DIRS) ==="
+  for d in $SY_TEST_DIRS; do
+    [[ -d "$d" ]] || { echo "skip (not a dir): $d"; continue; }
+    echo "--- $d ---"
+    bash /work/scripts/run_sy_tests.sh "$d"
+  done
 fi

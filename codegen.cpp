@@ -3,6 +3,7 @@
 #include "common.h"
 
 #include <algorithm>
+#include <optional>
 
 using namespace std;
 
@@ -12,14 +13,48 @@ struct ArgLoc {
   bool valueIsFloat = false;
 };
 
+static int intLog2Positive32(int32_t v) {
+  if (v <= 0 || (v & (v - 1)) != 0) {
+    return -1;
+  }
+  int r = 0;
+  while (v > 1) {
+    v >>= 1;
+    ++r;
+  }
+  return r;
+}
+
+// namedCount: params[0 .. namedCount-1] 为固定形参；其后为 C 变参（须按整数 ABI 传递，
+// 见 RISC-V ELF psABI：variadic arguments follow the integer calling convention）。
 static vector<ArgLoc> computeArgLocations(const vector<ParamType> &params,
-                                          int *stackSlots = nullptr) {
+                                          bool fnVariadic, size_t namedCount,
+                                          int *stackSlots) {
   vector<ArgLoc> locs;
   int intRegs = 0;
   int floatRegs = 0;
   int stack = 0;
-  for (const ParamType &p : params) {
+  bool variadicRestOnStack = false;
+
+  for (size_t idx = 0; idx < params.size(); ++idx) {
+    const ParamType &p = params[idx];
     ArgLoc loc;
+    const bool isVariadicArg = fnVariadic && idx >= namedCount;
+
+    if (isVariadicArg) {
+      loc.valueIsFloat = false;
+      if (variadicRestOnStack || intRegs >= 8) {
+        variadicRestOnStack = true;
+        loc.kind = ArgLoc::Stack;
+        loc.index = stack++;
+      } else {
+        loc.kind = ArgLoc::IntReg;
+        loc.index = intRegs++;
+      }
+      locs.push_back(loc);
+      continue;
+    }
+
     loc.valueIsFloat = !p.isArray && p.base == BaseType::Float;
     if (loc.valueIsFloat && floatRegs < 8) {
       loc.kind = ArgLoc::FloatReg;
@@ -41,8 +76,8 @@ static vector<ArgLoc> computeArgLocations(const vector<ParamType> &params,
   return locs;
 }
 
-CodeGen::CodeGen(Program &program, const Semantic &semantic)
-    : program_(program), semantic_(semantic) {}
+CodeGen::CodeGen(Program &program, const Semantic &semantic, bool optO1)
+    : program_(program), semantic_(semantic), optO1_(optO1) {}
 
 string CodeGen::run() {
     emitGlobals();
@@ -154,6 +189,23 @@ void CodeGen::emitFunction(FuncDef &def) {
     emit("\t.type\t" + def.name + ", @function");
     emit(def.name + ":");
     int frame = currentFunction_->frameSize;
+    IRFunction irBuf;
+    bool useIr = false;
+    if (optO1_ && irFunctionEligible(def)) {
+      irBuildFunction(def, semantic_, irBuf);
+      irOptimizeBlock(irBuf);
+      useIr = true;
+      irVregCount_ = irBuf.nextVreg;
+      irSpillBase_ = alignTo(currentFunction_->frameUsed, 16);
+      int need = irSpillBase_ + 8 * std::max(irVregCount_, 0);
+      irTotalFrame_ = max(frame, alignTo(need, 16));
+      frame = irTotalFrame_;
+      irVFloat_.assign(static_cast<size_t>(max(irVregCount_, 0)), 0);
+    } else {
+      irVregCount_ = 0;
+      irSpillBase_ = 0;
+      irTotalFrame_ = frame;
+    }
     emitAdjustSp(-frame);
     emit("\tli\tt0, " + to_string(frame));
     emit("\tadd\tt0, sp, t0");
@@ -161,7 +213,11 @@ void CodeGen::emitFunction(FuncDef &def) {
     emit("\tsd\ts0, -16(t0)");
     emit("\tmv\ts0, t0");
     emitStoreParams(def);
-    emitBlock(*def.body, false);
+    if (useIr) {
+      emitIrFunction(def, irBuf);
+    } else {
+      emitBlock(*def.body, false);
+    }
     if (def.ret == BaseType::Int) {
       emit("\tli\ta0, 0");
     } else if (def.ret == BaseType::Float) {
@@ -177,12 +233,571 @@ void CodeGen::emitFunction(FuncDef &def) {
     currentFunction_ = nullptr;
   }
 
+int CodeGen::irVregSlotOffset(int vid) const {
+  return -(irSpillBase_ + 8 * (vid + 1));
+}
+
+void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
+  if (vid < 0) {
+    return;
+  }
+  int off = irVregSlotOffset(vid);
+  if (asFloat) {
+    emitLoadMem("flw", "fa0", "s0", off);
+  } else {
+    emitLoadMem("lw", "a0", "s0", off);
+  }
+}
+
+void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
+  if (vid < 0) {
+    return;
+  }
+  int off = irVregSlotOffset(vid);
+  if (asFloat) {
+    emitStoreMem("fsw", "fa0", "s0", off);
+  } else {
+    emitStoreMem("sw", "a0", "s0", off);
+  }
+}
+
+static Function *lookupFunctionAsm(const Semantic &sem, const string &asmName) {
+  for (const auto &kv : sem.functions()) {
+    if (kv.second->asmName == asmName) {
+      return kv.second;
+    }
+  }
+  return nullptr;
+}
+
+static optional<int32_t> irTraceConstI(const IRFunction &ir, int v, size_t before) {
+  int cur = v;
+  size_t lim = before;
+  while (cur >= 0) {
+    bool stepped = false;
+    for (size_t k = lim; k > 0;) {
+      --k;
+      const IRInst &w = ir.insts[k];
+      if (w.dst != cur) {
+        continue;
+      }
+      stepped = true;
+      if (w.op == IROp::ConstI) {
+        return w.immI;
+      }
+      if (w.op == IROp::Copy) {
+        cur = w.u;
+        lim = k;
+        break;
+      }
+      return nullopt;
+    }
+    if (!stepped) {
+      return nullopt;
+    }
+  }
+  return nullopt;
+}
+
+static optional<float> irTraceConstF(const IRFunction &ir, int v, size_t before) {
+  int cur = v;
+  size_t lim = before;
+  while (cur >= 0) {
+    bool stepped = false;
+    for (size_t k = lim; k > 0;) {
+      --k;
+      const IRInst &w = ir.insts[k];
+      if (w.dst != cur) {
+        continue;
+      }
+      stepped = true;
+      if (w.op == IROp::ConstF) {
+        return w.immF;
+      }
+      if (w.op == IROp::Copy) {
+        cur = w.u;
+        lim = k;
+        break;
+      }
+      return nullopt;
+    }
+    if (!stepped) {
+      return nullopt;
+    }
+  }
+  return nullopt;
+}
+
+void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
+  for (size_t i = 0; i < ir.insts.size(); ++i) {
+    emitIrInst(def, ir, ir.insts[i], i);
+  }
+}
+
+void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
+                  size_t instIdx) {
+  (void)def;
+  Function *fn = lookupFunctionAsm(semantic_, in.callee);
+  if (!fn) {
+    throw CompileError("IR call: unknown function " + in.callee);
+  }
+  vector<ParamType> params;
+  if (fn->injectLineArgument) {
+    params.push_back(ParamType{BaseType::Int, false, {}});
+  }
+  for (size_t ai = fn->injectLineArgument ? 1u : 0u; ai < in.args.size(); ++ai) {
+    size_t ui = fn->injectLineArgument ? (ai - 1) : ai;
+    if (ui < fn->params.size()) {
+      params.push_back(fn->params[ui]);
+    } else {
+      ParamType inferred;
+      inferred.base =
+          irVFloat_[static_cast<size_t>(in.args[ai])] ? BaseType::Float : BaseType::Int;
+      inferred.isArray =
+          ai < in.callArgPtr.size() ? static_cast<bool>(in.callArgPtr[ai]) : false;
+      inferred.dims = {};
+      params.push_back(inferred);
+    }
+  }
+
+  size_t namedCount = params.size();
+  if (fn->variadic) {
+    namedCount = fn->params.size() + (fn->injectLineArgument ? 1u : 0u);
+  }
+
+  int stackSlots = 0;
+  auto locs = computeArgLocations(params, fn->variadic, namedCount, &stackSlots);
+  int tempSlots = static_cast<int>(params.size());
+  int stackBytes = stackSlots * 8;
+  int tempBase = stackBytes;
+  int area = alignTo(stackBytes + tempSlots * 8, 16);
+  if (area > 0) {
+    emitAdjustSp(-area);
+  }
+
+  int paramIndex = 0;
+  if (fn->injectLineArgument) {
+    optional<int32_t> lineImm = irTraceConstI(ir, in.args[0], instIdx);
+    if (lineImm) {
+      emit("\tli\ta0, " + to_string(*lineImm));
+    } else {
+      emitIrLoadVreg(in.args[0], false);
+    }
+    emitStoreMem("sd", "a0", "sp", tempBase);
+    ++paramIndex;
+  }
+  for (; static_cast<size_t>(paramIndex) < in.args.size(); ++paramIndex) {
+    int av = in.args[static_cast<size_t>(paramIndex)];
+    ParamType expected = params[static_cast<size_t>(paramIndex)];
+    const bool vaArg =
+        fn->variadic && static_cast<size_t>(paramIndex) >= namedCount;
+    Type target =
+        expected.isArray ? Type::pointer(expected.base, expected.dims) : Type::scalar(expected.base);
+    int off = tempBase + paramIndex * 8;
+    if (target.isPointer) {
+      optional<int32_t> ic = irTraceConstI(ir, av, instIdx);
+      if (ic) {
+        emit("\tli\ta0, " + to_string(*ic));
+      } else {
+        emitIrLoadVreg(av, false);
+      }
+      emitStoreMem("sd", "a0", "sp", off);
+    } else if (expected.base == BaseType::Float && vaArg) {
+      if (optional<float> fc = irTraceConstF(ir, av, instIdx)) {
+        emitFloatConst(*fc);
+      } else {
+        emitIrLoadVreg(av, true);
+      }
+      emit("\tfcvt.d.s\tfa1, fa0");
+      emit("\tfmv.x.d\ta0, fa1");
+      emitStoreMem("sd", "a0", "sp", off);
+    } else if (expected.base == BaseType::Float) {
+      if (optional<float> fc = irTraceConstF(ir, av, instIdx)) {
+        emitFloatConst(*fc);
+      } else {
+        emitIrLoadVreg(av, true);
+      }
+      emitStoreMem("fsw", "fa0", "sp", off);
+    } else if (vaArg) {
+      optional<int32_t> ic = irTraceConstI(ir, av, instIdx);
+      if (ic) {
+        emit("\tli\ta0, " + to_string(*ic));
+      } else {
+        emitIrLoadVreg(av, false);
+      }
+      emit("\tsext.w\ta0, a0");
+      emitStoreMem("sd", "a0", "sp", off);
+    } else {
+      optional<int32_t> ic = irTraceConstI(ir, av, instIdx);
+      if (ic) {
+        emit("\tli\ta0, " + to_string(*ic));
+      } else {
+        emitIrLoadVreg(av, false);
+      }
+      emitStoreMem("sd", "a0", "sp", off);
+    }
+  }
+
+  for (size_t i = 0; i < params.size(); ++i) {
+    const ParamType &p = params[i];
+    const ArgLoc &loc = locs[i];
+    int off = tempBase + static_cast<int>(i) * 8;
+    bool isFloat = !p.isArray && p.base == BaseType::Float;
+    const bool vaArg = fn->variadic && i >= namedCount;
+    if (loc.kind == ArgLoc::FloatReg) {
+      emitLoadMem("flw", "fa" + to_string(loc.index), "sp", off);
+    } else if (loc.kind == ArgLoc::IntReg) {
+      if (isFloat && !vaArg) {
+        emitLoadMem("lw", "a" + to_string(loc.index), "sp", off);
+      } else {
+        emitLoadMem("ld", "a" + to_string(loc.index), "sp", off);
+      }
+    } else {
+      int dst = loc.index * 8;
+      if (isFloat) {
+        if (vaArg) {
+          emitLoadMem("ld", "t0", "sp", off);
+          emitStoreMem("sd", "t0", "sp", dst);
+        } else {
+          emitLoadMem("lw", "t0", "sp", off);
+          emitStoreMem("sw", "t0", "sp", dst);
+        }
+      } else {
+        emitLoadMem("ld", "t0", "sp", off);
+        emitStoreMem("sd", "t0", "sp", dst);
+      }
+    }
+  }
+
+  emit("\tcall\t" + fn->asmName);
+  if (area > 0) {
+    emitAdjustSp(area);
+  }
+  if (in.dst >= 0) {
+    if (in.isFloat) {
+      irVFloat_[static_cast<size_t>(in.dst)] = 1;
+      emitIrStoreVreg(in.dst, true);
+    } else {
+      irVFloat_[static_cast<size_t>(in.dst)] = 0;
+      emitIrStoreVreg(in.dst, false);
+    }
+  }
+}
+
+void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
+                  size_t instIdx) {
+  auto markInt = [&](int d) {
+    if (d >= 0 && static_cast<size_t>(d) < irVFloat_.size()) {
+      irVFloat_[static_cast<size_t>(d)] = 0;
+    }
+  };
+  auto markFl = [&](int d) {
+    if (d >= 0 && static_cast<size_t>(d) < irVFloat_.size()) {
+      irVFloat_[static_cast<size_t>(d)] = 1;
+    }
+  };
+
+  switch (in.op) {
+  case IROp::Nop:
+    return;
+  case IROp::ConstI:
+    emit("\tli\ta0, " + to_string(in.immI));
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::ConstF:
+    emitFloatConst(in.immF);
+    emitIrStoreVreg(in.dst, true);
+    markFl(in.dst);
+    return;
+  case IROp::Copy:
+    emitIrLoadVreg(in.u, irVFloat_[static_cast<size_t>(in.u)] != 0);
+    emitIrStoreVreg(in.dst, irVFloat_[static_cast<size_t>(in.u)] != 0);
+    if (in.dst >= 0 && in.u >= 0 && static_cast<size_t>(in.dst) < irVFloat_.size()) {
+      irVFloat_[static_cast<size_t>(in.dst)] = irVFloat_[static_cast<size_t>(in.u)];
+    }
+    return;
+  case IROp::LeaStr: {
+    string label;
+    for (const auto &lit : stringLiterals_) {
+      if (lit.second == in.ext) {
+        label = lit.first;
+        break;
+      }
+    }
+    if (label.empty()) {
+      label = newLabel("str");
+      stringLiterals_.push_back({label, in.ext});
+    }
+    emit("\tlla\ta0, " + label);
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  }
+  case IROp::LeaGlobal:
+    emit("\tlla\ta0, " + in.sym->label);
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::LeaLocal:
+    emitAddOffset("a0", "s0", in.sym->offset);
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::LoadParamAddr:
+    emitLoadMem("ld", "a0", "s0", in.sym->offset);
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::LoadGlobal:
+    emit("\tlla\tt0, " + in.sym->label);
+    if (in.isFloat) {
+      emit("\tflw\tfa0, 0(t0)");
+      emitIrStoreVreg(in.dst, true);
+      markFl(in.dst);
+    } else {
+      emit("\tlw\ta0, 0(t0)");
+      emitIrStoreVreg(in.dst, false);
+      markInt(in.dst);
+    }
+    return;
+  case IROp::LoadLocal:
+    emitAddOffset("t0", "s0", in.sym->offset);
+    if (in.isFloat) {
+      emit("\tflw\tfa0, 0(t0)");
+      emitIrStoreVreg(in.dst, true);
+      markFl(in.dst);
+    } else {
+      emit("\tlw\ta0, 0(t0)");
+      emitIrStoreVreg(in.dst, false);
+      markInt(in.dst);
+    }
+    return;
+  case IROp::LoadMem:
+    emitIrLoadVreg(in.u, false);
+    emit("\tmv\tt0, a0");
+    if (in.isFloat) {
+      emit("\tflw\tfa0, 0(t0)");
+      emitIrStoreVreg(in.dst, true);
+      markFl(in.dst);
+    } else {
+      emit("\tlw\ta0, 0(t0)");
+      emitIrStoreVreg(in.dst, false);
+      markInt(in.dst);
+    }
+    return;
+  case IROp::StoreMem:
+    emitIrLoadVreg(in.u, false);
+    emit("\tmv\tt1, a0");
+    emitIrLoadVreg(in.v, in.isFloat);
+    if (in.isFloat) {
+      emit("\tfsw\tfa0, 0(t1)");
+    } else {
+      emit("\tsw\ta0, 0(t1)");
+    }
+    return;
+  case IROp::StoreGlobal:
+    emit("\tlla\tt1, " + in.sym->label);
+    emitIrLoadVreg(in.u, in.isFloat);
+    if (in.isFloat) {
+      emit("\tfsw\tfa0, 0(t1)");
+    } else {
+      emit("\tsw\ta0, 0(t1)");
+    }
+    return;
+  case IROp::StoreLocal:
+    emitAddOffset("t1", "s0", in.sym->offset);
+    emitIrLoadVreg(in.u, in.isFloat);
+    if (in.isFloat) {
+      emit("\tfsw\tfa0, 0(t1)");
+    } else {
+      emit("\tsw\ta0, 0(t1)");
+    }
+    return;
+  case IROp::Add:
+    emitIrLoadVreg(in.u, false);
+    emit("\tmv\tt0, a0");
+    emitIrLoadVreg(in.v, false);
+    emit("\taddw\ta0, t0, a0");
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Sub:
+    emitIrLoadVreg(in.u, false);
+    emit("\tmv\tt0, a0");
+    emitIrLoadVreg(in.v, false);
+    emit("\tsubw\ta0, t0, a0");
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Mul:
+    emitIrLoadVreg(in.u, false);
+    emit("\tmv\tt0, a0");
+    emitIrLoadVreg(in.v, false);
+    emit("\tmulw\tt2, t0, a0");
+    emit("\tmv\ta0, t2");
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Sll:
+    emitIrLoadVreg(in.u, false);
+    emit("\tslliw\ta0, a0, " + to_string(in.immI));
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Div:
+    emitIrLoadVreg(in.u, false);
+    emit("\tmv\tt0, a0");
+    emitIrLoadVreg(in.v, false);
+    emit("\tdivw\ta0, t0, a0");
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Rem:
+    emitIrLoadVreg(in.u, false);
+    emit("\tmv\tt0, a0");
+    emitIrLoadVreg(in.v, false);
+    emit("\tremw\ta0, t0, a0");
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Neg:
+    emitIrLoadVreg(in.u, false);
+    emit("\tnegw\ta0, a0");
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Slt:
+    emitIrLoadVreg(in.u, false);
+    emit("\tmv\tt0, a0");
+    emitIrLoadVreg(in.v, false);
+    emit("\tslt\ta0, t0, a0");
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Seqz:
+    emitIrLoadVreg(in.u, false);
+    emit("\tseqz\ta0, a0");
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Snez:
+    emitIrLoadVreg(in.u, false);
+    emit("\tsnez\ta0, a0");
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::ICvtF:
+    emitIrLoadVreg(in.u, false);
+    emit("\tfcvt.s.w\tfa0, a0");
+    emitIrStoreVreg(in.dst, true);
+    markFl(in.dst);
+    return;
+  case IROp::FCvtI:
+    emitIrLoadVreg(in.u, true);
+    emit("\tfcvt.w.s\ta0, fa0, rtz");
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::FAdd:
+    emitIrLoadVreg(in.u, true);
+    emit("\tfmv.s\tft0, fa0");
+    emitIrLoadVreg(in.v, true);
+    emit("\tfadd.s\tfa0, ft0, fa0");
+    emitIrStoreVreg(in.dst, true);
+    markFl(in.dst);
+    return;
+  case IROp::FSub:
+    emitIrLoadVreg(in.u, true);
+    emit("\tfmv.s\tft0, fa0");
+    emitIrLoadVreg(in.v, true);
+    emit("\tfsub.s\tfa0, ft0, fa0");
+    emitIrStoreVreg(in.dst, true);
+    markFl(in.dst);
+    return;
+  case IROp::FMul:
+    emitIrLoadVreg(in.u, true);
+    emit("\tfmv.s\tft0, fa0");
+    emitIrLoadVreg(in.v, true);
+    emit("\tfmul.s\tfa0, ft0, fa0");
+    emitIrStoreVreg(in.dst, true);
+    markFl(in.dst);
+    return;
+  case IROp::FDiv:
+    emitIrLoadVreg(in.u, true);
+    emit("\tfmv.s\tft0, fa0");
+    emitIrLoadVreg(in.v, true);
+    emit("\tfdiv.s\tfa0, ft0, fa0");
+    emitIrStoreVreg(in.dst, true);
+    markFl(in.dst);
+    return;
+  case IROp::FNeg:
+    emitIrLoadVreg(in.u, true);
+    emit("\tfneg.s\tfa0, fa0");
+    emitIrStoreVreg(in.dst, true);
+    markFl(in.dst);
+    return;
+  case IROp::FCmp:
+    emitIrLoadVreg(in.u, true);
+    emit("\tfmv.s\tft0, fa0");
+    emitIrLoadVreg(in.v, true);
+    switch (in.immI) {
+    case FCMP_EQ:
+      emit("\tfeq.s\ta0, ft0, fa0");
+      break;
+    case FCMP_NE:
+      emit("\tfeq.s\ta0, ft0, fa0");
+      emit("\tseqz\ta0, a0");
+      break;
+    case FCMP_LT:
+      emit("\tflt.s\ta0, ft0, fa0");
+      break;
+    case FCMP_GT:
+      emit("\tflt.s\ta0, fa0, ft0");
+      break;
+    case FCMP_LE:
+      emit("\tfle.s\ta0, ft0, fa0");
+      break;
+    case FCMP_GE:
+      emit("\tfle.s\ta0, fa0, ft0");
+      break;
+    default:
+      emit("\tli\ta0, 0");
+      break;
+    }
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Call:
+    emitIrCall(def, ir, in, instIdx);
+    return;
+  case IROp::Ret:
+    if (def.ret == BaseType::Void) {
+      emit("\tj\t" + currentFunction_->returnLabel);
+      return;
+    }
+    if (in.u < 0) {
+      if (def.ret == BaseType::Int) {
+        emit("\tli\ta0, 0");
+      } else {
+        emit("\tfmv.w.x\tfa0, zero");
+      }
+    } else {
+      emitIrLoadVreg(in.u, irVFloat_[static_cast<size_t>(in.u)] != 0);
+    }
+    emit("\tj\t" + currentFunction_->returnLabel);
+    return;
+  default:
+    return;
+  }
+}
+
 void CodeGen::emitStoreParams(FuncDef &def) {
     vector<ParamType> types;
     for (const Param &p : def.params) {
       types.push_back(ParamType{p.base, p.isArray, p.dims});
     }
-    auto locs = computeArgLocations(types);
+    auto locs = computeArgLocations(types, false, types.size(), nullptr);
     for (size_t i = 0; i < def.params.size(); ++i) {
       const Param &p = def.params[i];
       const ArgLoc &loc = locs[i];
@@ -477,6 +1092,13 @@ void CodeGen::emitFloatConst(float value) {
       emit("\tfmv.w.x\tfa0, zero");
       return;
     }
+    for (const auto &lit : floatLiterals_) {
+      if (floatBits(lit.second) == bits) {
+        emit("\tlla\tt0, " + lit.first);
+        emit("\tflw\tfa0, 0(t0)");
+        return;
+      }
+    }
     string label = newLabel("float");
     floatLiterals_.push_back({label, value});
     emit("\tlla\tt0, " + label);
@@ -484,10 +1106,15 @@ void CodeGen::emitFloatConst(float value) {
   }
 
 void CodeGen::emitStringExpr(StringExpr *expr) {
-    if (expr->label.empty()) {
-      expr->label = newLabel("str");
-      stringLiterals_.push_back({expr->label, expr->value});
+    for (const auto &lit : stringLiterals_) {
+      if (lit.second == expr->value) {
+        expr->label = lit.first;
+        emit("\tlla\ta0, " + expr->label);
+        return;
+      }
     }
+    expr->label = newLabel("str");
+    stringLiterals_.push_back({expr->label, expr->value});
     emit("\tlla\ta0, " + expr->label);
   }
 
@@ -531,6 +1158,64 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
                    op == "<=" || op == ">=";
     bool useFloat = expr->lhs->type.isFloatScalar() || expr->rhs->type.isFloatScalar();
 
+    if (!useFloat && compare && optO1_ && expr->lhs->type.isIntScalar() &&
+        expr->rhs->type.isIntScalar()) {
+      if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
+          constAsInt(expr->rhs->constVal) == 0) {
+        emitExpr(expr->lhs.get());
+        if (op == "==") {
+          emit("\tseqz\ta0, a0");
+        } else if (op == "!=") {
+          emit("\tsnez\ta0, a0");
+        } else if (op == "<") {
+          emit("\tslt\ta0, a0, zero");
+        } else if (op == ">") {
+          emit("\tslt\ta0, zero, a0");
+        } else if (op == "<=") {
+          emit("\tslt\tt0, zero, a0");
+          emit("\tseqz\ta0, t0");
+        } else if (op == ">=") {
+          emit("\tslt\tt0, a0, zero");
+          emit("\tseqz\ta0, t0");
+        }
+        return;
+      }
+      if (expr->lhs->isConst && expr->lhs->constVal.type == BaseType::Int &&
+          constAsInt(expr->lhs->constVal) == 0) {
+        emitExpr(expr->rhs.get());
+        if (op == "==") {
+          emit("\tseqz\ta0, a0");
+        } else if (op == "!=") {
+          emit("\tsnez\ta0, a0");
+        } else if (op == "<") {
+          emit("\tslt\ta0, zero, a0");
+        } else if (op == ">") {
+          emit("\tslt\ta0, a0, zero");
+        } else if (op == "<=") {
+          emit("\tslt\tt0, a0, zero");
+          emit("\tseqz\ta0, t0");
+        } else if (op == ">=") {
+          emit("\tslt\tt0, zero, a0");
+          emit("\tseqz\ta0, t0");
+        }
+        return;
+      }
+      if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
+        int32_t k = constAsInt(expr->rhs->constVal);
+        if (k != 0 && (op == "==" || op == "!=") &&
+            fitsImm12(static_cast<int>(-k))) {
+          emitExpr(expr->lhs.get());
+          emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(-k)));
+          if (op == "==") {
+            emit("\tseqz\ta0, a0");
+          } else {
+            emit("\tsnez\ta0, a0");
+          }
+          return;
+        }
+      }
+    }
+
     emitExpr(expr->lhs.get());
     if (expr->lhs->type.isFloatScalar()) {
       emitPushFloat("fa0");
@@ -572,6 +1257,78 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
     emitPopInt("a0");
     if (compare) {
       emitIntCompare(op);
+    } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
+               op == "+" && expr->lhs->isConst && expr->lhs->constVal.type == BaseType::Int) {
+      int32_t k = constAsInt(expr->lhs->constVal);
+      if (fitsImm12(static_cast<int>(k))) {
+        emit("\taddiw\ta0, a1, " + to_string(k));
+      } else {
+        emit("\taddw\ta0, a0, a1");
+      }
+    } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
+               op == "*" && expr->lhs->isConst && expr->lhs->constVal.type == BaseType::Int) {
+      int32_t k = constAsInt(expr->lhs->constVal);
+      int lg = intLog2Positive32(k > 0 ? k : 0);
+      if (k == 0) {
+        emit("\tli\ta0, 0");
+      } else if (k == 1) {
+        emit("\tmv\ta0, a1");
+      } else if (k == -1) {
+        emit("\tnegw\ta0, a1");
+      } else if (lg >= 0) {
+        emit("\tslliw\ta0, a1, " + to_string(lg));
+      } else {
+        emit("\tmulw\ta0, a1, a0");
+      }
+    } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
+               expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
+               op == "*") {
+      int32_t k = constAsInt(expr->rhs->constVal);
+      int lg = intLog2Positive32(k > 0 ? k : 0);
+      if (k == 0) {
+        emit("\tli\ta0, 0");
+      } else if (k == 1) {
+        /* a0 已是 lhs */
+      } else if (k == -1) {
+        emit("\tnegw\ta0, a0");
+      } else if (lg >= 0) {
+        emit("\tslliw\ta0, a0, " + to_string(lg));
+      } else {
+        emit("\tmulw\ta0, a0, a1");
+      }
+    } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
+               expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
+               op == "/") {
+      int32_t k = constAsInt(expr->rhs->constVal);
+      int lg = intLog2Positive32(k);
+      if (k > 0 && lg >= 0) {
+        emit("\tli\ta2, " + to_string(k - 1));
+        emit("\tsraiw\tt1, a0, 31");
+        emit("\tand\tt1, t1, a2");
+        emit("\taddw\tt0, a0, t1");
+        emit("\tsraiw\ta0, t0, " + to_string(lg));
+      } else {
+        emit("\tdivw\ta0, a0, a1");
+      }
+    } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
+               expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
+               op == "+") {
+      int32_t k = constAsInt(expr->rhs->constVal);
+      if (fitsImm12(static_cast<int>(k))) {
+        emit("\taddiw\ta0, a0, " + to_string(k));
+      } else {
+        emit("\taddw\ta0, a0, a1");
+      }
+    } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
+               expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
+               op == "-") {
+      int32_t k = constAsInt(expr->rhs->constVal);
+      int neg = -static_cast<int>(k);
+      if (fitsImm12(neg)) {
+        emit("\taddiw\ta0, a0, " + to_string(neg));
+      } else {
+        emit("\tsubw\ta0, a0, a1");
+      }
     } else if (op == "+") {
       emit("\taddw\ta0, a0, a1");
     } else if (op == "-") {
@@ -693,10 +1450,22 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
       emitExpr(expr->indices[i].get());
       emitConvert(expr->indices[i]->type, Type::scalar(BaseType::Int));
       int strideBytes = strideForIndex(sym, i) * 4;
-      emit("\tli\tt0, " + to_string(strideBytes));
-      emit("\tmul\tt1, a0, t0");
+      if (optO1_ && strideBytes > 0) {
+        int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
+        if (lg >= 0) {
+          emit("\tslliw\ta0, a0, " + to_string(lg));
+        } else {
+          emit("\tli\tt0, " + to_string(strideBytes));
+          emit("\tmul\tt1, a0, t0");
+          emit("\tmv\ta0, t1");
+        }
+      } else {
+        emit("\tli\tt0, " + to_string(strideBytes));
+        emit("\tmul\tt1, a0, t0");
+        emit("\tmv\ta0, t1");
+      }
       emit("\tld\tt0, 0(sp)");
-      emit("\tadd\tt0, t0, t1");
+      emit("\tadd\tt0, t0, a0");
       emit("\tsd\tt0, 0(sp)");
     }
     emitPopInt("t0");
@@ -732,8 +1501,13 @@ void CodeGen::emitCall(CallExpr *expr) {
       }
     }
 
+    size_t namedCount = params.size();
+    if (fn->variadic) {
+      namedCount = fn->params.size() + (fn->injectLineArgument ? 1 : 0);
+    }
+
     int stackSlots = 0;
-    auto locs = computeArgLocations(params, &stackSlots);
+    auto locs = computeArgLocations(params, fn->variadic, namedCount, &stackSlots);
     int tempSlots = static_cast<int>(params.size());
     int stackBytes = stackSlots * 8;
     int tempBase = stackBytes;
@@ -750,6 +1524,8 @@ void CodeGen::emitCall(CallExpr *expr) {
     }
     for (Expr *arg : args) {
       ParamType expected = params[paramIndex];
+      const bool vaArg =
+          fn->variadic && static_cast<size_t>(paramIndex) >= namedCount;
       emitExpr(arg);
       Type target = expected.isArray ? Type::pointer(expected.base, expected.dims)
                                      : Type::scalar(expected.base);
@@ -759,8 +1535,15 @@ void CodeGen::emitCall(CallExpr *expr) {
       int off = tempBase + paramIndex * 8;
       if (target.isPointer) {
         emitStoreMem("sd", "a0", "sp", off);
-      } else if (target.base == BaseType::Float) {
+      } else if (expected.base == BaseType::Float && vaArg) {
+        emit("\tfcvt.d.s\tfa1, fa0");
+        emit("\tfmv.x.d\ta0, fa1");
+        emitStoreMem("sd", "a0", "sp", off);
+      } else if (expected.base == BaseType::Float) {
         emitStoreMem("fsw", "fa0", "sp", off);
+      } else if (vaArg) {
+        emit("\tsext.w\ta0, a0");
+        emitStoreMem("sd", "a0", "sp", off);
       } else {
         emitStoreMem("sd", "a0", "sp", off);
       }
@@ -772,11 +1555,11 @@ void CodeGen::emitCall(CallExpr *expr) {
       const ArgLoc &loc = locs[i];
       int off = tempBase + static_cast<int>(i) * 8;
       bool isFloat = !p.isArray && p.base == BaseType::Float;
-      bool isPtr = p.isArray;
+      const bool vaArg = fn->variadic && i >= namedCount;
       if (loc.kind == ArgLoc::FloatReg) {
         emitLoadMem("flw", "fa" + to_string(loc.index), "sp", off);
       } else if (loc.kind == ArgLoc::IntReg) {
-        if (isFloat) {
+        if (isFloat && !vaArg) {
           emitLoadMem("lw", "a" + to_string(loc.index), "sp", off);
         } else {
           emitLoadMem("ld", "a" + to_string(loc.index), "sp", off);
@@ -784,14 +1567,18 @@ void CodeGen::emitCall(CallExpr *expr) {
       } else {
         int dst = loc.index * 8;
         if (isFloat) {
-          emitLoadMem("lw", "t0", "sp", off);
-          emitStoreMem("sw", "t0", "sp", dst);
+          if (vaArg) {
+            emitLoadMem("ld", "t0", "sp", off);
+            emitStoreMem("sd", "t0", "sp", dst);
+          } else {
+            emitLoadMem("lw", "t0", "sp", off);
+            emitStoreMem("sw", "t0", "sp", dst);
+          }
         } else {
           emitLoadMem("ld", "t0", "sp", off);
           emitStoreMem("sd", "t0", "sp", dst);
         }
       }
-      (void)isPtr;
     }
 
     emit("\tcall\t" + fn->asmName);
