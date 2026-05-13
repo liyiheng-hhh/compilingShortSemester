@@ -275,11 +275,21 @@ void CodeGen::emitDecl(DeclStmt &decl) {
           emitStoreToAddress(sym->base, [this, sym]() {
             emitAddOffset("a1", "s0", sym->offset);
           });
+        } else if (!def.init) {
+          // SysY 评测通常假定未赋初值的局部标量为 0（与官方运行时一致）
+          if (sym->base == BaseType::Float) {
+            emit("\tfmv.w.x\tfa0, zero");
+          } else {
+            emit("\tli\ta0, 0");
+          }
+          emitStoreToAddress(sym->base, [this, sym]() {
+            emitAddOffset("a1", "s0", sym->offset);
+          });
         }
         continue;
       }
-      if (def.init) {
-        int total = product(sym->dims);
+      int total = product(sym->dims);
+      if (!def.init) {
         string zeroLoop = newLabel("zero_array");
         string zeroEnd = newLabel("zero_array_end");
         emitAddOffset("t0", "s0", sym->offset);
@@ -291,18 +301,30 @@ void CodeGen::emitDecl(DeclStmt &decl) {
         emit("\taddi\tt1, t1, -4");
         emit("\tj\t" + zeroLoop);
         emit(zeroEnd + ":");
-        vector<InitVal *> flat(total, nullptr);
-        flattenRuntimeInit(def.init.get(), sym->dims, 0, 0, flat);
-        for (int i = 0; i < total; ++i) {
-          if (!flat[i]) {
-            continue;
-          }
-          emitExpr(flat[i]->expr.get());
-          emitConvert(flat[i]->expr->type, Type::scalar(sym->base));
-          emitStoreToAddress(sym->base, [this, sym, i]() {
-            emitAddOffset("a1", "s0", sym->offset + i * 4);
-          });
+        continue;
+      }
+      string zeroLoop = newLabel("zero_array");
+      string zeroEnd = newLabel("zero_array_end");
+      emitAddOffset("t0", "s0", sym->offset);
+      emit("\tli\tt1, " + to_string(total * 4));
+      emit(zeroLoop + ":");
+      emit("\tbeqz\tt1, " + zeroEnd);
+      emit("\tsw\tzero, 0(t0)");
+      emit("\taddi\tt0, t0, 4");
+      emit("\taddi\tt1, t1, -4");
+      emit("\tj\t" + zeroLoop);
+      emit(zeroEnd + ":");
+      vector<InitVal *> flat(total, nullptr);
+      flattenRuntimeInit(def.init.get(), sym->dims, 0, 0, flat);
+      for (int i = 0; i < total; ++i) {
+        if (!flat[i]) {
+          continue;
         }
+        emitExpr(flat[i]->expr.get());
+        emitConvert(flat[i]->expr->type, Type::scalar(sym->base));
+        emitStoreToAddress(sym->base, [this, sym, i]() {
+          emitAddOffset("a1", "s0", sym->offset + i * 4);
+        });
       }
     }
   }
@@ -683,12 +705,10 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
   }
 
 int CodeGen::strideForIndex(Symbol *sym, size_t index) {
+    // 形参数组只有「除最左维外的各维」保存在 dims 中，第 i 个下标的步长为
+    // product(dims, i)；与普通局部数组下标 i 的步长 product(dims, i+1) 对应同一规则。
     if (sym->isParamArray) {
-      if (index == 0) {
-        return sym->dims.empty() ? 1 : product(sym->dims, 0);
-      }
-      size_t tail = index;
-      return tail < sym->dims.size() ? product(sym->dims, tail) : 1;
+      return product(sym->dims, index);
     }
     return index + 1 < sym->dims.size() ? product(sym->dims, index + 1) : 1;
   }
