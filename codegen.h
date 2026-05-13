@@ -38,6 +38,9 @@ private:
   int irSpillBase_ = 0;
   int irTotalFrame_ = 0;
   vector<char> irVFloat_;
+  vector<int> irVregSlots_;
+  int irLastVregInA0_ = -1;
+  int irLastVregInFa0_ = -1;
 
   int irVregSlotOffset(int vid) const;
 

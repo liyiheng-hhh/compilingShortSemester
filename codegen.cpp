@@ -371,10 +371,13 @@ void CodeGen::emitFunction(FuncDef &def) {
     if (optO1_ && irFunctionEligible(def)) {
       irBuildFunction(def, semantic_, irBuf);
       irOptimizeBlock(irBuf);
+      irAssignSlots(irBuf);
+      irVregSlots_ = irBuf.vregSlots;
       useIr = true;
       irVregCount_ = irBuf.nextVreg;
       irSpillBase_ = alignTo(currentFunction_->frameUsed, 16);
-      int need = irSpillBase_ + 8 * std::max(irVregCount_, 0);
+      int slotCount = irSlotCount(irBuf);
+      int need = irSpillBase_ + 8 * std::max(slotCount, 0);
       irTotalFrame_ = max(frame, alignTo(need, 16));
       frame = irTotalFrame_;
       irVFloat_.assign(static_cast<size_t>(max(irVregCount_, 0)), 0);
@@ -416,18 +419,29 @@ void CodeGen::emitFunction(FuncDef &def) {
   }
 
 int CodeGen::irVregSlotOffset(int vid) const {
-  return -(irSpillBase_ + 8 * (vid + 1));
+  if (vid < 0) return -(irSpillBase_ + 8);
+  int slot = vid;
+  if (vid < static_cast<int>(irVregSlots_.size()) && irVregSlots_[static_cast<size_t>(vid)] >= 0) {
+    slot = irVregSlots_[static_cast<size_t>(vid)];
+  }
+  return -(irSpillBase_ + 8 * (slot + 1));
 }
 
 void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
   if (vid < 0) {
     return;
   }
+  if (asFloat && irLastVregInFa0_ == vid) return;
+  if (!asFloat && irLastVregInA0_ == vid) return;
   int off = irVregSlotOffset(vid);
   if (asFloat) {
     emitLoadMem("flw", "fa0", "s0", off);
+    irLastVregInFa0_ = vid;
+    irLastVregInA0_ = -1;
   } else {
     emitLoadMem("lw", "a0", "s0", off);
+    irLastVregInA0_ = vid;
+    irLastVregInFa0_ = -1;
   }
 }
 
@@ -438,8 +452,12 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
   int off = irVregSlotOffset(vid);
   if (asFloat) {
     emitStoreMem("fsw", "fa0", "s0", off);
+    irLastVregInFa0_ = vid;
+    irLastVregInA0_ = -1;
   } else {
     emitStoreMem("sw", "a0", "s0", off);
+    irLastVregInA0_ = vid;
+    irLastVregInFa0_ = -1;
   }
 }
 
@@ -511,7 +529,19 @@ static optional<float> irTraceConstF(const IRFunction &ir, int v, size_t before)
 }
 
 void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
+  irLastVregInA0_ = -1;
+  irLastVregInFa0_ = -1;
   for (size_t i = 0; i < ir.insts.size(); ++i) {
+    // Clear tracking before instructions that write to a0/fa0 without first loading
+    IROp op = ir.insts[i].op;
+    if (op == IROp::Call || op == IROp::Ret ||
+        op == IROp::ConstI || op == IROp::ConstF ||
+        op == IROp::LeaStr || op == IROp::LeaGlobal ||
+        op == IROp::LeaLocal || op == IROp::LoadParamAddr ||
+        op == IROp::Nop) {
+      irLastVregInA0_ = -1;
+      irLastVregInFa0_ = -1;
+    }
     emitIrInst(def, ir, ir.insts[i], i);
   }
 }

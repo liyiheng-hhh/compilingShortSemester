@@ -78,6 +78,8 @@ struct IRFunction {
   BaseType ret = BaseType::Int;
   int nextVreg = 0;
   std::vector<IRInst> insts;
+  // 按需计算的 vreg→槽号 映射（每个槽 8 字节），-1 表示未分配
+  std::vector<int> vregSlots;
 
   int allocVreg() { return nextVreg++; }
 };
@@ -89,3 +91,7 @@ bool irExprHasLogicalShortCircuit(Expr *e);
 void irBuildFunction(FuncDef &def, const Semantic &semantic, IRFunction &out);
 
 void irOptimizeBlock(IRFunction &fn);
+
+void irAssignSlots(IRFunction &fn);
+
+int irSlotCount(const IRFunction &fn);

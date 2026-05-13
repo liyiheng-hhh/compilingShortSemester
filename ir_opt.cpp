@@ -558,3 +558,64 @@ void irOptimizeBlock(IRFunction &fn) {
     fn.insts.swap(live);
   }
 }
+
+void irAssignSlots(IRFunction &fn) {
+  const int nv = static_cast<int>(fn.nextVreg);
+  fn.vregSlots.assign(static_cast<size_t>(std::max(nv, 0)), -1);
+  if (nv <= 0) return;
+
+  // Compute last-use position for each vreg
+  vector<size_t> lastUse(static_cast<size_t>(nv), 0);
+  for (size_t idx = 0; idx < fn.insts.size(); ++idx) {
+    const IRInst &in = fn.insts[idx];
+    if (in.u >= 0 && in.u < nv) lastUse[static_cast<size_t>(in.u)] = idx;
+    if (in.v >= 0 && in.v < nv) lastUse[static_cast<size_t>(in.v)] = idx;
+    for (int a : in.args) {
+      if (a >= 0 && a < nv) lastUse[static_cast<size_t>(a)] = idx;
+    }
+  }
+
+  // Linear scan slot assignment: reuse slots after last use
+  vector<int> slotFreeAt; // slot → freed after instruction index
+  vector<int> allocated(static_cast<size_t>(nv), -1);
+
+  for (size_t idx = 0; idx < fn.insts.size(); ++idx) {
+    const IRInst &in = fn.insts[idx];
+
+    // Free slots whose owner's last use was at a previous instruction
+    for (size_t s = 0; s < slotFreeAt.size(); ++s) {
+      if (slotFreeAt[s] >= 0 && static_cast<size_t>(slotFreeAt[s]) < idx) {
+        slotFreeAt[s] = -1; // mark as free
+      }
+    }
+
+    // Allocate slot for dst
+    if (in.dst >= 0 && in.dst < nv && allocated[static_cast<size_t>(in.dst)] < 0) {
+      int slot = -1;
+      // Find a freed slot
+      for (size_t s = 0; s < slotFreeAt.size(); ++s) {
+        if (slotFreeAt[s] < 0) {
+          slot = static_cast<int>(s);
+          break;
+        }
+      }
+      if (slot < 0) {
+        // Allocate new slot
+        slot = static_cast<int>(slotFreeAt.size());
+        slotFreeAt.push_back(-1);
+      }
+      slotFreeAt[static_cast<size_t>(slot)] = static_cast<int>(lastUse[static_cast<size_t>(in.dst)]);
+      allocated[static_cast<size_t>(in.dst)] = slot;
+    }
+  }
+
+  fn.vregSlots = allocated;
+}
+
+int irSlotCount(const IRFunction &fn) {
+  int maxSlot = -1;
+  for (int s : fn.vregSlots) {
+    if (s > maxSlot) maxSlot = s;
+  }
+  return maxSlot + 1;
+}
