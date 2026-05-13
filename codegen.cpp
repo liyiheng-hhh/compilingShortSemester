@@ -461,7 +461,7 @@ void CodeGen::emitFunction(FuncDef &def) {
     emit("\tmv\ts0, t0");
     emitStoreParams(def);
 
-    // IR leaf functions: cache integer params in t4-t6 for fast LoadLocal
+    // IR leaf functions: cache int params in t4-t6, float params in ft0-ft7
     irParamCache_.clear();
     if (useIr && leaf) {
       vector<ParamType> ptypes;
@@ -469,14 +469,20 @@ void CodeGen::emitFunction(FuncDef &def) {
         ptypes.push_back(ParamType{p.base, p.isArray, p.dims});
       }
       auto plocs = computeArgLocations(ptypes, false, ptypes.size(), nullptr);
-      int ti = 0;
-      for (size_t i = 0; i < def.params.size() && ti < 3; ++i) {
+      int ti = 0, fi = 0;
+      for (size_t i = 0; i < def.params.size(); ++i) {
         if (!def.params[i].isArray && def.params[i].base == BaseType::Int &&
-            plocs[i].kind == ArgLoc::IntReg) {
+            plocs[i].kind == ArgLoc::IntReg && ti < 3) {
           string treg = "t" + to_string(4 + ti);
           emit("\tmv\t" + treg + ", a" + to_string(plocs[i].index));
           irParamCache_[def.params[i].symbol] = treg;
           ++ti;
+        } else if (!def.params[i].isArray && def.params[i].base == BaseType::Float &&
+                   plocs[i].kind == ArgLoc::FloatReg && fi < 8) {
+          string freg = "ft" + to_string(fi);
+          emit("\tfmv.s\t" + freg + ", fa" + to_string(plocs[i].index));
+          irParamCache_[def.params[i].symbol] = freg;
+          ++fi;
         }
       }
     }
@@ -984,10 +990,17 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   case IROp::LoadLocal: {
     auto pit = irParamCache_.find(in.sym);
-    if (pit != irParamCache_.end() && !in.isFloat) {
-      emit("\tmv\ta0, " + pit->second);
-      emitIrStoreVreg(in.dst, false);
-      markInt(in.dst);
+    if (pit != irParamCache_.end()) {
+      string &reg = pit->second;
+      if (reg[0] == 'f') {
+        emit("\tfmv.s\tfa0, " + reg);
+        emitIrStoreVreg(in.dst, true);
+        markFl(in.dst);
+      } else {
+        emit("\tmv\ta0, " + reg);
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+      }
     } else {
       emitAddOffset("t0", "s0", in.sym->offset);
       if (in.isFloat) {
@@ -1558,13 +1571,12 @@ void CodeGen::emitAssign(AssignStmt &stmt) {
     Symbol *sym = stmt.lhs->symbol;
     bool lhsFloat = sym->base == BaseType::Float;
 
-    // 安全快路径：地址直接算到 t4（emitExpr 不使用 t4）
-    if (optO1_ && !lhsFloat) {
+    // 安全快路径：地址直接算到 t4（emitExpr 不使用 t4，float RHS 也不用）
+    if (optO1_) {
       // Simple scalar: address to t4, RHS w/o arrays keeps t4 safe
       if (!sym->isGlobal && !sym->isParamArray && stmt.lhs->indices.empty() &&
           fitsImm12(sym->offset)) {
         emit("\taddi\tt4, s0, " + to_string(sym->offset));
-        // If RHS contains array access, t4 might be clobbered (emitLValAddress uses t4)
         auto exprHasArray = [](Expr *e, auto &self) -> bool {
           if (!e) return false;
           if (e->kind == ExprKind::LVal && !static_cast<LValExpr *>(e)->indices.empty())
@@ -1586,17 +1598,20 @@ void CodeGen::emitAssign(AssignStmt &stmt) {
         emitExpr(stmt.rhs.get());
         emitConvert(stmt.rhs->type, Type::scalar(sym->base));
         if (rhsHasArray) emitPopInt("t4");
-        emit("\tsw\ta0, 0(t4)");
+        if (lhsFloat) emit("\tfsw\tfa0, 0(t4)");
+        else          emit("\tsw\ta0, 0(t4)");
         return;
       }
       emitLValAddress(stmt.lhs.get());
       emit("\tmv\tt4, a0");
       emitExpr(stmt.rhs.get());
       emitConvert(stmt.rhs->type, Type::scalar(sym->base));
-      emit("\tsw\ta0, 0(t4)");
+      if (lhsFloat) emit("\tfsw\tfa0, 0(t4)");
+      else          emit("\tsw\ta0, 0(t4)");
       return;
     }
 
+    // -O0 fallback
     emitLValAddress(stmt.lhs.get());
     emitPushInt("a0");
     emitExpr(stmt.rhs.get());
@@ -1802,6 +1817,32 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
       }
       if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
         int32_t k = constAsInt(expr->rhs->constVal);
+        // x < k → slti (single instruction)
+        if (op == "<" && fitsImm12(static_cast<int>(k))) {
+          emitExpr(expr->lhs.get());
+          emit("\tslti\ta0, a0, " + to_string(static_cast<int>(k)));
+          return;
+        }
+        // x <= k → slti with k+1
+        if (op == "<=" && fitsImm12(static_cast<int>(k + 1))) {
+          emitExpr(expr->lhs.get());
+          emit("\tslti\ta0, a0, " + to_string(static_cast<int>(k + 1)));
+          return;
+        }
+        // x >= k → !(x < k)
+        if (op == ">=" && fitsImm12(static_cast<int>(k))) {
+          emitExpr(expr->lhs.get());
+          emit("\tslti\ta0, a0, " + to_string(static_cast<int>(k)));
+          emit("\tseqz\ta0, a0");
+          return;
+        }
+        // x > k → !(x <= k) = !(x < k+1)
+        if (op == ">" && fitsImm12(static_cast<int>(k + 1))) {
+          emitExpr(expr->lhs.get());
+          emit("\tslti\ta0, a0, " + to_string(static_cast<int>(k + 1)));
+          emit("\tseqz\ta0, a0");
+          return;
+        }
         if (k != 0 && (op == "==" || op == "!=") &&
             fitsImm12(static_cast<int>(-k))) {
           emitExpr(expr->lhs.get());
