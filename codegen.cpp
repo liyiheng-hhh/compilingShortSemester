@@ -456,6 +456,16 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
   if (vid < 0) {
     return;
   }
+  // Skip spill for single-use vregs: value stays in a0/fa0 for next instruction
+  if (irSkipStore_ && vid < static_cast<int>(irSkipStoreVregs_.size()) &&
+      irSkipStoreVregs_[static_cast<size_t>(vid)]) {
+    if (asFloat) {
+      irLastVregInFa0_ = vid;
+    } else {
+      irLastVregInA0_ = vid;
+    }
+    return;
+  }
   int off = irVregSlotOffset(vid);
   if (asFloat) {
     emitStoreMem("fsw", "fa0", "s0", off);
@@ -536,10 +546,27 @@ static optional<float> irTraceConstF(const IRFunction &ir, int v, size_t before)
 }
 
 void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
+  // Compute use counts for skip-store optimization
+  const int nv = static_cast<int>(ir.nextVreg);
+  vector<int> useCount(std::max(nv, 1));
+  for (const auto &inst : ir.insts) {
+    if (inst.u >= 0 && inst.u < nv) ++useCount[static_cast<size_t>(inst.u)];
+    if (inst.v >= 0 && inst.v < nv) ++useCount[static_cast<size_t>(inst.v)];
+    for (int a : inst.args) {
+      if (a >= 0 && a < nv) ++useCount[static_cast<size_t>(a)];
+    }
+  }
+  irSkipStoreVregs_.assign(static_cast<size_t>(nv), false);
+  for (int v = 0; v < nv; ++v) {
+    if (useCount[static_cast<size_t>(v)] == 1) {
+      irSkipStoreVregs_[static_cast<size_t>(v)] = true;
+    }
+  }
+  irSkipStore_ = true;
+
   irLastVregInA0_ = -1;
   irLastVregInFa0_ = -1;
   for (size_t i = 0; i < ir.insts.size(); ++i) {
-    // Clear tracking before instructions that write to a0/fa0 without first loading
     IROp op = ir.insts[i].op;
     if (op == IROp::Call || op == IROp::Ret ||
         op == IROp::ConstI || op == IROp::ConstF ||
@@ -551,6 +578,8 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
     }
     emitIrInst(def, ir, ir.insts[i], i);
   }
+
+  irSkipStore_ = false;
 }
 
 void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,

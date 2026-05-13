@@ -41,6 +41,8 @@ private:
   vector<int> irVregSlots_;
   int irLastVregInA0_ = -1;
   int irLastVregInFa0_ = -1;
+  bool irSkipStore_ = false;
+  std::vector<bool> irSkipStoreVregs_;
 
   int irVregSlotOffset(int vid) const;
 
