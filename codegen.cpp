@@ -1564,20 +1564,24 @@ void CodeGen::emitAssign(AssignStmt &stmt) {
       if (!sym->isGlobal && !sym->isParamArray && stmt.lhs->indices.empty() &&
           fitsImm12(sym->offset)) {
         emit("\taddi\tt4, s0, " + to_string(sym->offset));
-        // If RHS contains array access, t4 might be clobbered
-        bool rhsHasArray = false;
-        if (stmt.rhs->kind == ExprKind::Binary) {
-          auto *b = static_cast<BinaryExpr *>(stmt.rhs.get());
-          auto hasArray = [](Expr *e) -> bool {
-            if (e->kind == ExprKind::LVal && !static_cast<LValExpr *>(e)->indices.empty())
-              return true;
-            return false;
-          };
-          rhsHasArray = hasArray(b->lhs.get()) || hasArray(b->rhs.get());
-        } else if (stmt.rhs->kind == ExprKind::LVal &&
-                   !static_cast<LValExpr *>(stmt.rhs.get())->indices.empty()) {
-          rhsHasArray = true;
-        }
+        // If RHS contains array access, t4 might be clobbered (emitLValAddress uses t4)
+        auto exprHasArray = [](Expr *e, auto &self) -> bool {
+          if (!e) return false;
+          if (e->kind == ExprKind::LVal && !static_cast<LValExpr *>(e)->indices.empty())
+            return true;
+          if (e->kind == ExprKind::Binary) {
+            auto *b = static_cast<BinaryExpr *>(e);
+            return self(b->lhs.get(), self) || self(b->rhs.get(), self);
+          }
+          if (e->kind == ExprKind::Unary)
+            return self(static_cast<UnaryExpr *>(e)->expr.get(), self);
+          if (e->kind == ExprKind::Call) {
+            for (auto &a : static_cast<CallExpr *>(e)->args)
+              if (self(a.get(), self)) return true;
+          }
+          return false;
+        };
+        bool rhsHasArray = exprHasArray(stmt.rhs.get(), exprHasArray);
         if (rhsHasArray) emitPushInt("t4");
         emitExpr(stmt.rhs.get());
         emitConvert(stmt.rhs->type, Type::scalar(sym->base));
