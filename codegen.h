@@ -20,6 +20,8 @@ public:
 
   string run();
 
+  void emit(const string &line = "");
+
 private:
   Program &program_;
   const Semantic &semantic_;
@@ -48,8 +50,6 @@ private:
   void emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in, size_t instIdx);
 
   void emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in, size_t instIdx);
-
-  void emit(const string &line = "");
 
   string newLabel(const string &prefix);
 

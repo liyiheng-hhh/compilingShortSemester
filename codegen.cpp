@@ -25,6 +25,71 @@ static int intLog2Positive32(int32_t v) {
   return r;
 }
 
+// Emit optimal RISC-V code for a0 = a0 * k. Returns true if code was emitted.
+static bool emitMulByConst(CodeGen &cg, int32_t k) {
+  if (k == 0) {
+    cg.emit("\tli\ta0, 0");
+    return true;
+  }
+  if (k == 1) return true; // identity
+  if (k == -1) {
+    cg.emit("\tnegw\ta0, a0");
+    return true;
+  }
+  int lg = intLog2Positive32(k > 0 ? k : -k);
+  if (lg >= 0) {
+    cg.emit(k > 0 ? "\tslliw\ta0, a0, " + to_string(lg)
+                  : "\tslliw\ta0, a0, " + to_string(lg) + "\n\tnegw\ta0, a0");
+    return true;
+  }
+  // Try k = 2^a ± 2^b or k = 2^a ± 1
+  auto tryEmit = [&](int32_t val, bool negate) -> bool {
+    if (val <= 1 || val > 256) return false;
+    // Try val = 2^a ± 1
+    int a = intLog2Positive32(val - 1);
+    if (a >= 0) {
+      cg.emit("\tslliw\tt2, a0, " + to_string(a));
+      cg.emit(negate ? "\tsubw\ta0, t2, a0" : "\taddw\ta0, t2, a0");
+      if (k < 0) cg.emit("\tnegw\ta0, a0");
+      return true;
+    }
+    a = intLog2Positive32(val + 1);
+    if (a >= 0) {
+      cg.emit("\tslliw\tt2, a0, " + to_string(a));
+      cg.emit(negate ? "\taddw\ta0, t2, a0" : "\tsubw\ta0, t2, a0");
+      if (k < 0) cg.emit("\tnegw\ta0, a0");
+      return true;
+    }
+    // Try val = 2^a + 2^b
+    for (a = 1; a <= 8; ++a) {
+      int rem = val - (1 << a);
+      int b = intLog2Positive32(rem);
+      if (b >= 0) {
+        cg.emit("\tslliw\tt2, a0, " + to_string(a));
+        cg.emit("\tslliw\tt1, a0, " + to_string(b));
+        cg.emit(negate ? "\tsubw\ta0, t2, t1" : "\taddw\ta0, t2, t1");
+        if (k < 0) cg.emit("\tnegw\ta0, a0");
+        return true;
+      }
+    }
+    // Try val = 2^a - 2^b
+    for (a = 1; a <= 8; ++a) {
+      int sum = val + (1 << a);
+      int b = intLog2Positive32(sum);
+      if (b >= 0 && b > a) {
+        cg.emit("\tslliw\tt2, a0, " + to_string(b));
+        cg.emit("\tslliw\tt1, a0, " + to_string(a));
+        cg.emit(negate ? "\taddw\ta0, t2, t1" : "\tsubw\ta0, t2, t1");
+        if (k < 0) cg.emit("\tnegw\ta0, a0");
+        return true;
+      }
+    }
+    return false;
+  };
+  if (k > 0) return tryEmit(k, false);
+  return tryEmit(-k, true);
+}
+
 static bool exprIsLeaf(Expr *e) {
   if (!e) {
     return true;
@@ -1473,63 +1538,11 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             emit("\tli\ta0, 0");
             return;
           }
-          if (k == 1) {
-            emitExpr(expr->lhs.get());
-            return;
-          }
-          if (k == -1) {
-            emitExpr(expr->lhs.get());
-            emit("\tnegw\ta0, a0");
-            return;
-          }
-          int lg = intLog2Positive32(k);
-          if (lg >= 0) {
-            emitExpr(expr->lhs.get());
-            emit("\tslliw\ta0, a0, " + to_string(lg));
-            return;
-          }
-          // Strength reduction for small constants: mul via shift-add
-          if (k == 3) {
-            emitExpr(expr->lhs.get());
-            emit("\tslliw\tt2, a0, 1");
-            emit("\taddw\ta0, t2, a0");
-            return;
-          }
-          if (k == 5) {
-            emitExpr(expr->lhs.get());
-            emit("\tslliw\tt2, a0, 2");
-            emit("\taddw\ta0, t2, a0");
-            return;
-          }
-          if (k == 6) {
-            emitExpr(expr->lhs.get());
-            emit("\tslliw\tt2, a0, 2");
-            emit("\tslliw\tt1, a0, 1");
-            emit("\taddw\ta0, t2, t1");
-            return;
-          }
-          if (k == 7) {
-            emitExpr(expr->lhs.get());
-            emit("\tslliw\tt2, a0, 3");
-            emit("\tsubw\ta0, t2, a0");
-            return;
-          }
-          if (k == 9) {
-            emitExpr(expr->lhs.get());
-            emit("\tslliw\tt2, a0, 3");
-            emit("\taddw\ta0, t2, a0");
-            return;
-          }
-          if (k == 10) {
-            emitExpr(expr->lhs.get());
-            emit("\tslliw\tt2, a0, 3");
-            emit("\tslliw\tt1, a0, 1");
-            emit("\taddw\ta0, t2, t1");
-            return;
-          }
           emitExpr(expr->lhs.get());
-          emit("\tli\tt3, " + to_string(static_cast<int>(k)));
-          emit("\tmulw\ta0, a0, t3");
+          if (!emitMulByConst(*this, k)) {
+            emit("\tli\tt3, " + to_string(static_cast<int>(k)));
+            emit("\tmulw\ta0, a0, t3");
+          }
           return;
         }
         if (op == "/") {
@@ -1598,63 +1611,11 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             emit("\tli\ta0, 0");
             return;
           }
-          if (k == 1) {
-            emitExpr(expr->rhs.get());
-            return;
-          }
-          if (k == -1) {
-            emitExpr(expr->rhs.get());
-            emit("\tnegw\ta0, a0");
-            return;
-          }
-          int lg = intLog2Positive32(k);
-          if (lg >= 0) {
-            emitExpr(expr->rhs.get());
-            emit("\tslliw\ta0, a0, " + to_string(lg));
-            return;
-          }
-          // Strength reduction for small constants
-          if (k == 3) {
-            emitExpr(expr->rhs.get());
-            emit("\tslliw\tt2, a0, 1");
-            emit("\taddw\ta0, t2, a0");
-            return;
-          }
-          if (k == 5) {
-            emitExpr(expr->rhs.get());
-            emit("\tslliw\tt2, a0, 2");
-            emit("\taddw\ta0, t2, a0");
-            return;
-          }
-          if (k == 6) {
-            emitExpr(expr->rhs.get());
-            emit("\tslliw\tt2, a0, 2");
-            emit("\tslliw\tt1, a0, 1");
-            emit("\taddw\ta0, t2, t1");
-            return;
-          }
-          if (k == 7) {
-            emitExpr(expr->rhs.get());
-            emit("\tslliw\tt2, a0, 3");
-            emit("\tsubw\ta0, t2, a0");
-            return;
-          }
-          if (k == 9) {
-            emitExpr(expr->rhs.get());
-            emit("\tslliw\tt2, a0, 3");
-            emit("\taddw\ta0, t2, a0");
-            return;
-          }
-          if (k == 10) {
-            emitExpr(expr->rhs.get());
-            emit("\tslliw\tt2, a0, 3");
-            emit("\tslliw\tt1, a0, 1");
-            emit("\taddw\ta0, t2, t1");
-            return;
-          }
           emitExpr(expr->rhs.get());
-          emit("\tli\tt3, " + to_string(static_cast<int>(k)));
-          emit("\tmulw\ta0, a0, t3");
+          if (!emitMulByConst(*this, k)) {
+            emit("\tli\tt3, " + to_string(static_cast<int>(k)));
+            emit("\tmulw\ta0, a0, t3");
+          }
           return;
         }
       }
@@ -1674,6 +1635,96 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         emit("\tremw\ta0, t0, a0");
       }
       return;
+    }
+
+    // T4-based path: save one side to t4 (preserved across sub-expr eval), avoid push/pop
+    // t4 is never used by any emitExpr path, so it survives sub-expression evaluation.
+    if (optO1_ && !useFloat && !compare) {
+      // RHS leaf: evaluate LHS first, save to t4, evaluate leaf RHS, combine
+      if (exprIsLeaf(expr->rhs.get())) {
+        emitExpr(expr->lhs.get());
+        emit("\tmv\tt4, a0");
+        emitExpr(expr->rhs.get());
+        if (op == "+") {
+          emit("\taddw\ta0, t4, a0");
+        } else if (op == "-") {
+          emit("\tsubw\ta0, t4, a0");
+        } else if (op == "*") {
+          emit("\tmulw\ta0, t4, a0");
+        } else if (op == "/") {
+          emit("\tdivw\ta0, t4, a0");
+        } else if (op == "%") {
+          emit("\tremw\ta0, t4, a0");
+        }
+        return;
+      }
+      // LHS leaf: evaluate RHS first, save to t4, evaluate leaf LHS, combine
+      if (exprIsLeaf(expr->lhs.get())) {
+        emitExpr(expr->rhs.get());
+        emit("\tmv\tt4, a0");
+        emitExpr(expr->lhs.get());
+        if (op == "+") {
+          emit("\taddw\ta0, a0, t4");
+        } else if (op == "-") {
+          emit("\tsubw\ta0, a0, t4");
+        } else if (op == "*") {
+          emit("\tmulw\ta0, a0, t4");
+        } else if (op == "/") {
+          emit("\tdivw\ta0, a0, t4");
+        } else if (op == "%") {
+          emit("\tremw\ta0, a0, t4");
+        }
+        return;
+      }
+    }
+    // T4-based path for integer comparisons with one leaf side
+    if (optO1_ && !useFloat && compare) {
+      if (exprIsLeaf(expr->rhs.get())) {
+        emitExpr(expr->lhs.get());
+        emit("\tmv\tt4, a0");
+        emitExpr(expr->rhs.get());
+        if (op == "==") {
+          emit("\tsubw\ta0, t4, a0");
+          emit("\tseqz\ta0, a0");
+        } else if (op == "!=") {
+          emit("\tsubw\ta0, t4, a0");
+          emit("\tsnez\ta0, a0");
+        } else if (op == "<") {
+          emit("\tslt\ta0, t4, a0");
+        } else if (op == ">") {
+          emit("\tslt\ta0, a0, t4");
+        } else if (op == "<=") {
+          emit("\tslt\ta0, a0, t4");
+          emit("\tseqz\ta0, a0");
+        } else if (op == ">=") {
+          emit("\tslt\ta0, t4, a0");
+          emit("\tseqz\ta0, a0");
+        }
+        return;
+      }
+      if (exprIsLeaf(expr->lhs.get())) {
+        emitExpr(expr->rhs.get());
+        emit("\tmv\tt4, a0");
+        emitExpr(expr->lhs.get());
+        if (op == "==") {
+          emit("\tsubw\ta0, a0, t4");
+          emit("\tseqz\ta0, a0");
+        } else if (op == "!=") {
+          emit("\tsubw\ta0, a0, t4");
+          emit("\tsnez\ta0, a0");
+        } else if (op == "<") {
+          emit("\tslt\ta0, a0, t4");
+        } else if (op == ">") {
+          emit("\tslt\ta0, t4, a0");
+        } else if (op == "<=") {
+          emit("\tslt\ta0, t4, a0");
+          emit("\tseqz\ta0, a0");
+        } else if (op == ">=") {
+          emit("\tslt\ta0, a0, t4");
+          emit("\tseqz\ta0, a0");
+        }
+        return;
+      }
     }
 
     // Fallback: push/pop-based evaluation
@@ -1729,72 +1780,16 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
     } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
                op == "*" && expr->lhs->isConst && expr->lhs->constVal.type == BaseType::Int) {
       int32_t k = constAsInt(expr->lhs->constVal);
-      int lg = intLog2Positive32(k > 0 ? k : 0);
-      if (k == 0) {
-        emit("\tli\ta0, 0");
-      } else if (k == 1) {
-        emit("\tmv\ta0, a1");
-      } else if (k == -1) {
-        emit("\tnegw\ta0, a1");
-      } else if (lg >= 0) {
-        emit("\tslliw\ta0, a1, " + to_string(lg));
-      } else if (k == 3) {
-        emit("\tslliw\ta0, a1, 1");
-        emit("\taddw\ta0, a0, a1");
-      } else if (k == 5) {
-        emit("\tslliw\ta0, a1, 2");
-        emit("\taddw\ta0, a0, a1");
-      } else if (k == 6) {
-        emit("\tslliw\tt2, a1, 2");
-        emit("\tslliw\ta0, a1, 1");
-        emit("\taddw\ta0, t2, a0");
-      } else if (k == 7) {
-        emit("\tslliw\ta0, a1, 3");
-        emit("\tsubw\ta0, a0, a1");
-      } else if (k == 9) {
-        emit("\tslliw\ta0, a1, 3");
-        emit("\taddw\ta0, a0, a1");
-      } else if (k == 10) {
-        emit("\tslliw\tt2, a1, 3");
-        emit("\tslliw\ta0, a1, 1");
-        emit("\taddw\ta0, t2, a0");
-      } else {
-        emit("\tmulw\ta0, a1, a0");
+      emit("\tmv\ta0, a1");
+      if (!emitMulByConst(*this, k)) {
+        emit("\tli\tt3, " + to_string(static_cast<int>(k)));
+        emit("\tmulw\ta0, a1, t3");
       }
     } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
                expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
                op == "*") {
       int32_t k = constAsInt(expr->rhs->constVal);
-      int lg = intLog2Positive32(k > 0 ? k : 0);
-      if (k == 0) {
-        emit("\tli\ta0, 0");
-      } else if (k == 1) {
-        /* a0 已是 lhs */
-      } else if (k == -1) {
-        emit("\tnegw\ta0, a0");
-      } else if (lg >= 0) {
-        emit("\tslliw\ta0, a0, " + to_string(lg));
-      } else if (k == 3) {
-        emit("\tslliw\tt2, a0, 1");
-        emit("\taddw\ta0, t2, a0");
-      } else if (k == 5) {
-        emit("\tslliw\tt2, a0, 2");
-        emit("\taddw\ta0, t2, a0");
-      } else if (k == 6) {
-        emit("\tslliw\tt2, a0, 2");
-        emit("\tslliw\tt1, a0, 1");
-        emit("\taddw\ta0, t2, t1");
-      } else if (k == 7) {
-        emit("\tslliw\tt2, a0, 3");
-        emit("\tsubw\ta0, t2, a0");
-      } else if (k == 9) {
-        emit("\tslliw\tt2, a0, 3");
-        emit("\taddw\ta0, t2, a0");
-      } else if (k == 10) {
-        emit("\tslliw\tt2, a0, 3");
-        emit("\tslliw\tt1, a0, 1");
-        emit("\taddw\ta0, t2, t1");
-      } else {
+      if (!emitMulByConst(*this, k)) {
         emit("\tmulw\ta0, a0, a1");
       }
     } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
