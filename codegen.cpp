@@ -2077,7 +2077,26 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
     if (expr->indices.empty()) {
       return;
     }
-    // 快路径已禁用：emitExpr 会使用 t3/t1/t2，破坏 t5/t3 中保存的基址和偏移
+    // 安全快速路径：t4 存基址，t5 累加偏移（emitExpr 不使用 t4/t5）
+    if (optO1_) {
+      emit("\tmv\tt4, a0");
+      emit("\tli\tt5, 0");
+      for (size_t i = 0; i < expr->indices.size(); ++i) {
+        emitExpr(expr->indices[i].get());
+        emitConvert(expr->indices[i]->type, Type::scalar(BaseType::Int));
+        int strideBytes = strideForIndex(sym, i) * 4;
+        int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
+        if (lg >= 0) {
+          emit("\tslliw\tt2, a0, " + to_string(lg));
+        } else {
+          emit("\tli\tt1, " + to_string(strideBytes));
+          emit("\tmulw\tt2, a0, t1");
+        }
+        emit("\taddw\tt5, t5, t2");
+      }
+      emit("\tadd\ta0, t4, t5");
+      return;
+    }
     // Fallback: stack-based accumulation
     emitPushInt("a0");
     emit("\tli\ta0, 0");
