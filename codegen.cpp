@@ -615,6 +615,72 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
 
   int stackSlots = 0;
   auto locs = computeArgLocations(params, fn->variadic, namedCount, &stackSlots);
+
+  // Optimized path: load args to safe regs (t4-t6, ft), avoid temp stack slots
+  int intNeeded = 0;
+  for (size_t i = 0; i < params.size(); ++i) {
+    if (params[i].isArray || params[i].base == BaseType::Int) ++intNeeded;
+  }
+  bool useRegPath = optO1_ && !fn->injectLineArgument && intNeeded <= 3;
+
+  if (useRegPath) {
+    int stackArea = stackSlots * 8;
+    if (stackArea > 0) emitAdjustSp(-alignTo(stackArea, 16));
+
+    int intUsed = 0, floatUsed = 0;
+    vector<string> argReg(params.size());
+
+    for (size_t i = 0; i < params.size(); ++i) {
+      int av = in.args[i];
+      ParamType expected = params[i];
+      bool isFloat = !expected.isArray && expected.base == BaseType::Float;
+
+      if (isFloat) {
+        if (optional<float> fc = irTraceConstF(ir, av, instIdx)) {
+          emitFloatConst(*fc);
+        } else {
+          emitIrLoadVreg(av, true);
+        }
+        string reg = "ft" + to_string(floatUsed);
+        emit("\tfmv.s\t" + reg + ", fa0");
+        argReg[i] = reg;
+        ++floatUsed;
+      } else {
+        if (optional<int32_t> ic = irTraceConstI(ir, av, instIdx)) {
+          emit("\tli\ta0, " + to_string(*ic));
+        } else {
+          emitIrLoadVreg(av, false);
+        }
+        string reg = "t" + to_string(4 + intUsed);
+        emit("\tmv\t" + reg + ", a0");
+        argReg[i] = reg;
+        ++intUsed;
+      }
+    }
+
+    for (size_t i = 0; i < params.size(); ++i) {
+      const ArgLoc &loc = locs[i];
+      bool isFloat = !params[i].isArray && params[i].base == BaseType::Float;
+      if (loc.kind == ArgLoc::FloatReg) {
+        emit("\tfmv.s\tfa" + to_string(loc.index) + ", " + argReg[i]);
+      } else if (loc.kind == ArgLoc::IntReg) {
+        emit("\tmv\ta" + to_string(loc.index) + ", " + argReg[i]);
+      } else {
+        int dst = loc.index * 8;
+        if (isFloat) {
+          emitStoreMem("fsw", argReg[i], "sp", dst);
+        } else {
+          emitStoreMem("sd", argReg[i], "sp", dst);
+        }
+      }
+    }
+
+    emit("\tcall\t" + fn->asmName);
+    if (stackArea > 0) emitAdjustSp(stackArea);
+    return;
+  }
+
+  // Fallback: stack-based
   int tempSlots = static_cast<int>(params.size());
   int stackBytes = stackSlots * 8;
   int tempBase = stackBytes;
@@ -2080,6 +2146,75 @@ void CodeGen::emitCall(CallExpr *expr) {
     auto locs = computeArgLocations(params, fn->variadic, namedCount, &stackSlots);
 
     // 快路径已禁用：后续参数求值可能覆盖前面已放入 a1/a2... 的参数
+
+    // 优化路径：无嵌套调用时，求值到安全寄存器(t4-t6,ft)，省去 temp 栈槽
+    bool noNestedCall = optO1_ && !fn->injectLineArgument;
+    if (noNestedCall) {
+      for (size_t i = 0; i < args.size() && noNestedCall; ++i) {
+        if (!exprHasNoCall(args[i])) noNestedCall = false;
+      }
+      if (noNestedCall) {
+        // Count safe registers needed: t4-t6 = 3 int; ft0-ft7 = 8 float
+        int intNeeded = 0;
+        for (size_t i = 0; i < params.size(); ++i) {
+          if (params[i].isArray || params[i].base == BaseType::Int) ++intNeeded;
+        }
+        if (intNeeded > 3) noNestedCall = false;
+      }
+    }
+
+    if (noNestedCall) {
+      // Compute all args to safe registers
+      int intUsed = 0, floatUsed = 0;
+      vector<string> argReg(args.size()); // which register holds each arg
+
+      for (size_t i = 0; i < args.size(); ++i) {
+        emitExpr(args[i]);
+        ParamType expected = params[i];
+        Type target = expected.isArray ? Type::pointer(expected.base, expected.dims)
+                                       : Type::scalar(expected.base);
+        if (!expected.isArray) emitConvert(args[i]->type, target);
+
+        if (target.isPointer || expected.base == BaseType::Int) {
+          string reg = "t" + to_string(4 + intUsed);
+          emit("\tmv\t" + reg + ", a0");
+          argReg[i] = reg;
+          ++intUsed;
+        } else {
+          string reg = "ft" + to_string(floatUsed);
+          emit("\tfmv.s\t" + reg + ", fa0");
+          argReg[i] = reg;
+          ++floatUsed;
+        }
+      }
+
+      // Copy from safe registers to ABI registers / stack
+      int stackArea = stackSlots * 8;
+      if (stackArea > 0) emitAdjustSp(-alignTo(stackArea, 16));
+
+      for (size_t i = 0; i < params.size(); ++i) {
+        const ArgLoc &loc = locs[i];
+        bool isFloat = !params[i].isArray && params[i].base == BaseType::Float;
+        if (loc.kind == ArgLoc::FloatReg) {
+          emit("\tfmv.s\tfa" + to_string(loc.index) + ", " + argReg[i]);
+        } else if (loc.kind == ArgLoc::IntReg) {
+          emit("\tmv\ta" + to_string(loc.index) + ", " + argReg[i]);
+        } else {
+          int dst = loc.index * 8;
+          if (isFloat) {
+            emitStoreMem("fsw", argReg[i], "sp", dst);
+          } else {
+            emitStoreMem("sd", argReg[i], "sp", dst);
+          }
+        }
+      }
+
+      emit("\tcall\t" + fn->asmName);
+      if (stackArea > 0) emitAdjustSp(stackArea);
+      return;
+    }
+
+    // Fallback: stack-based arg passing
     int tempSlots = static_cast<int>(params.size());
     int stackBytes = stackSlots * 8;
     int tempBase = stackBytes;
