@@ -25,6 +25,70 @@ static int intLog2Positive32(int32_t v) {
   return r;
 }
 
+// Granlund-Montgomery: compute magic number and shift for signed division x/d
+// Returns magic=0 if d is not optimizable (d <= 1 or too large)
+static uint32_t computeSDivMagic(int32_t d, int &shift) {
+  if (d <= 1) return 0;
+  uint32_t ad = static_cast<uint32_t>(d);
+  uint32_t t = 0x80000000u;  // 2^31
+  uint32_t anc = t - 1 - t % ad;
+  int p = 31;
+  uint64_t q1 = 0x80000000u / anc;
+  uint64_t r1 = 0x80000000u - q1 * anc;
+  uint64_t q2 = 0x80000000u / ad;
+  uint64_t r2 = 0x80000000u - q2 * ad;
+  while (true) {
+    ++p;
+    q1 <<= 1; r1 <<= 1;
+    if (r1 >= anc) { ++q1; r1 -= anc; }
+    q2 <<= 1; r2 <<= 1;
+    if (r2 >= ad) { ++q2; r2 -= ad; }
+    uint64_t delta = ad - r2;
+    if (q1 < delta || (q1 == delta && r1 == 0)) continue;
+    break;
+  }
+  shift = p - 32;
+  return static_cast<uint32_t>(q2 + 1);
+}
+
+// Emit code for signed division a0 = a0 / d using magic multiply
+static bool emitSDivByConst(CodeGen &cg, int32_t d) {
+  if (d <= 1) return false;
+  int shift = 0;
+  uint32_t magic = computeSDivMagic(d, shift);
+  if (magic == 0 || shift < 0 || shift > 31) return false;
+  cg.emit("\tmv\tt2, a0");
+  cg.emit("\tli\tt1, " + to_string(static_cast<int32_t>(magic)));
+  cg.emit("\tmulh\ta0, a0, t1");
+  if (shift > 0) {
+    cg.emit("\tsrai\ta0, a0, " + to_string(shift));
+  }
+  cg.emit("\tsrai\tt2, t2, 31");
+  cg.emit("\tadd\ta0, a0, t2");
+  return true;
+}
+
+// Emit code for signed remainder a0 = a0 % d using magic multiply
+static bool emitSRemByConst(CodeGen &cg, int32_t d) {
+  if (d <= 1) return false;
+  int shift = 0;
+  uint32_t magic = computeSDivMagic(d, shift);
+  if (magic == 0 || shift < 0 || shift > 31) return false;
+  // r = x - (x/d)*d
+  cg.emit("\tmv\tt3, a0");                          // t3 = x
+  cg.emit("\tli\tt1, " + to_string(static_cast<int32_t>(magic)));
+  cg.emit("\tmulh\ta0, a0, t1");                    // high mul for quotient
+  if (shift > 0) {
+    cg.emit("\tsrai\ta0, a0, " + to_string(shift));
+  }
+  cg.emit("\tsrai\tt2, t3, 31");                    // sign bit
+  cg.emit("\tadd\ta0, a0, t2");                     // a0 = x/d
+  cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
+  cg.emit("\tmulw\ta0, a0, t1");                    // a0 = (x/d)*d
+  cg.emit("\tsubw\ta0, t3, a0");                    // a0 = x - (x/d)*d
+  return true;
+}
+
 // Emit optimal RISC-V code for a0 = a0 * k. Returns true if code was emitted.
 static bool emitMulByConst(CodeGen &cg, int32_t k) {
   if (k == 0) {
@@ -1093,6 +1157,13 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         markInt(in.dst);
         return;
       }
+      emitIrLoadVreg(in.u, false);
+      emit("\tmv\tt2, a0");
+      if (emitSDivByConst(*this, k)) {
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
     }
     emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
@@ -1101,13 +1172,42 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     markInt(in.dst);
     return;
   }
-  case IROp::Rem:
+  case IROp::Rem: {
+    if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
+      int32_t k = *kv;
+      int lg = intLog2Positive32(k);
+      if (lg >= 1) {
+        emitIrLoadVreg(in.u, false);
+        uint32_t mask = static_cast<uint32_t>(k) - 1;
+        emit("\tsraiw\tt1, a0, 31");
+        emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
+        emit("\taddw\ta0, a0, t1");
+        emit("\tandi\ta0, a0, " + to_string(static_cast<int>(mask)));
+        emit("\tsubw\ta0, a0, t1");
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
+      emitIrLoadVreg(in.u, false);
+      if (emitSRemByConst(*this, k)) {
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
+      emit("\tmv\tt2, a0");
+      emitIrLoadVreg(in.v, false);
+      emit("\tremw\ta0, t2, a0");
+      emitIrStoreVreg(in.dst, false);
+      markInt(in.dst);
+      return;
+    }
     emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
     emit("\tremw\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
+  }
   case IROp::Neg:
     emitIrLoadVreg(in.u, false);
     emit("\tnegw\ta0, a0");
@@ -1749,6 +1849,9 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             return;
           }
           emitExpr(expr->lhs.get());
+          if (optO1_ && emitSDivByConst(*this, k)) {
+            return;
+          }
           emit("\tmv\tt2, a0");
           emit("\tli\ta0, " + to_string(static_cast<int>(k)));
           emit("\tdivw\ta0, t2, a0");
@@ -1771,6 +1874,9 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             return;
           }
           emitExpr(expr->lhs.get());
+          if (optO1_ && emitSRemByConst(*this, k)) {
+            return;
+          }
           emit("\tmv\tt2, a0");
           emit("\tli\ta0, " + to_string(static_cast<int>(k)));
           emit("\tremw\ta0, t2, a0");
@@ -2033,6 +2139,8 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         emit("\tand\tt1, t1, a2");
         emit("\taddw\tt3, a0, t1");
         emit("\tsraiw\ta0, t3, " + to_string(lg));
+      } else if (emitSDivByConst(*this, k)) {
+        /* optimized by magic multiply */
       } else {
         emit("\tdivw\ta0, a0, a1");
       }
@@ -2067,6 +2175,8 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         emit("\taddw\ta0, a0, t1");
         emit("\tandi\ta0, a0, " + to_string(static_cast<int>(mask)));
         emit("\tsubw\ta0, a0, t1");
+      } else if (emitSRemByConst(*this, k)) {
+        /* optimized by magic multiply */
       } else {
         emit("\tremw\ta0, a0, a1");
       }
