@@ -121,10 +121,17 @@ void irOptimizeBlock(IRFunction &fn) {
     return knownFloat[root];
   };
 
+  // Store-to-load forwarding state (integrated into main loop)
+  unordered_map<Symbol *, int> fwdStore;   // symbol → last stored vreg
+
   vector<IRInst> out;
   out.reserve(fn.insts.size());
 
   for (IRInst in : fn.insts) {
+    // Memory-clobbering operations invalidate forwarding
+    if (in.op == IROp::StoreMem || in.op == IROp::Call) {
+      fwdStore.clear();
+    }
     if (sideEffecting(in)) {
       cse.clear();
     }
@@ -140,11 +147,58 @@ void irOptimizeBlock(IRFunction &fn) {
     }
     case IROp::LeaStr:
     case IROp::LeaGlobal:
+    case IROp::StoreLocal:
+      fwdStore[in.sym] = in.u;
+      in.u = remap(in.u);
+      in.v = remap(in.v);
+      out.push_back(in);
+      continue;
+    case IROp::StoreGlobal:
+      fwdStore[in.sym] = in.u;
+      in.u = remap(in.u);
+      in.v = remap(in.v);
+      out.push_back(in);
+      continue;
+    case IROp::LoadLocal: {
+      auto it = fwdStore.find(in.sym);
+      if (it != fwdStore.end() && in.dst >= 0) {
+        // Forward to Copy: reuse stored vreg
+        IRInst cp;
+        cp.op = IROp::Copy;
+        cp.dst = in.dst;
+        cp.u = remap(it->second);
+        out.push_back(cp);
+        if (in.dst >= 0 && in.dst < static_cast<int>(copyUF.size())) {
+          copyUF[in.dst] = findRoot(copyUF, remap(it->second));
+        }
+        continue;
+      }
+      fwdStore.erase(in.sym);
+      in.u = remap(in.u);
+      out.push_back(in);
+      continue;
+    }
+    case IROp::LoadGlobal: {
+      auto it = fwdStore.find(in.sym);
+      if (it != fwdStore.end() && in.dst >= 0) {
+        IRInst cp;
+        cp.op = IROp::Copy;
+        cp.dst = in.dst;
+        cp.u = remap(it->second);
+        out.push_back(cp);
+        if (in.dst >= 0 && in.dst < static_cast<int>(copyUF.size())) {
+          copyUF[in.dst] = findRoot(copyUF, remap(it->second));
+        }
+        continue;
+      }
+      fwdStore.erase(in.sym);
+      in.u = remap(in.u);
+      out.push_back(in);
+      continue;
+    }
     case IROp::LeaLocal:
     case IROp::LoadParamAddr:
     case IROp::StoreMem:
-    case IROp::StoreLocal:
-    case IROp::StoreGlobal:
     case IROp::Call:
     case IROp::Ret:
     case IROp::Nop:
@@ -503,14 +557,6 @@ void irOptimizeBlock(IRFunction &fn) {
     }
     case IROp::LoadMem:
       k = Key{in.op, static_cast<uint64_t>(static_cast<uint32_t>(in.u)), 0, 0, in.isFloat};
-      folded = tryCse(k);
-      if (!folded) {
-        cse[k] = in.dst;
-      }
-      break;
-    case IROp::LoadLocal:
-    case IROp::LoadGlobal:
-      k = Key{in.op, reinterpret_cast<uint64_t>(in.sym), 0, 0, in.isFloat};
       folded = tryCse(k);
       if (!folded) {
         cse[k] = in.dst;
