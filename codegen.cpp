@@ -50,6 +50,93 @@ static bool exprIsLeaf(Expr *e) {
   }
 }
 
+static bool exprHasNoCall(Expr *e) {
+  if (!e) return true;
+  switch (e->kind) {
+  case ExprKind::Number:
+  case ExprKind::String:
+    return true;
+  case ExprKind::LVal: {
+    auto *lv = static_cast<LValExpr *>(e);
+    for (auto &ix : lv->indices) {
+      if (!exprHasNoCall(ix.get())) return false;
+    }
+    return true;
+  }
+  case ExprKind::Unary:
+    return exprHasNoCall(static_cast<UnaryExpr *>(e)->expr.get());
+  case ExprKind::Binary: {
+    auto *b = static_cast<BinaryExpr *>(e);
+    return exprHasNoCall(b->lhs.get()) && exprHasNoCall(b->rhs.get());
+  }
+  case ExprKind::Call:
+    return false;
+  }
+  return false;
+}
+
+static bool stmtHasCall(Stmt *s);
+static bool exprHasCall(Expr *e) {
+  if (!e) return false;
+  if (e->kind == ExprKind::Call) return true;
+  if (e->kind == ExprKind::Unary)
+    return exprHasCall(static_cast<UnaryExpr *>(e)->expr.get());
+  if (e->kind == ExprKind::Binary) {
+    auto *b = static_cast<BinaryExpr *>(e);
+    return exprHasCall(b->lhs.get()) || exprHasCall(b->rhs.get());
+  }
+  if (e->kind == ExprKind::LVal) {
+    auto *lv = static_cast<LValExpr *>(e);
+    for (auto &ix : lv->indices)
+      if (exprHasCall(ix.get())) return true;
+    return false;
+  }
+  return false;
+}
+static bool stmtHasCall(Stmt *s) {
+  if (!s) return false;
+  switch (s->kind) {
+  case StmtKind::Expr: {
+    auto *es = static_cast<ExprStmt *>(s);
+    return es->expr && exprHasCall(es->expr.get());
+  }
+  case StmtKind::Assign: {
+    auto *as = static_cast<AssignStmt *>(s);
+    for (auto &ix : as->lhs->indices)
+      if (exprHasCall(ix.get())) return true;
+    return exprHasCall(as->rhs.get());
+  }
+  case StmtKind::Decl: {
+    auto *d = static_cast<DeclStmt *>(s);
+    for (auto &vd : d->defs) {
+      if (vd.init && !vd.init->isList && vd.init->expr && exprHasCall(vd.init->expr.get()))
+        return true;
+    }
+    return false;
+  }
+  case StmtKind::Block: {
+    auto *b = static_cast<BlockStmt *>(s);
+    for (auto &it : b->items)
+      if (stmtHasCall(it.get())) return true;
+    return false;
+  }
+  case StmtKind::If: {
+    auto *ifs = static_cast<IfStmt *>(s);
+    return exprHasCall(ifs->cond.get()) || stmtHasCall(ifs->thenStmt.get()) ||
+           (ifs->elseStmt && stmtHasCall(ifs->elseStmt.get()));
+  }
+  case StmtKind::While: {
+    auto *w = static_cast<WhileStmt *>(s);
+    return exprHasCall(w->cond.get()) || stmtHasCall(w->body.get());
+  }
+  case StmtKind::Return: {
+    auto *r = static_cast<ReturnStmt *>(s);
+    return r->expr && exprHasCall(r->expr.get());
+  }
+  default: return false;
+  }
+}
+
 // namedCount: params[0 .. namedCount-1] 为固定形参；其后为 C 变参（须按整数 ABI 传递，
 // 见 RISC-V ELF psABI：variadic arguments follow the integer calling convention）。
 static vector<ArgLoc> computeArgLocations(const vector<ParamType> &params,
@@ -231,10 +318,13 @@ void CodeGen::emitFunction(FuncDef &def) {
       irSpillBase_ = 0;
       irTotalFrame_ = frame;
     }
+    bool leaf = !stmtHasCall(def.body.get());
     emitAdjustSp(-frame);
     emit("\tli\tt0, " + to_string(frame));
     emit("\tadd\tt0, sp, t0");
-    emit("\tsd\tra, -8(t0)");
+    if (!leaf) {
+      emit("\tsd\tra, -8(t0)");
+    }
     emit("\tsd\ts0, -16(t0)");
     emit("\tmv\ts0, t0");
     emitStoreParams(def);
@@ -249,7 +339,9 @@ void CodeGen::emitFunction(FuncDef &def) {
       emit("\tfmv.w.x\tfa0, zero");
     }
     emit(currentFunction_->returnLabel + ":");
-    emit("\tld\tra, -8(s0)");
+    if (!leaf) {
+      emit("\tld\tra, -8(s0)");
+    }
     emit("\tld\tt0, -16(s0)");
     emit("\tmv\tsp, s0");
     emit("\tmv\ts0, t0");
@@ -1118,11 +1210,15 @@ void CodeGen::emitStoreToAddress(BaseType base, AddressEmitter emitAddressToA1) 
   }
 
 void CodeGen::emitAssign(AssignStmt &stmt) {
+    bool lhsFloat = stmt.lhs->symbol->base == BaseType::Float;
+    // 快路径已禁用：RHS 求值可能覆盖 t4，导致功能错误
+
     emitLValAddress(stmt.lhs.get());
+
     emitPushInt("a0");
     emitExpr(stmt.rhs.get());
     emitConvert(stmt.rhs->type, Type::scalar(stmt.lhs->symbol->base));
-    if (stmt.lhs->symbol->base == BaseType::Float) {
+    if (lhsFloat) {
       emitPopInt("a1");
       emit("\tfsw\tfa0, 0(a1)");
     } else {
@@ -1863,6 +1959,8 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
     if (expr->indices.empty()) {
       return;
     }
+    // 快路径已禁用：emitExpr 会使用 t3/t1/t2，破坏 t5/t3 中保存的基址和偏移
+    // Fallback: stack-based accumulation
     emitPushInt("a0");
     emit("\tli\ta0, 0");
     emitPushInt("a0");
@@ -1928,6 +2026,8 @@ void CodeGen::emitCall(CallExpr *expr) {
 
     int stackSlots = 0;
     auto locs = computeArgLocations(params, fn->variadic, namedCount, &stackSlots);
+
+    // 快路径已禁用：后续参数求值可能覆盖前面已放入 a1/a2... 的参数
     int tempSlots = static_cast<int>(params.size());
     int stackBytes = stackSlots * 8;
     int tempBase = stackBytes;
