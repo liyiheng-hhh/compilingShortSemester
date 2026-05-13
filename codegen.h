@@ -6,6 +6,7 @@
 
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -43,6 +44,9 @@ private:
   int irLastVregInFa0_ = -1;
   bool irSkipStore_ = false;
   std::vector<bool> irSkipStoreVregs_;
+  bool irSkippedLast_ = false;
+  int irSkippedVreg_ = -1;
+  std::unordered_map<Symbol *, std::string> irParamCache_;
 
   int irVregSlotOffset(int vid) const;
 
@@ -51,6 +55,8 @@ private:
   void emitIrLoadVregTo(int vid, const string &reg);
 
   void emitIrStoreVreg(int vid, bool asFloat);
+
+  void emitIrFlushSkipped();
 
   void emitIrFunction(FuncDef &def, IRFunction &ir);
 

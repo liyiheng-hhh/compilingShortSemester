@@ -396,6 +396,27 @@ void CodeGen::emitFunction(FuncDef &def) {
     emit("\tsd\ts0, -16(t0)");
     emit("\tmv\ts0, t0");
     emitStoreParams(def);
+
+    // IR leaf functions: cache integer params in t4-t6 for fast LoadLocal
+    irParamCache_.clear();
+    if (useIr && leaf) {
+      vector<ParamType> ptypes;
+      for (const Param &p : def.params) {
+        ptypes.push_back(ParamType{p.base, p.isArray, p.dims});
+      }
+      auto plocs = computeArgLocations(ptypes, false, ptypes.size(), nullptr);
+      int ti = 0;
+      for (size_t i = 0; i < def.params.size() && ti < 3; ++i) {
+        if (!def.params[i].isArray && def.params[i].base == BaseType::Int &&
+            plocs[i].kind == ArgLoc::IntReg) {
+          string treg = "t" + to_string(4 + ti);
+          emit("\tmv\t" + treg + ", a" + to_string(plocs[i].index));
+          irParamCache_[def.params[i].symbol] = treg;
+          ++ti;
+        }
+      }
+    }
+
     if (useIr) {
       emitIrFunction(def, irBuf);
     } else {
@@ -456,9 +477,11 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
   if (vid < 0) {
     return;
   }
-  // Skip spill for single-use vregs: value stays in a0/fa0 for next instruction
+  // Skip spill for single-use vregs: keep in a0 for next instruction
   if (irSkipStore_ && vid < static_cast<int>(irSkipStoreVregs_.size()) &&
       irSkipStoreVregs_[static_cast<size_t>(vid)]) {
+    irSkippedLast_ = true;
+    irSkippedVreg_ = vid;
     if (asFloat) {
       irLastVregInFa0_ = vid;
     } else {
@@ -466,6 +489,9 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
     }
     return;
   }
+  // Normal spill
+  irSkippedLast_ = false;
+  irSkippedVreg_ = -1;
   int off = irVregSlotOffset(vid);
   if (asFloat) {
     emitStoreMem("fsw", "fa0", "s0", off);
@@ -475,6 +501,16 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
     emitStoreMem("sw", "a0", "s0", off);
     irLastVregInA0_ = vid;
     irLastVregInFa0_ = -1;
+  }
+}
+
+// Spill previously skipped vreg if not yet stored (called before a0 is overwritten)
+void CodeGen::emitIrFlushSkipped() {
+  if (irSkippedLast_ && irSkippedVreg_ >= 0) {
+    int off = irVregSlotOffset(irSkippedVreg_);
+    emitStoreMem("sw", "a0", "s0", off);
+    irSkippedLast_ = false;
+    irSkippedVreg_ = -1;
   }
 }
 
@@ -566,6 +602,8 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
 
   irLastVregInA0_ = -1;
   irLastVregInFa0_ = -1;
+  irSkippedLast_ = false;
+  irSkippedVreg_ = -1;
   for (size_t i = 0; i < ir.insts.size(); ++i) {
     IROp op = ir.insts[i].op;
     if (op == IROp::Call || op == IROp::Ret ||
@@ -573,8 +611,13 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
         op == IROp::LeaStr || op == IROp::LeaGlobal ||
         op == IROp::LeaLocal || op == IROp::LoadParamAddr ||
         op == IROp::Nop) {
+      emitIrFlushSkipped();
       irLastVregInA0_ = -1;
       irLastVregInFa0_ = -1;
+    }
+    // Also flush before LoadLocal with param cache (mv a0, tN overwrites a0)
+    if (op == IROp::LoadLocal && !irParamCache_.empty()) {
+      emitIrFlushSkipped();
     }
     emitIrInst(def, ir, ir.insts[i], i);
   }
@@ -875,18 +918,26 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       markInt(in.dst);
     }
     return;
-  case IROp::LoadLocal:
-    emitAddOffset("t0", "s0", in.sym->offset);
-    if (in.isFloat) {
-      emit("\tflw\tfa0, 0(t0)");
-      emitIrStoreVreg(in.dst, true);
-      markFl(in.dst);
-    } else {
-      emit("\tlw\ta0, 0(t0)");
+  case IROp::LoadLocal: {
+    auto pit = irParamCache_.find(in.sym);
+    if (pit != irParamCache_.end() && !in.isFloat) {
+      emit("\tmv\ta0, " + pit->second);
       emitIrStoreVreg(in.dst, false);
       markInt(in.dst);
+    } else {
+      emitAddOffset("t0", "s0", in.sym->offset);
+      if (in.isFloat) {
+        emit("\tflw\tfa0, 0(t0)");
+        emitIrStoreVreg(in.dst, true);
+        markFl(in.dst);
+      } else {
+        emit("\tlw\ta0, 0(t0)");
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+      }
     }
     return;
+  }
   case IROp::LoadMem:
     emitIrLoadVregTo(in.u, "t2");
     if (in.isFloat) {
