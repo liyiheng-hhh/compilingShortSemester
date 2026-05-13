@@ -519,26 +519,61 @@ int CodeGen::irVregSlotOffset(int vid) const {
 }
 
 void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
-  if (vid < 0) {
-    return;
-  }
-  if (asFloat && irLastVregInFa0_ == vid) return;
-  if (!asFloat && irLastVregInA0_ == vid) return;
-  int off = irVregSlotOffset(vid);
+  if (vid < 0) return;
   if (asFloat) {
+    if (irLastVregInFa0_ == vid) return;
+    if (irCacheFt0_ == vid) {
+      emit("\tfmv.s\tfa0, ft0");
+      irCacheFt0_ = irLastVregInFa0_;
+      irLastVregInFa0_ = vid;
+      return;
+    }
+    int off = irVregSlotOffset(vid);
     emitLoadMem("flw", "fa0", "s0", off);
+    irCacheFt0_ = irLastVregInFa0_;
     irLastVregInFa0_ = vid;
-    irLastVregInA0_ = -1;
   } else {
+    if (irLastVregInA0_ == vid) return;
+    // Check t4 cache: hit → mv a0,t4; rotate
+    if (irCacheT4_ == vid) {
+      emit("\tmv\ta0, t4");
+      irCacheT4_ = irLastVregInA0_;
+      irLastVregInA0_ = vid;
+      return;
+    }
+    // Check t5 cache: hit → mv a0,t5; rotate
+    if (irCacheT5_ == vid) {
+      emit("\tmv\ta0, t5");
+      irCacheT5_ = irCacheT4_;
+      irCacheT4_ = irLastVregInA0_;
+      irLastVregInA0_ = vid;
+      return;
+    }
+    int off = irVregSlotOffset(vid);
     emitLoadMem("lw", "a0", "s0", off);
+    // Shift cache: t5←t4, t4←old-a0, a0←vid
+    irCacheT5_ = irCacheT4_;
+    irCacheT4_ = irLastVregInA0_;
     irLastVregInA0_ = vid;
-    irLastVregInFa0_ = -1;
   }
 }
 
 // Load vreg into specified integer register (not a0), without tracking update
 void CodeGen::emitIrLoadVregTo(int vid, const string &reg) {
   if (vid < 0) return;
+  // Check cache first
+  if (irLastVregInA0_ == vid) {
+    emit("\tmv\t" + reg + ", a0");
+    return;
+  }
+  if (irCacheT4_ == vid) {
+    emit("\tmv\t" + reg + ", t4");
+    return;
+  }
+  if (irCacheT5_ == vid) {
+    emit("\tmv\t" + reg + ", t5");
+    return;
+  }
   int off = irVregSlotOffset(vid);
   emitLoadMem("lw", reg, "s0", off);
 }
@@ -559,18 +594,19 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
     }
     return;
   }
-  // Normal spill
+  // Normal spill: rotate register cache
   irSkippedLast_ = false;
   irSkippedVreg_ = -1;
   int off = irVregSlotOffset(vid);
   if (asFloat) {
     emitStoreMem("fsw", "fa0", "s0", off);
+    irCacheFt0_ = irLastVregInFa0_;
     irLastVregInFa0_ = vid;
-    irLastVregInA0_ = -1;
   } else {
     emitStoreMem("sw", "a0", "s0", off);
+    irCacheT5_ = irCacheT4_;
+    irCacheT4_ = irLastVregInA0_;
     irLastVregInA0_ = vid;
-    irLastVregInFa0_ = -1;
   }
 }
 
@@ -672,6 +708,9 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
 
   irLastVregInA0_ = -1;
   irLastVregInFa0_ = -1;
+  irCacheT4_ = -1;
+  irCacheT5_ = -1;
+  irCacheFt0_ = -1;
   irSkippedLast_ = false;
   irSkippedVreg_ = -1;
   for (size_t i = 0; i < ir.insts.size(); ++i) {
@@ -684,8 +723,10 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
       emitIrFlushSkipped();
       irLastVregInA0_ = -1;
       irLastVregInFa0_ = -1;
+      irCacheT4_ = -1;
+      irCacheT5_ = -1;
+      irCacheFt0_ = -1;
     }
-    // Also flush before LoadLocal with param cache (mv a0, tN overwrites a0)
     if (op == IROp::LoadLocal && !irParamCache_.empty()) {
       emitIrFlushSkipped();
     }

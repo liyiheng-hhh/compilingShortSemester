@@ -42,6 +42,10 @@ private:
   vector<int> irVregSlots_;
   int irLastVregInA0_ = -1;
   int irLastVregInFa0_ = -1;
+  // Multi-register cache: keep 3 int vregs in a0/t4/t5, 2 float in fa0/ft0
+  int irCacheT4_ = -1;
+  int irCacheT5_ = -1;
+  int irCacheFt0_ = -1;
   bool irSkipStore_ = false;
   std::vector<bool> irSkipStoreVregs_;
   bool irSkippedLast_ = false;
