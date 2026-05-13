@@ -25,6 +25,31 @@ static int intLog2Positive32(int32_t v) {
   return r;
 }
 
+static bool exprIsLeaf(Expr *e) {
+  if (!e) {
+    return true;
+  }
+  switch (e->kind) {
+  case ExprKind::Number:
+    return true;
+  case ExprKind::String:
+    return true;
+  case ExprKind::LVal: {
+    auto *lv = static_cast<LValExpr *>(e);
+    for (auto &ix : lv->indices) {
+      if (!exprIsLeaf(ix.get())) {
+        return false;
+      }
+    }
+    return true;
+  }
+  case ExprKind::Unary:
+    return exprIsLeaf(static_cast<UnaryExpr *>(e)->expr.get());
+  default:
+    return false;
+  }
+}
+
 // namedCount: params[0 .. namedCount-1] 为固定形参；其后为 C 变参（须按整数 ABI 传递，
 // 见 RISC-V ELF psABI：variadic arguments follow the integer calling convention）。
 static vector<ArgLoc> computeArgLocations(const vector<ParamType> &params,
@@ -575,13 +600,13 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   case IROp::LoadMem:
     emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt0, a0");
+    emit("\tmv\tt2, a0");
     if (in.isFloat) {
-      emit("\tflw\tfa0, 0(t0)");
+      emit("\tflw\tfa0, 0(t2)");
       emitIrStoreVreg(in.dst, true);
       markFl(in.dst);
     } else {
-      emit("\tlw\ta0, 0(t0)");
+      emit("\tlw\ta0, 0(t2)");
       emitIrStoreVreg(in.dst, false);
       markInt(in.dst);
     }
@@ -614,50 +639,140 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       emit("\tsw\ta0, 0(t1)");
     }
     return;
-  case IROp::Add:
+  case IROp::Add: {
+    if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
+      int32_t k = *kv;
+      if (fitsImm12(static_cast<int>(k))) {
+        emitIrLoadVreg(in.u, false);
+        emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(k)));
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
+    }
+    if (auto ku = irTraceConstI(ir, in.u, instIdx)) {
+      int32_t k = *ku;
+      if (fitsImm12(static_cast<int>(k))) {
+        emitIrLoadVreg(in.v, false);
+        emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(k)));
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
+    }
     emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt0, a0");
+    emit("\tmv\tt2, a0");
     emitIrLoadVreg(in.v, false);
-    emit("\taddw\ta0, t0, a0");
+    emit("\taddw\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
-  case IROp::Sub:
+  }
+  case IROp::Sub: {
+    if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
+      int64_t nk = -static_cast<int64_t>(*kv);
+      if (nk >= -2048 && nk <= 2047) {
+        emitIrLoadVreg(in.u, false);
+        emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(nk)));
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
+    }
     emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt0, a0");
+    emit("\tmv\tt2, a0");
     emitIrLoadVreg(in.v, false);
-    emit("\tsubw\ta0, t0, a0");
+    emit("\tsubw\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
-  case IROp::Mul:
+  }
+  case IROp::Mul: {
+    auto tryMulConst = [&](int constV, int otherV) -> bool {
+      optional<int32_t> ck = irTraceConstI(ir, constV, instIdx);
+      if (!ck) {
+        return false;
+      }
+      int32_t k = *ck;
+      if (k == 0) {
+        emit("\tli\ta0, 0");
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return true;
+      }
+      if (k == 1) {
+        emitIrLoadVreg(otherV, false);
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return true;
+      }
+      if (k == -1) {
+        emitIrLoadVreg(otherV, false);
+        emit("\tnegw\ta0, a0");
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return true;
+      }
+      int lg = intLog2Positive32(k > 0 ? k : 0);
+      if (lg >= 0) {
+        emitIrLoadVreg(otherV, false);
+        emit("\tslliw\ta0, a0, " + to_string(lg));
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return true;
+      }
+      return false;
+    };
+    if (tryMulConst(in.v, in.u)) {
+      return;
+    }
+    if (tryMulConst(in.u, in.v)) {
+      return;
+    }
     emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt0, a0");
+    emit("\tmv\tt2, a0");
     emitIrLoadVreg(in.v, false);
-    emit("\tmulw\tt2, t0, a0");
-    emit("\tmv\ta0, t2");
+    emit("\tmulw\tt3, t2, a0");
+    emit("\tmv\ta0, t3");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
+  }
   case IROp::Sll:
     emitIrLoadVreg(in.u, false);
     emit("\tslliw\ta0, a0, " + to_string(in.immI));
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
-  case IROp::Div:
+  case IROp::Div: {
+    if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
+      int32_t k = *kv;
+      int lg = intLog2Positive32(k);
+      if (k > 0 && lg >= 0) {
+        emitIrLoadVreg(in.u, false);
+        emit("\tli\ta2, " + to_string(static_cast<int>(k - 1)));
+        emit("\tsraiw\tt1, a0, 31");
+        emit("\tand\tt1, t1, a2");
+        emit("\taddw\tt3, a0, t1");
+        emit("\tsraiw\ta0, t3, " + to_string(lg));
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
+    }
     emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt0, a0");
+    emit("\tmv\tt2, a0");
     emitIrLoadVreg(in.v, false);
-    emit("\tdivw\ta0, t0, a0");
+    emit("\tdivw\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
+  }
   case IROp::Rem:
     emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt0, a0");
+    emit("\tmv\tt2, a0");
     emitIrLoadVreg(in.v, false);
-    emit("\tremw\ta0, t0, a0");
+    emit("\tremw\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
@@ -669,9 +784,9 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   case IROp::Slt:
     emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt0, a0");
+    emit("\tmv\tt2, a0");
     emitIrLoadVreg(in.v, false);
-    emit("\tslt\ta0, t0, a0");
+    emit("\tslt\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
@@ -907,30 +1022,36 @@ void CodeGen::emitDecl(DeclStmt &decl) {
       if (!def.init) {
         string zeroLoop = newLabel("zero_array");
         string zeroEnd = newLabel("zero_array_end");
-        emitAddOffset("t0", "s0", sym->offset);
+        emitAddOffset("t3", "s0", sym->offset);
         emit("\tli\tt1, " + to_string(total * 4));
         emit(zeroLoop + ":");
         emit("\tbeqz\tt1, " + zeroEnd);
-        emit("\tsw\tzero, 0(t0)");
-        emit("\taddi\tt0, t0, 4");
+        emit("\tsw\tzero, 0(t3)");
+        emit("\taddi\tt3, t3, 4");
         emit("\taddi\tt1, t1, -4");
         emit("\tj\t" + zeroLoop);
         emit(zeroEnd + ":");
         continue;
       }
-      string zeroLoop = newLabel("zero_array");
-      string zeroEnd = newLabel("zero_array_end");
-      emitAddOffset("t0", "s0", sym->offset);
-      emit("\tli\tt1, " + to_string(total * 4));
-      emit(zeroLoop + ":");
-      emit("\tbeqz\tt1, " + zeroEnd);
-      emit("\tsw\tzero, 0(t0)");
-      emit("\taddi\tt0, t0, 4");
-      emit("\taddi\tt1, t1, -4");
-      emit("\tj\t" + zeroLoop);
-      emit(zeroEnd + ":");
       vector<InitVal *> flat(total, nullptr);
       flattenRuntimeInit(def.init.get(), sym->dims, 0, 0, flat);
+      int initCount = 0;
+      for (int i = 0; i < total; ++i) {
+        if (flat[i]) ++initCount;
+      }
+      if (initCount < total) {
+        string zeroLoop = newLabel("zero_array");
+        string zeroEnd = newLabel("zero_array_end");
+        emitAddOffset("t3", "s0", sym->offset);
+        emit("\tli\tt1, " + to_string(total * 4));
+        emit(zeroLoop + ":");
+        emit("\tbeqz\tt1, " + zeroEnd);
+        emit("\tsw\tzero, 0(t3)");
+        emit("\taddi\tt3, t3, 4");
+        emit("\taddi\tt1, t1, -4");
+        emit("\tj\t" + zeroLoop);
+        emit(zeroEnd + ":");
+      }
       for (int i = 0; i < total; ++i) {
         if (!flat[i]) {
           continue;
@@ -1006,9 +1127,9 @@ void CodeGen::emitAssign(AssignStmt &stmt) {
       emit("\tfsw\tfa0, 0(a1)");
     } else {
       emitPushInt("a0");
-      emitPopInt("t0");
+      emitPopInt("t2");
       emitPopInt("a1");
-      emit("\tsw\tt0, 0(a1)");
+      emit("\tsw\tt2, 0(a1)");
     }
   }
 
@@ -1172,11 +1293,11 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         } else if (op == ">") {
           emit("\tslt\ta0, zero, a0");
         } else if (op == "<=") {
-          emit("\tslt\tt0, zero, a0");
-          emit("\tseqz\ta0, t0");
+          emit("\tslt\tt3, zero, a0");
+          emit("\tseqz\ta0, t3");
         } else if (op == ">=") {
-          emit("\tslt\tt0, a0, zero");
-          emit("\tseqz\ta0, t0");
+          emit("\tslt\tt3, a0, zero");
+          emit("\tseqz\ta0, t3");
         }
         return;
       }
@@ -1192,11 +1313,11 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         } else if (op == ">") {
           emit("\tslt\ta0, a0, zero");
         } else if (op == "<=") {
-          emit("\tslt\tt0, a0, zero");
-          emit("\tseqz\ta0, t0");
+          emit("\tslt\tt3, a0, zero");
+          emit("\tseqz\ta0, t3");
         } else if (op == ">=") {
-          emit("\tslt\tt0, zero, a0");
-          emit("\tseqz\ta0, t0");
+          emit("\tslt\tt3, zero, a0");
+          emit("\tseqz\ta0, t3");
         }
         return;
       }
@@ -1216,6 +1337,250 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
       }
     }
 
+    // Register-based integer arithmetic path (avoids push/pop)
+    if (optO1_ && !useFloat && !compare &&
+        exprIsLeaf(expr->lhs.get()) && exprIsLeaf(expr->rhs.get())) {
+      // Constant RHS: evaluate LHS and apply immediate or loaded constant
+      if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
+        int32_t k = constAsInt(expr->rhs->constVal);
+        if (op == "+") {
+          if (k == 0) {
+            emitExpr(expr->lhs.get());
+            return;
+          }
+          emitExpr(expr->lhs.get());
+          if (fitsImm12(static_cast<int>(k))) {
+            emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(k)));
+          } else {
+            emit("\tli\tt3, " + to_string(static_cast<int>(k)));
+            emit("\taddw\ta0, a0, t3");
+          }
+          return;
+        }
+        if (op == "-") {
+          if (k == 0) {
+            emitExpr(expr->lhs.get());
+            return;
+          }
+          emitExpr(expr->lhs.get());
+          int neg = -static_cast<int>(k);
+          if (fitsImm12(neg)) {
+            emit("\taddiw\ta0, a0, " + to_string(neg));
+          } else {
+            emit("\tli\tt3, " + to_string(static_cast<int>(k)));
+            emit("\tsubw\ta0, a0, t3");
+          }
+          return;
+        }
+        if (op == "*") {
+          if (k == 0) {
+            emit("\tli\ta0, 0");
+            return;
+          }
+          if (k == 1) {
+            emitExpr(expr->lhs.get());
+            return;
+          }
+          if (k == -1) {
+            emitExpr(expr->lhs.get());
+            emit("\tnegw\ta0, a0");
+            return;
+          }
+          int lg = intLog2Positive32(k);
+          if (lg >= 0) {
+            emitExpr(expr->lhs.get());
+            emit("\tslliw\ta0, a0, " + to_string(lg));
+            return;
+          }
+          // Strength reduction for small constants: mul via shift-add
+          if (k == 3) {
+            emitExpr(expr->lhs.get());
+            emit("\tslliw\tt2, a0, 1");
+            emit("\taddw\ta0, t2, a0");
+            return;
+          }
+          if (k == 5) {
+            emitExpr(expr->lhs.get());
+            emit("\tslliw\tt2, a0, 2");
+            emit("\taddw\ta0, t2, a0");
+            return;
+          }
+          if (k == 6) {
+            emitExpr(expr->lhs.get());
+            emit("\tslliw\tt2, a0, 2");
+            emit("\tslliw\tt1, a0, 1");
+            emit("\taddw\ta0, t2, t1");
+            return;
+          }
+          if (k == 7) {
+            emitExpr(expr->lhs.get());
+            emit("\tslliw\tt2, a0, 3");
+            emit("\tsubw\ta0, t2, a0");
+            return;
+          }
+          if (k == 9) {
+            emitExpr(expr->lhs.get());
+            emit("\tslliw\tt2, a0, 3");
+            emit("\taddw\ta0, t2, a0");
+            return;
+          }
+          if (k == 10) {
+            emitExpr(expr->lhs.get());
+            emit("\tslliw\tt2, a0, 3");
+            emit("\tslliw\tt1, a0, 1");
+            emit("\taddw\ta0, t2, t1");
+            return;
+          }
+          emitExpr(expr->lhs.get());
+          emit("\tli\tt3, " + to_string(static_cast<int>(k)));
+          emit("\tmulw\ta0, a0, t3");
+          return;
+        }
+        if (op == "/") {
+          if (k == 1) {
+            emitExpr(expr->lhs.get());
+            return;
+          }
+          int lg = intLog2Positive32(k);
+          if (k > 0 && lg >= 0) {
+            emitExpr(expr->lhs.get());
+            emit("\tli\ta2, " + to_string(k - 1));
+            emit("\tsraiw\tt1, a0, 31");
+            emit("\tand\tt1, t1, a2");
+            emit("\taddw\tt3, a0, t1");
+            emit("\tsraiw\ta0, t3, " + to_string(lg));
+            return;
+          }
+          emitExpr(expr->lhs.get());
+          emit("\tmv\tt2, a0");
+          emit("\tli\ta0, " + to_string(static_cast<int>(k)));
+          emit("\tdivw\ta0, t2, a0");
+          return;
+        }
+        if (op == "%") {
+          if (k == 1) {
+            emit("\tli\ta0, 0");
+            return;
+          }
+          int lg = intLog2Positive32(k);
+          if (lg >= 1) {
+            emitExpr(expr->lhs.get());
+            uint32_t mask = static_cast<uint32_t>(k) - 1;
+            emit("\tsraiw\tt1, a0, 31");
+            emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
+            emit("\taddw\ta0, a0, t1");
+            emit("\tandi\ta0, a0, " + to_string(static_cast<int>(mask)));
+            emit("\tsubw\ta0, a0, t1");
+            return;
+          }
+          emitExpr(expr->lhs.get());
+          emit("\tmv\tt2, a0");
+          emit("\tli\ta0, " + to_string(static_cast<int>(k)));
+          emit("\tremw\ta0, t2, a0");
+          return;
+        }
+      }
+      // Constant LHS (commutative ops: +, *)
+      if (expr->lhs->isConst && expr->lhs->constVal.type == BaseType::Int) {
+        int32_t k = constAsInt(expr->lhs->constVal);
+        if (op == "+") {
+          if (k == 0) {
+            emitExpr(expr->rhs.get());
+            return;
+          }
+          emitExpr(expr->rhs.get());
+          if (fitsImm12(static_cast<int>(k))) {
+            emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(k)));
+          } else {
+            emit("\tli\tt3, " + to_string(static_cast<int>(k)));
+            emit("\taddw\ta0, a0, t3");
+          }
+          return;
+        }
+        if (op == "*") {
+          if (k == 0) {
+            emit("\tli\ta0, 0");
+            return;
+          }
+          if (k == 1) {
+            emitExpr(expr->rhs.get());
+            return;
+          }
+          if (k == -1) {
+            emitExpr(expr->rhs.get());
+            emit("\tnegw\ta0, a0");
+            return;
+          }
+          int lg = intLog2Positive32(k);
+          if (lg >= 0) {
+            emitExpr(expr->rhs.get());
+            emit("\tslliw\ta0, a0, " + to_string(lg));
+            return;
+          }
+          // Strength reduction for small constants
+          if (k == 3) {
+            emitExpr(expr->rhs.get());
+            emit("\tslliw\tt2, a0, 1");
+            emit("\taddw\ta0, t2, a0");
+            return;
+          }
+          if (k == 5) {
+            emitExpr(expr->rhs.get());
+            emit("\tslliw\tt2, a0, 2");
+            emit("\taddw\ta0, t2, a0");
+            return;
+          }
+          if (k == 6) {
+            emitExpr(expr->rhs.get());
+            emit("\tslliw\tt2, a0, 2");
+            emit("\tslliw\tt1, a0, 1");
+            emit("\taddw\ta0, t2, t1");
+            return;
+          }
+          if (k == 7) {
+            emitExpr(expr->rhs.get());
+            emit("\tslliw\tt2, a0, 3");
+            emit("\tsubw\ta0, t2, a0");
+            return;
+          }
+          if (k == 9) {
+            emitExpr(expr->rhs.get());
+            emit("\tslliw\tt2, a0, 3");
+            emit("\taddw\ta0, t2, a0");
+            return;
+          }
+          if (k == 10) {
+            emitExpr(expr->rhs.get());
+            emit("\tslliw\tt2, a0, 3");
+            emit("\tslliw\tt1, a0, 1");
+            emit("\taddw\ta0, t2, t1");
+            return;
+          }
+          emitExpr(expr->rhs.get());
+          emit("\tli\tt3, " + to_string(static_cast<int>(k)));
+          emit("\tmulw\ta0, a0, t3");
+          return;
+        }
+      }
+      // General case: evaluate LHS to t0, RHS to a0, combine
+      emitExpr(expr->lhs.get());
+      emit("\tmv\tt0, a0");
+      emitExpr(expr->rhs.get());
+      if (op == "+") {
+        emit("\taddw\ta0, t0, a0");
+      } else if (op == "-") {
+        emit("\tsubw\ta0, t0, a0");
+      } else if (op == "*") {
+        emit("\tmulw\ta0, t0, a0");
+      } else if (op == "/") {
+        emit("\tdivw\ta0, t0, a0");
+      } else if (op == "%") {
+        emit("\tremw\ta0, t0, a0");
+      }
+      return;
+    }
+
+    // Fallback: push/pop-based evaluation
     emitExpr(expr->lhs.get());
     if (expr->lhs->type.isFloatScalar()) {
       emitPushFloat("fa0");
@@ -1233,8 +1598,8 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
       if (expr->lhs->type.isFloatScalar()) {
         emitPopFloat("ft0");
       } else {
-        emitPopInt("t0");
-        emit("\tfcvt.s.w\tft0, t0");
+        emitPopInt("t2");
+        emit("\tfcvt.s.w\tft0, t2");
       }
       emit("\tfmv.s\tfa0, ft1");
       if (compare) {
@@ -1277,6 +1642,26 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         emit("\tnegw\ta0, a1");
       } else if (lg >= 0) {
         emit("\tslliw\ta0, a1, " + to_string(lg));
+      } else if (k == 3) {
+        emit("\tslliw\ta0, a1, 1");
+        emit("\taddw\ta0, a0, a1");
+      } else if (k == 5) {
+        emit("\tslliw\ta0, a1, 2");
+        emit("\taddw\ta0, a0, a1");
+      } else if (k == 6) {
+        emit("\tslliw\tt2, a1, 2");
+        emit("\tslliw\ta0, a1, 1");
+        emit("\taddw\ta0, t2, a0");
+      } else if (k == 7) {
+        emit("\tslliw\ta0, a1, 3");
+        emit("\tsubw\ta0, a0, a1");
+      } else if (k == 9) {
+        emit("\tslliw\ta0, a1, 3");
+        emit("\taddw\ta0, a0, a1");
+      } else if (k == 10) {
+        emit("\tslliw\tt2, a1, 3");
+        emit("\tslliw\ta0, a1, 1");
+        emit("\taddw\ta0, t2, a0");
       } else {
         emit("\tmulw\ta0, a1, a0");
       }
@@ -1293,6 +1678,26 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         emit("\tnegw\ta0, a0");
       } else if (lg >= 0) {
         emit("\tslliw\ta0, a0, " + to_string(lg));
+      } else if (k == 3) {
+        emit("\tslliw\tt2, a0, 1");
+        emit("\taddw\ta0, t2, a0");
+      } else if (k == 5) {
+        emit("\tslliw\tt2, a0, 2");
+        emit("\taddw\ta0, t2, a0");
+      } else if (k == 6) {
+        emit("\tslliw\tt2, a0, 2");
+        emit("\tslliw\tt1, a0, 1");
+        emit("\taddw\ta0, t2, t1");
+      } else if (k == 7) {
+        emit("\tslliw\tt2, a0, 3");
+        emit("\tsubw\ta0, t2, a0");
+      } else if (k == 9) {
+        emit("\tslliw\tt2, a0, 3");
+        emit("\taddw\ta0, t2, a0");
+      } else if (k == 10) {
+        emit("\tslliw\tt2, a0, 3");
+        emit("\tslliw\tt1, a0, 1");
+        emit("\taddw\ta0, t2, t1");
       } else {
         emit("\tmulw\ta0, a0, a1");
       }
@@ -1305,8 +1710,8 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         emit("\tli\ta2, " + to_string(k - 1));
         emit("\tsraiw\tt1, a0, 31");
         emit("\tand\tt1, t1, a2");
-        emit("\taddw\tt0, a0, t1");
-        emit("\tsraiw\ta0, t0, " + to_string(lg));
+        emit("\taddw\tt3, a0, t1");
+        emit("\tsraiw\ta0, t3, " + to_string(lg));
       } else {
         emit("\tdivw\ta0, a0, a1");
       }
@@ -1328,6 +1733,21 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         emit("\taddiw\ta0, a0, " + to_string(neg));
       } else {
         emit("\tsubw\ta0, a0, a1");
+      }
+    } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
+               expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
+               op == "%") {
+      int32_t k = constAsInt(expr->rhs->constVal);
+      int lg = intLog2Positive32(k);
+      if (lg >= 1) {
+        uint32_t mask = static_cast<uint32_t>(k) - 1;
+        emit("\tsraiw\tt1, a0, 31");
+        emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
+        emit("\taddw\ta0, a0, t1");
+        emit("\tandi\ta0, a0, " + to_string(static_cast<int>(mask)));
+        emit("\tsubw\ta0, a0, t1");
+      } else {
+        emit("\tremw\ta0, a0, a1");
       }
     } else if (op == "+") {
       emit("\taddw\ta0, a0, a1");
@@ -1455,22 +1875,22 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
         if (lg >= 0) {
           emit("\tslliw\ta0, a0, " + to_string(lg));
         } else {
-          emit("\tli\tt0, " + to_string(strideBytes));
-          emit("\tmul\tt1, a0, t0");
+          emit("\tli\tt3, " + to_string(strideBytes));
+          emit("\tmulw\tt1, a0, t3");
           emit("\tmv\ta0, t1");
         }
       } else {
-        emit("\tli\tt0, " + to_string(strideBytes));
-        emit("\tmul\tt1, a0, t0");
+        emit("\tli\tt3, " + to_string(strideBytes));
+        emit("\tmulw\tt1, a0, t3");
         emit("\tmv\ta0, t1");
       }
-      emit("\tld\tt0, 0(sp)");
-      emit("\tadd\tt0, t0, a0");
-      emit("\tsd\tt0, 0(sp)");
+      emit("\tld\tt2, 0(sp)");
+      emit("\tadd\tt2, t2, a0");
+      emit("\tsd\tt2, 0(sp)");
     }
-    emitPopInt("t0");
+    emitPopInt("t2");
     emitPopInt("a0");
-    emit("\tadd\ta0, a0, t0");
+    emit("\tadd\ta0, a0, t2");
   }
 
 int CodeGen::strideForIndex(Symbol *sym, size_t index) {
