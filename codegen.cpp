@@ -445,6 +445,13 @@ void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
   }
 }
 
+// Load vreg into specified integer register (not a0), without tracking update
+void CodeGen::emitIrLoadVregTo(int vid, const string &reg) {
+  if (vid < 0) return;
+  int off = irVregSlotOffset(vid);
+  emitLoadMem("lw", reg, "s0", off);
+}
+
 void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
   if (vid < 0) {
     return;
@@ -786,8 +793,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     }
     return;
   case IROp::LoadMem:
-    emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt2, a0");
+    emitIrLoadVregTo(in.u, "t2");
     if (in.isFloat) {
       emit("\tflw\tfa0, 0(t2)");
       emitIrStoreVreg(in.dst, true);
@@ -799,8 +805,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     }
     return;
   case IROp::StoreMem:
-    emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt1, a0");
+    emitIrLoadVregTo(in.u, "t1");
     emitIrLoadVreg(in.v, in.isFloat);
     if (in.isFloat) {
       emit("\tfsw\tfa0, 0(t1)");
@@ -847,8 +852,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         return;
       }
     }
-    emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt2, a0");
+    emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
     emit("\taddw\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
@@ -866,8 +870,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         return;
       }
     }
-    emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt2, a0");
+    emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
     emit("\tsubw\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
@@ -916,11 +919,9 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     if (tryMulConst(in.u, in.v)) {
       return;
     }
-    emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt2, a0");
+    emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
-    emit("\tmulw\tt3, t2, a0");
-    emit("\tmv\ta0, t3");
+    emit("\tmulw\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
@@ -947,8 +948,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         return;
       }
     }
-    emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt2, a0");
+    emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
     emit("\tdivw\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
@@ -956,8 +956,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   }
   case IROp::Rem:
-    emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt2, a0");
+    emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
     emit("\tremw\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
@@ -970,8 +969,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     markInt(in.dst);
     return;
   case IROp::Slt:
-    emitIrLoadVreg(in.u, false);
-    emit("\tmv\tt2, a0");
+    emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
     emit("\tslt\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);

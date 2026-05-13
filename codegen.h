@@ -46,6 +46,8 @@ private:
 
   void emitIrLoadVreg(int vid, bool asFloat);
 
+  void emitIrLoadVregTo(int vid, const string &reg);
+
   void emitIrStoreVreg(int vid, bool asFloat);
 
   void emitIrFunction(FuncDef &def, IRFunction &ir);
