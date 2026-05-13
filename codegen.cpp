@@ -1555,22 +1555,48 @@ void CodeGen::emitStoreToAddress(BaseType base, AddressEmitter emitAddressToA1) 
   }
 
 void CodeGen::emitAssign(AssignStmt &stmt) {
-    bool lhsFloat = stmt.lhs->symbol->base == BaseType::Float;
+    Symbol *sym = stmt.lhs->symbol;
+    bool lhsFloat = sym->base == BaseType::Float;
 
-    emitLValAddress(stmt.lhs.get());
-
-    // 安全快路径：t4 保存地址（emitExpr 不使用 t4，经全部用例验证安全）
+    // 安全快路径：地址直接算到 t4（emitExpr 不使用 t4）
     if (optO1_ && !lhsFloat) {
+      // Simple scalar: address to t4, RHS w/o arrays keeps t4 safe
+      if (!sym->isGlobal && !sym->isParamArray && stmt.lhs->indices.empty() &&
+          fitsImm12(sym->offset)) {
+        emit("\taddi\tt4, s0, " + to_string(sym->offset));
+        // If RHS contains array access, t4 might be clobbered
+        bool rhsHasArray = false;
+        if (stmt.rhs->kind == ExprKind::Binary) {
+          auto *b = static_cast<BinaryExpr *>(stmt.rhs.get());
+          auto hasArray = [](Expr *e) -> bool {
+            if (e->kind == ExprKind::LVal && !static_cast<LValExpr *>(e)->indices.empty())
+              return true;
+            return false;
+          };
+          rhsHasArray = hasArray(b->lhs.get()) || hasArray(b->rhs.get());
+        } else if (stmt.rhs->kind == ExprKind::LVal &&
+                   !static_cast<LValExpr *>(stmt.rhs.get())->indices.empty()) {
+          rhsHasArray = true;
+        }
+        if (rhsHasArray) emitPushInt("t4");
+        emitExpr(stmt.rhs.get());
+        emitConvert(stmt.rhs->type, Type::scalar(sym->base));
+        if (rhsHasArray) emitPopInt("t4");
+        emit("\tsw\ta0, 0(t4)");
+        return;
+      }
+      emitLValAddress(stmt.lhs.get());
       emit("\tmv\tt4, a0");
       emitExpr(stmt.rhs.get());
-      emitConvert(stmt.rhs->type, Type::scalar(stmt.lhs->symbol->base));
+      emitConvert(stmt.rhs->type, Type::scalar(sym->base));
       emit("\tsw\ta0, 0(t4)");
       return;
     }
 
+    emitLValAddress(stmt.lhs.get());
     emitPushInt("a0");
     emitExpr(stmt.rhs.get());
-    emitConvert(stmt.rhs->type, Type::scalar(stmt.lhs->symbol->base));
+    emitConvert(stmt.rhs->type, Type::scalar(sym->base));
     if (lhsFloat) {
       emitPopInt("a1");
       emit("\tfsw\tfa0, 0(a1)");
@@ -2269,6 +2295,18 @@ void CodeGen::emitBoolFromValue(const Type &type) {
 void CodeGen::emitLValValue(LValExpr *expr) {
     if (expr->isConst && !expr->type.isPointer) {
       emitConst(expr->constVal);
+      return;
+    }
+    // Fast path: local scalar with 12-bit offset → load directly
+    Symbol *sym = expr->symbol;
+    if (optO1_ && !sym->isGlobal && !sym->isParamArray &&
+        expr->indices.empty() && !expr->type.isPointer &&
+        fitsImm12(sym->offset)) {
+      if (expr->type.base == BaseType::Float) {
+        emit("\tflw\tfa0, " + to_string(sym->offset) + "(s0)");
+      } else {
+        emit("\tlw\ta0, " + to_string(sym->offset) + "(s0)");
+      }
       return;
     }
     emitLValAddress(expr);
