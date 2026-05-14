@@ -28,20 +28,88 @@ static int intLog2Positive32(int32_t v) {
   return r;
 }
 
-// -O1: constant-divisor path with exact divw/remw semantics.
+struct SDivMagic {
+  int32_t magic = 0;
+  int shift = 0;
+  bool addDividend = false;
+};
+
+static optional<SDivMagic> computeSDivMagic(int32_t d) {
+  if (d <= 1) {
+    return nullopt;
+  }
+  const uint64_t two31 = 1ull << 31;
+  const uint32_t ad = static_cast<uint32_t>(d);
+  const uint64_t anc = two31 - 1 - (two31 % ad);
+  int p = 31;
+  uint64_t q1 = two31 / anc;
+  uint64_t r1 = two31 - q1 * anc;
+  uint64_t q2 = two31 / ad;
+  uint64_t r2 = two31 - q2 * ad;
+  while (true) {
+    ++p;
+    q1 <<= 1;
+    r1 <<= 1;
+    if (r1 >= anc) {
+      ++q1;
+      r1 -= anc;
+    }
+    q2 <<= 1;
+    r2 <<= 1;
+    if (r2 >= ad) {
+      ++q2;
+      r2 -= ad;
+    }
+    const uint64_t delta = ad - r2;
+    if (q1 > delta || (q1 == delta && r1 != 0)) {
+      break;
+    }
+  }
+
+  SDivMagic out;
+  out.magic = static_cast<int32_t>(static_cast<uint32_t>(q2 + 1));
+  out.shift = p - 32;
+  out.addDividend = out.magic < 0;
+  if (out.shift < 0 || out.shift > 31) {
+    return nullopt;
+  }
+  return out;
+}
+
+static void emitSDivMagicCore(CodeGen &cg, const SDivMagic &m) {
+  cg.emit("\tli\tt1, " + to_string(m.magic));
+  cg.emit("\tmul\tt2, a0, t1");
+  cg.emit("\tsrai\tt2, t2, 32");
+  if (m.addDividend) {
+    cg.emit("\taddw\tt2, t2, a0");
+  }
+  if (m.shift > 0) {
+    cg.emit("\tsraiw\tt2, t2, " + to_string(m.shift));
+  }
+  cg.emit("\tsraiw\tt3, a0, 31");
+  cg.emit("\tsubw\ta0, t2, t3");
+}
+
+// -O1: positive constant-divisor path with exact signed divw/remw semantics.
 static bool emitSDivByConst(CodeGen &cg, int32_t d) {
-  if (!cg.optO1() || d <= 1) return false;
+  if (!cg.optO1()) return false;
+  auto magic = computeSDivMagic(d);
+  if (!magic) return false;
   cg.emit("\tsext.w\ta0, a0");
-  cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
-  cg.emit("\tdivw\ta0, a0, t1");
+  emitSDivMagicCore(cg, *magic);
   return true;
 }
 
 static bool emitSRemByConst(CodeGen &cg, int32_t d) {
-  if (!cg.optO1() || d <= 1) return false;
+  if (!cg.optO1()) return false;
+  auto magic = computeSDivMagic(d);
+  if (!magic) return false;
   cg.emit("\tsext.w\ta0, a0");
+  cg.emit("\tmv\tt0, a0");
+  emitSDivMagicCore(cg, *magic);
   cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
-  cg.emit("\tremw\ta0, a0, t1");
+  cg.emit("\tmulw\tt2, a0, t1");
+  cg.emit("\tsubw\ta0, t0, t2");
   return true;
 }
 
@@ -1839,9 +1907,8 @@ void CodeGen::emitAssign(AssignStmt &stmt) {
     Symbol *sym = stmt.lhs->symbol;
     bool lhsFloat = sym->base == BaseType::Float;
 
-    // -O1: keep store address in t4 across emitExpr(rhs). Spill only when RHS may use t4
-    // (binary/call/subscript), avoiding extra stack in deep recursion; still fixes
-    // temp[i/2]=arr[...], g=i+j, etc.
+    // -O1: keep store address in t4 across emitExpr(rhs). Spill only when RHS
+    // may use t4 (binary/call/subscript), avoiding extra stack for arr[i]=0/x.
     if (optO1_) {
       if (stmt.lhs->indices.empty() && !sym->isParamArray) {
         emitExpr(stmt.rhs.get());
@@ -1856,8 +1923,7 @@ void CodeGen::emitAssign(AssignStmt &stmt) {
         }
         return;
       }
-      const bool spillT4 =
-          !stmt.lhs->indices.empty() || assignRhsMayClobberAddrRegT4(stmt.rhs.get());
+      const bool spillT4 = assignRhsMayClobberAddrRegT4(stmt.rhs.get());
       emitLValAddress(stmt.lhs.get());
       emit("\tmv\tt4, a0");
       if (spillT4) {
@@ -2609,6 +2675,72 @@ void CodeGen::emitCond(Expr *expr, const string &trueLabel, const string &falseL
         emit(mid + ":");
         emitCond(bin->rhs.get(), trueLabel, falseLabel);
         return;
+      }
+      const bool compare = bin->op == "==" || bin->op == "!=" || bin->op == "<" ||
+                           bin->op == ">" || bin->op == "<=" || bin->op == ">=";
+      if (optO1_ && compare && bin->lhs->type.isIntScalar() &&
+          bin->rhs->type.isIntScalar()) {
+        auto branchCompare = [&](const string &op, const string &lhs,
+                                 const string &rhs) {
+          if (op == "==") {
+            emit("\tbeq\t" + lhs + ", " + rhs + ", " + trueLabel);
+          } else if (op == "!=") {
+            emit("\tbne\t" + lhs + ", " + rhs + ", " + trueLabel);
+          } else if (op == "<") {
+            emit("\tblt\t" + lhs + ", " + rhs + ", " + trueLabel);
+          } else if (op == ">") {
+            emit("\tblt\t" + rhs + ", " + lhs + ", " + trueLabel);
+          } else if (op == "<=") {
+            emit("\tbge\t" + rhs + ", " + lhs + ", " + trueLabel);
+          } else if (op == ">=") {
+            emit("\tbge\t" + lhs + ", " + rhs + ", " + trueLabel);
+          }
+          emit("\tj\t" + falseLabel);
+        };
+        auto reverseOp = [](const string &op) -> string {
+          if (op == "<") return ">";
+          if (op == ">") return "<";
+          if (op == "<=") return ">=";
+          if (op == ">=") return "<=";
+          return op;
+        };
+
+        if (bin->rhs->isConst && bin->rhs->constVal.type == BaseType::Int) {
+          emitExpr(bin->lhs.get());
+          int32_t k = constAsInt(bin->rhs->constVal);
+          if (k == 0) {
+            branchCompare(bin->op, "a0", "zero");
+          } else {
+            emit("\tli\tt1, " + to_string(static_cast<int>(k)));
+            branchCompare(bin->op, "a0", "t1");
+          }
+          return;
+        }
+        if (bin->lhs->isConst && bin->lhs->constVal.type == BaseType::Int) {
+          emitExpr(bin->rhs.get());
+          int32_t k = constAsInt(bin->lhs->constVal);
+          if (k == 0) {
+            branchCompare(reverseOp(bin->op), "a0", "zero");
+          } else {
+            emit("\tli\tt1, " + to_string(static_cast<int>(k)));
+            branchCompare(reverseOp(bin->op), "a0", "t1");
+          }
+          return;
+        }
+        if (exprIsLeaf(bin->rhs.get())) {
+          emitExpr(bin->lhs.get());
+          emit("\tmv\tt4, a0");
+          emitExpr(bin->rhs.get());
+          branchCompare(bin->op, "t4", "a0");
+          return;
+        }
+        if (exprIsLeaf(bin->lhs.get())) {
+          emitExpr(bin->rhs.get());
+          emit("\tmv\tt4, a0");
+          emitExpr(bin->lhs.get());
+          branchCompare(bin->op, "a0", "t4");
+          return;
+        }
       }
     }
     emitExpr(expr);
