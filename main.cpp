@@ -34,12 +34,17 @@ int main(int argc, char **argv) {
       optO1 = true;
       continue;
     }
-    if (arg == "-o") {
-      if (i + 1 >= argc) {
-        cerr << "compiler: missing argument after -o\n";
-        return 1;
+    // 支持 -o path 与常见无空格形式 -o/path（评测机多用绝对路径，常为 -o/tmp/...）
+    if (arg.rfind("-o", 0) == 0) {
+      if (arg.size() == 2) {
+        if (i + 1 >= argc) {
+          cerr << "compiler: missing argument after -o\n";
+          return 1;
+        }
+        output = argv[++i];
+      } else {
+        output = arg.substr(2);
       }
-      output = argv[++i];
       continue;
     }
     if (!arg.empty() && arg[0] == '-') {
