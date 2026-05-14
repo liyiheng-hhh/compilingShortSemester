@@ -21,6 +21,20 @@ static bool sideEffecting(const IRInst &in) {
   }
 }
 
+// k > 1 且为 2 的幂时返回 log2(k)，否则 -1（用于 Mul → Sll 强度削弱）
+static int intLog2PositivePow2_32(int32_t k) {
+  if (k <= 1 || (k & (k - 1)) != 0) {
+    return -1;
+  }
+  int r = 0;
+  int32_t x = k;
+  while (x > 1) {
+    x >>= 1;
+    ++r;
+  }
+  return r;
+}
+
 static int findRoot(vector<int> &uf, int x) {
   if (x < 0) {
     return x;
@@ -315,6 +329,19 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = true;
         break;
       }
+      if (remap(in.u) == remap(in.v)) {
+        IRInst sh;
+        sh.op = IROp::Sll;
+        sh.dst = in.dst;
+        sh.u = in.u;
+        sh.immI = 1;
+        out.push_back(sh);
+        if (in.dst >= 0 && in.dst < static_cast<int>(knownInt.size())) {
+          knownInt[in.dst].reset();
+        }
+        folded = true;
+        break;
+      }
       k = makeKeyComm(in);
       folded = tryCse(k);
       if (!folded) cse[k] = in.dst;
@@ -385,6 +412,38 @@ void irOptimizeBlock(IRFunction &fn) {
         }
         folded = true;
         break;
+      }
+      if (ci && *ci > 1) {
+        int shamt = intLog2PositivePow2_32(*ci);
+        if (shamt > 0) {
+          IRInst sh;
+          sh.op = IROp::Sll;
+          sh.dst = in.dst;
+          sh.u = in.v;
+          sh.immI = shamt;
+          out.push_back(sh);
+          if (in.dst >= 0 && in.dst < static_cast<int>(knownInt.size())) {
+            knownInt[in.dst].reset();
+          }
+          folded = true;
+          break;
+        }
+      }
+      if (cj && *cj > 1) {
+        int shamt = intLog2PositivePow2_32(*cj);
+        if (shamt > 0) {
+          IRInst sh;
+          sh.op = IROp::Sll;
+          sh.dst = in.dst;
+          sh.u = in.u;
+          sh.immI = shamt;
+          out.push_back(sh);
+          if (in.dst >= 0 && in.dst < static_cast<int>(knownInt.size())) {
+            knownInt[in.dst].reset();
+          }
+          folded = true;
+          break;
+        }
       }
       k = makeKeyComm(in);
       folded = tryCse(k);

@@ -2350,7 +2350,20 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         } else if (op == "-") {
           emit("\tsubw\ta0, t4, a0");
         } else if (op == "*") {
-          emit("\tmulw\ta0, t4, a0");
+          if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
+            int32_t k = constAsInt(expr->rhs->constVal);
+            if (k == 0) {
+              emit("\tli\ta0, 0");
+            } else {
+              emit("\tmv\ta0, t4");
+              if (!emitMulByConst(*this, k)) {
+                emit("\tli\tt3, " + to_string(static_cast<int>(k)));
+                emit("\tmulw\ta0, t4, t3");
+              }
+            }
+          } else {
+            emit("\tmulw\ta0, t4, a0");
+          }
         } else if (op == "/") {
           emit("\tdivw\ta0, t4, a0");
         } else if (op == "%") {
@@ -2368,7 +2381,20 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         } else if (op == "-") {
           emit("\tsubw\ta0, a0, t4");
         } else if (op == "*") {
-          emit("\tmulw\ta0, a0, t4");
+          if (expr->lhs->isConst && expr->lhs->constVal.type == BaseType::Int) {
+            int32_t k = constAsInt(expr->lhs->constVal);
+            if (k == 0) {
+              emit("\tli\ta0, 0");
+            } else {
+              emit("\tmv\ta0, t4");
+              if (!emitMulByConst(*this, k)) {
+                emit("\tli\tt3, " + to_string(static_cast<int>(k)));
+                emit("\tmulw\ta0, t3, a0");
+              }
+            }
+          } else {
+            emit("\tmulw\ta0, a0, t4");
+          }
         } else if (op == "/") {
           emit("\tdivw\ta0, a0, t4");
         } else if (op == "%") {
