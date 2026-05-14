@@ -3,6 +3,7 @@
 #include "common.h"
 
 #include <algorithm>
+#include <climits>
 #include <optional>
 
 using namespace std;
@@ -1364,6 +1365,18 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         markInt(in.dst);
         return true;
       }
+      if (k < 0 && k != INT32_MIN) {
+        int32_t ak = static_cast<int32_t>(-static_cast<int64_t>(k));
+        int lgn = intLog2Positive32(ak);
+        if (lgn >= 0) {
+          emitIrLoadVreg(otherV, false);
+          emit("\tslliw\ta0, a0, " + to_string(lgn));
+          emit("\tnegw\ta0, a0");
+          emitIrStoreVreg(in.dst, false);
+          markInt(in.dst);
+          return true;
+        }
+      }
       int lg = intLog2Positive32(k > 0 ? k : 0);
       if (lg >= 0) {
         emitIrLoadVreg(otherV, false);
@@ -2346,9 +2359,24 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         emit("\tmv\tt4, a0");
         emitExpr(expr->rhs.get());
         if (op == "+") {
-          emit("\taddw\ta0, t4, a0");
+          if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
+              fitsImm12(static_cast<int>(constAsInt(expr->rhs->constVal)))) {
+            emit("\taddiw\ta0, t4, " +
+                 to_string(static_cast<int>(constAsInt(expr->rhs->constVal))));
+          } else {
+            emit("\taddw\ta0, t4, a0");
+          }
         } else if (op == "-") {
-          emit("\tsubw\ta0, t4, a0");
+          if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
+            int64_t nk = -static_cast<int64_t>(constAsInt(expr->rhs->constVal));
+            if (nk >= -2048 && nk <= 2047) {
+              emit("\taddiw\ta0, t4, " + to_string(static_cast<int>(nk)));
+            } else {
+              emit("\tsubw\ta0, t4, a0");
+            }
+          } else {
+            emit("\tsubw\ta0, t4, a0");
+          }
         } else if (op == "*") {
           if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
             int32_t k = constAsInt(expr->rhs->constVal);
@@ -2377,7 +2405,13 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         emit("\tmv\tt4, a0");
         emitExpr(expr->lhs.get());
         if (op == "+") {
-          emit("\taddw\ta0, a0, t4");
+          if (expr->lhs->isConst && expr->lhs->constVal.type == BaseType::Int &&
+              fitsImm12(static_cast<int>(constAsInt(expr->lhs->constVal)))) {
+            emit("\taddiw\ta0, t4, " +
+                 to_string(static_cast<int>(constAsInt(expr->lhs->constVal))));
+          } else {
+            emit("\taddw\ta0, a0, t4");
+          }
         } else if (op == "-") {
           emit("\tsubw\ta0, a0, t4");
         } else if (op == "*") {

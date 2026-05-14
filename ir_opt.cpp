@@ -2,6 +2,7 @@
 
 #include "common.h"
 
+#include <climits>
 #include <cstdint>
 #include <optional>
 #include <unordered_map>
@@ -359,6 +360,18 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = true;
         break;
       }
+      if (ci && *ci == 0) {
+        IRInst ng;
+        ng.op = IROp::Neg;
+        ng.dst = in.dst;
+        ng.u = in.v;
+        out.push_back(ng);
+        if (in.dst >= 0 && in.dst < static_cast<int>(knownInt.size())) {
+          knownInt[in.dst].reset();
+        }
+        folded = true;
+        break;
+      }
       if (remap(in.u) == remap(in.v)) {
         folded = foldIntConst(0);
         break;
@@ -413,6 +426,39 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = true;
         break;
       }
+      auto emitNegPow2Mul = [&](int32_t negK, int srcV) -> bool {
+        if (negK >= -1 || negK == INT32_MIN) {
+          return false;
+        }
+        int32_t ak = static_cast<int32_t>(-static_cast<int64_t>(negK));
+        int shamt = intLog2PositivePow2_32(ak);
+        if (shamt <= 0) {
+          return false;
+        }
+        IRInst sh;
+        sh.op = IROp::Sll;
+        sh.dst = in.dst;
+        sh.u = srcV;
+        sh.immI = shamt;
+        out.push_back(sh);
+        IRInst ng;
+        ng.op = IROp::Neg;
+        ng.dst = in.dst;
+        ng.u = in.dst;
+        out.push_back(ng);
+        if (in.dst >= 0 && in.dst < static_cast<int>(knownInt.size())) {
+          knownInt[in.dst].reset();
+        }
+        return true;
+      };
+      if (ci && emitNegPow2Mul(*ci, in.v)) {
+        folded = true;
+        break;
+      }
+      if (cj && emitNegPow2Mul(*cj, in.u)) {
+        folded = true;
+        break;
+      }
       if (ci && *ci > 1) {
         int shamt = intLog2PositivePow2_32(*ci);
         if (shamt > 0) {
@@ -462,6 +508,18 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = true;
         break;
       }
+      if (cj && *cj == -1) {
+        IRInst ng;
+        ng.op = IROp::Neg;
+        ng.dst = in.dst;
+        ng.u = in.u;
+        out.push_back(ng);
+        if (in.dst >= 0 && in.dst < static_cast<int>(knownInt.size())) {
+          knownInt[in.dst].reset();
+        }
+        folded = true;
+        break;
+      }
       k = makeKeyPlain(in);
       folded = tryCse(k);
       if (!folded) cse[k] = in.dst;
@@ -505,6 +563,10 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = foldIntConst(*ci < *cj ? 1 : 0);
         break;
       }
+      if (remap(in.u) == remap(in.v)) {
+        folded = foldIntConst(0);
+        break;
+      }
       k = makeKeyPlain(in);
       folded = tryCse(k);
       if (!folded) cse[k] = in.dst;
@@ -532,11 +594,24 @@ void irOptimizeBlock(IRFunction &fn) {
       if (!folded) cse[k] = in.dst;
       break;
     }
-    case IROp::Sll:
+    case IROp::Sll: {
+      int sh = in.immI & 31;
+      auto cu = followConstI(in.u);
+      if (cu) {
+        uint32_t bits = static_cast<uint32_t>(*cu);
+        folded = foldIntConst(static_cast<int32_t>(bits << sh));
+        break;
+      }
+      if (sh == 0) {
+        emitCopy(in.dst, in.u);
+        folded = true;
+        break;
+      }
       k = makeKeyPlain(in);
       folded = tryCse(k);
       if (!folded) cse[k] = in.dst;
       break;
+    }
     case IROp::FAdd: {
       auto fi = followConstF(in.u);
       auto fj = followConstF(in.v);
@@ -646,6 +721,15 @@ void irOptimizeBlock(IRFunction &fn) {
       auto fj = followConstF(in.v);
       if (fi && fj && *fj != 0.0f) {
         folded = foldFloatConst(*fi / *fj);
+        break;
+      }
+      if (fi && *fi == 0.0f) {
+        folded = foldFloatConst(0.0f);
+        break;
+      }
+      if (fj && *fj == 1.0f) {
+        emitCopy(in.dst, in.u);
+        folded = true;
         break;
       }
       k = makeKeyPlain(in);
