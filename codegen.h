@@ -39,6 +39,8 @@ private:
   int irSpillBase_ = 0;
   int irTotalFrame_ = 0;
   vector<char> irVFloat_;
+  /// IR 整型 vreg 是否为 XLEN 指针（与 irVFloat_ 互斥）
+  vector<char> irVPtr_;
   vector<int> irVregSlots_;
   int irLastVregInA0_ = -1;
   int irLastVregInFa0_ = -1;
@@ -54,6 +56,8 @@ private:
 
   int irVregSlotOffset(int vid) const;
 
+  bool irVregIsPtr(int vid) const;
+
   void emitIrLoadVreg(int vid, bool asFloat);
 
   void emitIrLoadVregTo(int vid, const string &reg);
@@ -63,6 +67,9 @@ private:
   void emitIrFlushSkipped();
 
   void emitIrFunction(FuncDef &def, IRFunction &ir);
+
+  /// 在发射 IR 前推断各整型 vreg 是否为 XLEN 指针（与 ir_opt 后的 Copy/Add 一致）
+  void irInferPtrRegs(const IRFunction &ir);
 
   void emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in, size_t instIdx);
 

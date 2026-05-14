@@ -512,6 +512,7 @@ void CodeGen::emitFunction(FuncDef &def) {
       irTotalFrame_ = max(frame, alignTo(need, 16));
       frame = irTotalFrame_;
       irVFloat_.assign(static_cast<size_t>(max(irVregCount_, 0)), 0);
+      irInferPtrRegs(irBuf);
     } else {
       irVregCount_ = 0;
       irSpillBase_ = 0;
@@ -584,6 +585,11 @@ int CodeGen::irVregSlotOffset(int vid) const {
   return -(irSpillBase_ + 8 * (slot + 1));
 }
 
+bool CodeGen::irVregIsPtr(int vid) const {
+  return vid >= 0 && static_cast<size_t>(vid) < irVPtr_.size() &&
+         irVPtr_[static_cast<size_t>(vid)];
+}
+
 void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
   if (vid < 0) return;
   if (asFloat) {
@@ -594,7 +600,9 @@ void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
   } else {
     if (irLastVregInA0_ == vid) return;
     int off = irVregSlotOffset(vid);
-    emitLoadMem("lw", "a0", "s0", off);
+    bool isPtr =
+        vid < static_cast<int>(irVPtr_.size()) && irVPtr_[static_cast<size_t>(vid)];
+    emitLoadMem(isPtr ? "ld" : "lw", "a0", "s0", off);
     irLastVregInA0_ = vid;
   }
 }
@@ -607,7 +615,9 @@ void CodeGen::emitIrLoadVregTo(int vid, const string &reg) {
     return;
   }
   int off = irVregSlotOffset(vid);
-  emitLoadMem("lw", reg, "s0", off);
+  bool isPtr =
+      vid < static_cast<int>(irVPtr_.size()) && irVPtr_[static_cast<size_t>(vid)];
+  emitLoadMem(isPtr ? "ld" : "lw", reg, "s0", off);
 }
 
 void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
@@ -634,7 +644,9 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
     emitStoreMem("fsw", "fa0", "s0", off);
     irLastVregInFa0_ = vid;
   } else {
-    emitStoreMem("sw", "a0", "s0", off);
+    bool isPtr =
+        vid < static_cast<int>(irVPtr_.size()) && irVPtr_[static_cast<size_t>(vid)];
+    emitStoreMem(isPtr ? "sd" : "sw", "a0", "s0", off);
     irLastVregInA0_ = vid;
   }
 }
@@ -643,7 +655,9 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
 void CodeGen::emitIrFlushSkipped() {
   if (irSkippedLast_ && irSkippedVreg_ >= 0) {
     int off = irVregSlotOffset(irSkippedVreg_);
-    emitStoreMem("sw", "a0", "s0", off);
+    bool isPtr = irSkippedVreg_ < static_cast<int>(irVPtr_.size()) &&
+                 irVPtr_[static_cast<size_t>(irSkippedVreg_)];
+    emitStoreMem(isPtr ? "sd" : "sw", "a0", "s0", off);
     irSkippedLast_ = false;
     irSkippedVreg_ = -1;
   }
@@ -716,6 +730,69 @@ static optional<float> irTraceConstF(const IRFunction &ir, int v, size_t before)
   return nullopt;
 }
 
+void CodeGen::irInferPtrRegs(const IRFunction &ir) {
+  const int nv = max(ir.nextVreg, 0);
+  irVPtr_.assign(static_cast<size_t>(nv), 0);
+  if (nv <= 0) {
+    return;
+  }
+  auto getP = [&](int r) -> bool {
+    return r >= 0 && r < nv && irVPtr_[static_cast<size_t>(r)];
+  };
+  bool changed = true;
+  for (int guard = 0; changed && guard < nv + 64; ++guard) {
+    changed = false;
+    for (size_t i = 0; i < ir.insts.size(); ++i) {
+      const IRInst &w = ir.insts[i];
+      int d = w.dst;
+      if (d < 0 || d >= nv) {
+        continue;
+      }
+      size_t di = static_cast<size_t>(d);
+      bool np = false;
+      switch (w.op) {
+      case IROp::LoadParamAddr:
+      case IROp::LeaStr:
+      case IROp::LeaGlobal:
+      case IROp::LeaLocal:
+        np = true;
+        break;
+      case IROp::Copy:
+        np = getP(w.u);
+        break;
+      case IROp::Add:
+        np = getP(w.u) != getP(w.v);
+        break;
+      case IROp::Sub:
+        np = getP(w.u) && !getP(w.v);
+        break;
+      case IROp::Mul: {
+        optional<int32_t> ck = irTraceConstI(ir, w.v, i);
+        if (ck && *ck == 1) {
+          np = getP(w.u);
+        } else if (auto cu = irTraceConstI(ir, w.u, i); cu && *cu == 1) {
+          np = getP(w.v);
+        } else {
+          np = false;
+        }
+        break;
+      }
+      case IROp::Call:
+        np = false;
+        break;
+      default:
+        np = false;
+        break;
+      }
+      char v = np ? 1 : 0;
+      if (irVPtr_[di] != v) {
+        irVPtr_[di] = v;
+        changed = true;
+      }
+    }
+  }
+}
+
 void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
   (void)def;
   const int nv = static_cast<int>(ir.nextVreg);
@@ -757,6 +834,7 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
 void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
                   size_t instIdx) {
   (void)def;
+  auto vIsPtr = [&](int v) -> bool { return irVregIsPtr(v); };
   Function *fn = lookupFunctionAsm(semantic_, in.callee);
   if (!fn) {
     throw CompileError("IR call: unknown function " + in.callee);
@@ -794,6 +872,9 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
     if (params[i].isArray || params[i].base == BaseType::Int) ++intNeeded;
   }
   bool useRegPath = optO1_ && !fn->injectLineArgument && intNeeded <= 3;
+  if (useRegPath && in.args.size() > 1) {
+    useRegPath = false;
+  }
 
   if (useRegPath) {
     int stackArea = stackSlots * 8;
@@ -822,6 +903,9 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
           emit("\tli\ta0, " + to_string(*ic));
         } else {
           emitIrLoadVreg(av, false);
+        }
+        if (!expected.isArray && expected.base == BaseType::Int && !vIsPtr(av)) {
+          emit("\tsext.w\ta0, a0");
         }
         string reg = "t" + to_string(4 + intUsed);
         emit("\tmv\t" + reg + ", a0");
@@ -852,9 +936,11 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
     if (in.dst >= 0) {
       if (in.isFloat) {
         irVFloat_[static_cast<size_t>(in.dst)] = 1;
+        irVPtr_[static_cast<size_t>(in.dst)] = 0;
         emitIrStoreVreg(in.dst, true);
       } else {
         irVFloat_[static_cast<size_t>(in.dst)] = 0;
+        irVPtr_[static_cast<size_t>(in.dst)] = 0;
         emitIrStoreVreg(in.dst, false);
       }
     }
@@ -877,6 +963,9 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
       emit("\tli\ta0, " + to_string(*lineImm));
     } else {
       emitIrLoadVreg(in.args[0], false);
+      if (!vIsPtr(in.args[0])) {
+        emit("\tsext.w\ta0, a0");
+      }
     }
     emitStoreMem("sd", "a0", "sp", tempBase);
     ++paramIndex;
@@ -929,6 +1018,9 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
       } else {
         emitIrLoadVreg(av, false);
       }
+      if (expected.base == BaseType::Int && !expected.isArray && !vIsPtr(av)) {
+        emit("\tsext.w\ta0, a0");
+      }
       emitStoreMem("sd", "a0", "sp", off);
     }
   }
@@ -971,9 +1063,11 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
   if (in.dst >= 0) {
     if (in.isFloat) {
       irVFloat_[static_cast<size_t>(in.dst)] = 1;
+      irVPtr_[static_cast<size_t>(in.dst)] = 0;
       emitIrStoreVreg(in.dst, true);
     } else {
       irVFloat_[static_cast<size_t>(in.dst)] = 0;
+      irVPtr_[static_cast<size_t>(in.dst)] = 0;
       emitIrStoreVreg(in.dst, false);
     }
   }
@@ -989,7 +1083,18 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
   auto markFl = [&](int d) {
     if (d >= 0 && static_cast<size_t>(d) < irVFloat_.size()) {
       irVFloat_[static_cast<size_t>(d)] = 1;
+      if (d < static_cast<int>(irVPtr_.size())) {
+        irVPtr_[static_cast<size_t>(d)] = 0;
+      }
     }
+  };
+  auto opIsPtr = [&](int r) -> bool {
+    return r >= 0 && static_cast<size_t>(r) < irVPtr_.size() &&
+           irVPtr_[static_cast<size_t>(r)];
+  };
+  auto dstIsPtr = [&]() -> bool {
+    return in.dst >= 0 && static_cast<size_t>(in.dst) < irVPtr_.size() &&
+           irVPtr_[static_cast<size_t>(in.dst)];
   };
 
   switch (in.op) {
@@ -1127,7 +1232,11 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       int32_t k = *kv;
       if (fitsImm12(static_cast<int>(k))) {
         emitIrLoadVreg(in.u, false);
-        emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(k)));
+        if (opIsPtr(in.u)) {
+          emit("\taddi\ta0, a0, " + to_string(static_cast<int>(k)));
+        } else {
+          emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(k)));
+        }
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
         return;
@@ -1137,15 +1246,24 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       int32_t k = *ku;
       if (fitsImm12(static_cast<int>(k))) {
         emitIrLoadVreg(in.v, false);
-        emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(k)));
+        if (opIsPtr(in.v)) {
+          emit("\taddi\ta0, a0, " + to_string(static_cast<int>(k)));
+        } else {
+          emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(k)));
+        }
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
         return;
       }
     }
+    const bool ptrResult = dstIsPtr();
     emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
-    emit("\taddw\ta0, t2, a0");
+    if (ptrResult) {
+      emit("\tadd\ta0, t2, a0");
+    } else {
+      emit("\taddw\ta0, t2, a0");
+    }
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
@@ -1155,15 +1273,24 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       int64_t nk = -static_cast<int64_t>(*kv);
       if (nk >= -2048 && nk <= 2047) {
         emitIrLoadVreg(in.u, false);
-        emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(nk)));
+        if (opIsPtr(in.u)) {
+          emit("\taddi\ta0, a0, " + to_string(static_cast<int>(nk)));
+        } else {
+          emit("\taddiw\ta0, a0, " + to_string(static_cast<int>(nk)));
+        }
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
         return;
       }
     }
+    const bool ptrResult = dstIsPtr();
     emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
-    emit("\tsubw\ta0, t2, a0");
+    if (ptrResult) {
+      emit("\tsub\ta0, t2, a0");
+    } else {
+      emit("\tsubw\ta0, t2, a0");
+    }
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
@@ -1297,19 +1424,31 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   case IROp::Slt:
     emitIrLoadVregTo(in.u, "t2");
+    if (!opIsPtr(in.u)) {
+      emit("\tsext.w\tt2, t2");
+    }
     emitIrLoadVreg(in.v, false);
+    if (!opIsPtr(in.v)) {
+      emit("\tsext.w\ta0, a0");
+    }
     emit("\tslt\ta0, t2, a0");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
   case IROp::Seqz:
     emitIrLoadVreg(in.u, false);
+    if (!opIsPtr(in.u)) {
+      emit("\tsext.w\ta0, a0");
+    }
     emit("\tseqz\ta0, a0");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
   case IROp::Snez:
     emitIrLoadVreg(in.u, false);
+    if (!opIsPtr(in.u)) {
+      emit("\tsext.w\ta0, a0");
+    }
     emit("\tsnez\ta0, a0");
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
@@ -1328,33 +1467,34 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   case IROp::FAdd:
     emitIrLoadVreg(in.u, true);
-    emit("\tfmv.s\tft0, fa0");
+    // Use ft8 (not ft0–ft7): irParamCache_ keeps float params in ft0–ft7 across IR insts.
+    emit("\tfmv.s\tft8, fa0");
     emitIrLoadVreg(in.v, true);
-    emit("\tfadd.s\tfa0, ft0, fa0");
+    emit("\tfadd.s\tfa0, ft8, fa0");
     emitIrStoreVreg(in.dst, true);
     markFl(in.dst);
     return;
   case IROp::FSub:
     emitIrLoadVreg(in.u, true);
-    emit("\tfmv.s\tft0, fa0");
+    emit("\tfmv.s\tft8, fa0");
     emitIrLoadVreg(in.v, true);
-    emit("\tfsub.s\tfa0, ft0, fa0");
+    emit("\tfsub.s\tfa0, ft8, fa0");
     emitIrStoreVreg(in.dst, true);
     markFl(in.dst);
     return;
   case IROp::FMul:
     emitIrLoadVreg(in.u, true);
-    emit("\tfmv.s\tft0, fa0");
+    emit("\tfmv.s\tft8, fa0");
     emitIrLoadVreg(in.v, true);
-    emit("\tfmul.s\tfa0, ft0, fa0");
+    emit("\tfmul.s\tfa0, ft8, fa0");
     emitIrStoreVreg(in.dst, true);
     markFl(in.dst);
     return;
   case IROp::FDiv:
     emitIrLoadVreg(in.u, true);
-    emit("\tfmv.s\tft0, fa0");
+    emit("\tfmv.s\tft8, fa0");
     emitIrLoadVreg(in.v, true);
-    emit("\tfdiv.s\tfa0, ft0, fa0");
+    emit("\tfdiv.s\tfa0, ft8, fa0");
     emitIrStoreVreg(in.dst, true);
     markFl(in.dst);
     return;
@@ -1366,27 +1506,27 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   case IROp::FCmp:
     emitIrLoadVreg(in.u, true);
-    emit("\tfmv.s\tft0, fa0");
+    emit("\tfmv.s\tft8, fa0");
     emitIrLoadVreg(in.v, true);
     switch (in.immI) {
     case FCMP_EQ:
-      emit("\tfeq.s\ta0, ft0, fa0");
+      emit("\tfeq.s\ta0, ft8, fa0");
       break;
     case FCMP_NE:
-      emit("\tfeq.s\ta0, ft0, fa0");
+      emit("\tfeq.s\ta0, ft8, fa0");
       emit("\tseqz\ta0, a0");
       break;
     case FCMP_LT:
-      emit("\tflt.s\ta0, ft0, fa0");
+      emit("\tflt.s\ta0, ft8, fa0");
       break;
     case FCMP_GT:
-      emit("\tflt.s\ta0, fa0, ft0");
+      emit("\tflt.s\ta0, fa0, ft8");
       break;
     case FCMP_LE:
-      emit("\tfle.s\ta0, ft0, fa0");
+      emit("\tfle.s\ta0, ft8, fa0");
       break;
     case FCMP_GE:
-      emit("\tfle.s\ta0, fa0, ft0");
+      emit("\tfle.s\ta0, fa0, ft8");
       break;
     default:
       emit("\tli\ta0, 0");
@@ -1411,6 +1551,10 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       }
     } else {
       emitIrLoadVreg(in.u, irVFloat_[static_cast<size_t>(in.u)] != 0);
+      if (def.ret == BaseType::Int && !irVFloat_[static_cast<size_t>(in.u)] &&
+          !opIsPtr(in.u)) {
+        emit("\tsext.w\ta0, a0");
+      }
     }
     emit("\tj\t" + currentFunction_->returnLabel);
     return;

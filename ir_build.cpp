@@ -216,6 +216,7 @@ int IRBuilder::buildLValAddress(LValExpr *lv) {
     int prod = ir->allocVreg();
     int lg = -1;
     if (strideBytes > 0 && (strideBytes & (strideBytes - 1)) == 0) {
+      lg = 0;
       for (int x = strideBytes; x > 1; x >>= 1) {
         ++lg;
       }
