@@ -10,6 +10,8 @@
 #   -e SY_TEST_DIRS="/work/examples/golden_smoke /work/examples/golden_o1_const"
 #
 # 可选：LINK_FLAGS（默认 -static -mcmodel=medany）、APT_MIRROR_HTTP、USE_O1=1（传给批量脚本）
+#      SKIP_APT=1（容器已配置好工具链时跳过 apt 安装）
+#      INSTALL_ONLY=1（只完成 apt 工具链安装，供长期容器初始化使用）
 
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -19,6 +21,7 @@ export DEBIAN_FRONTEND=noninteractive
 # 清华的 **HTTP** 源完成 update + 安装 ca-certificates；之后再可选改用 HTTPS。
 replace_apt_mirror_tsinghua() {
   local base="${APT_MIRROR_HTTP:-http://mirrors.tuna.tsinghua.edu.cn}"
+  [[ "$base" == "default" ]] && return 0
   local f
   for f in /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; do
     [[ -f "$f" ]] || continue
@@ -33,20 +36,36 @@ replace_apt_mirror_tsinghua() {
   done
 }
 
-replace_apt_mirror_tsinghua
-apt-get update -qq
-# 先装 CA，便于后续若改用 https 源或访问 https://github.com
-apt-get install -y -qq ca-certificates
-apt-get install -y -qq git make g++ gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu qemu-user-static
+LOCAL_SYSY=/work/scripts/sysy_runtime.c
+if [[ "${SKIP_APT:-0}" != "1" ]]; then
+  replace_apt_mirror_tsinghua
+  apt-get -o Acquire::Retries="${APT_RETRIES:-5}" update -qq
+  APT_PKGS=(make g++ gcc-riscv64-linux-gnu libc6-dev-riscv64-cross binutils-riscv64-linux-gnu qemu-user-static)
+  if [[ ! -f "$LOCAL_SYSY" ]]; then
+    APT_PKGS+=(ca-certificates git)
+  fi
+  apt-get -o Acquire::Retries="${APT_RETRIES:-5}" install -y -qq --no-install-recommends "${APT_PKGS[@]}"
+else
+  echo "=== Skip apt setup (SKIP_APT=1) ==="
+fi
+
+if [[ "${INSTALL_ONLY:-0}" == "1" ]]; then
+  echo "=== Install-only setup done ==="
+  exit 0
+fi
 
 RT=/tmp/sysy-runtime-lib
-echo "=== Clone SysY runtime ==="
-rm -rf "$RT"
-git clone --depth 1 https://github.com/pku-minic/sysy-runtime-lib.git "$RT"
-
 echo "=== Build libsysy.a (riscv64-linux-gnu) ==="
+rm -rf "$RT"
 mkdir -p "$RT/build/obj"
-riscv64-linux-gnu-gcc -Wall -O3 -c "$RT/src/sysy.c" -o "$RT/build/obj/sysy.o" -I"$RT/src"
+if [[ -f "$LOCAL_SYSY" ]]; then
+  echo "using local runtime: $LOCAL_SYSY"
+  riscv64-linux-gnu-gcc -Wall -O3 -c "$LOCAL_SYSY" -o "$RT/build/obj/sysy.o"
+else
+  echo "local runtime missing; cloning official runtime"
+  git clone --depth 1 https://github.com/pku-minic/sysy-runtime-lib.git "$RT/src"
+  riscv64-linux-gnu-gcc -Wall -O3 -c "$RT/src/src/sysy.c" -o "$RT/build/obj/sysy.o" -I"$RT/src/src"
+fi
 riscv64-linux-gnu-ar rc "$RT/build/libsysy.a" "$RT/build/obj/sysy.o"
 riscv64-linux-gnu-ranlib "$RT/build/libsysy.a"
 
@@ -54,11 +73,16 @@ riscv64-linux-gnu-ranlib "$RT/build/libsysy.a"
 export LINK_FLAGS="${LINK_FLAGS:--static -mcmodel=medany}"
 
 echo "=== Build compiler (host g++) ==="
-cd /work
-make clean && make
+BUILD_DIR="${BUILD_DIR:-/tmp/compiler-build}"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+cp /work/Makefile /work/*.cpp /work/*.h "$BUILD_DIR/"
+make -C "$BUILD_DIR" clean
+make -C "$BUILD_DIR"
+export COMPILER="$BUILD_DIR/compiler"
 
 echo "=== smoke.sy -> smoke.s ==="
-./compiler -S -o /tmp/smoke.s examples/smoke.sy
+"$COMPILER" -S -o /tmp/smoke.s /work/examples/smoke.sy
 
 echo "=== Link (LINK_FLAGS=$LINK_FLAGS) ==="
 riscv64-linux-gnu-gcc $LINK_FLAGS /tmp/smoke.s "$RT/build/libsysy.a" -o /tmp/smoke.elf

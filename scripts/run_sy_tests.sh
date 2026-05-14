@@ -14,6 +14,7 @@
 #   ./scripts/run_sy_tests.sh /path/to/testdir
 #
 # 环境变量：COMPILER RISCV_GCC QEMU LINK_FLAGS LIBSYSY USE_O1=1 CONTINUE_ON_FAIL=1
+#           RUN_TIMEOUT=60s（可选，单个 qemu 运行超时；默认不限制）
 
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,6 +43,9 @@ fi
 
 command -v "$RISCV_GCC" >/dev/null 2>&1 || { echo "error: missing $RISCV_GCC" >&2; exit 2; }
 command -v "$QEMU" >/dev/null 2>&1 || { echo "error: missing $QEMU" >&2; exit 2; }
+if [[ -n "${RUN_TIMEOUT:-}" ]]; then
+  command -v timeout >/dev/null 2>&1 || { echo "error: RUN_TIMEOUT needs GNU timeout" >&2; exit 2; }
+fi
 
 ac=0
 wa=0
@@ -52,13 +56,14 @@ nogolden=0
 # 返回：0=AC 10=无.out仅冒烟 1=WA 2=CE 3=链接失败 4=运行崩溃
 run_one() {
   local sy="$1"
-  local base dir s elf act tmp stdin_file out rc_exp
+  local base dir s elf act act_with_rc tmp stdin_file out rc_exp
   base=$(basename "$sy" .sy)
   dir=$(dirname "$sy")
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/sytest.XXXXXX")
   s="$tmp/$base.s"
   elf="$tmp/$base.elf"
   act="$tmp/act.out"
+  act_with_rc="$tmp/act_with_rc.out"
 
   local comp_args=( -S -o "$s" "$sy" )
   if [[ "${USE_O1:-0}" == "1" ]]; then
@@ -83,20 +88,30 @@ run_one() {
   [[ -f "$dir/$base.in" ]] && stdin_file="$dir/$base.in"
 
   set +e
-  "$QEMU" "$elf" <"$stdin_file" >"$act" 2>"$tmp/qemu.err"
+  if [[ -n "${RUN_TIMEOUT:-}" ]]; then
+    timeout "$RUN_TIMEOUT" "$QEMU" "$elf" <"$stdin_file" >"$act" 2>"$tmp/qemu.err"
+  else
+    "$QEMU" "$elf" <"$stdin_file" >"$act" 2>"$tmp/qemu.err"
+  fi
   local rc_act=$?
   set -e
+
+  if [[ -n "${RUN_TIMEOUT:-}" && "$rc_act" -eq 124 ]]; then
+    echo "RE(timeout ${RUN_TIMEOUT})  $sy"
+    rm -rf "$tmp"
+    return 4
+  fi
 
   if [[ -s "$tmp/qemu.err" ]]; then
     echo "RE(run)  $sy  qemu stderr:" >&2
     sed 's/^/    /' "$tmp/qemu.err" >&2
   fi
 
-  if [[ "$rc_act" -gt 128 ]]; then
-    echo "RE(signal?)  $sy  exit=$rc_act"
-    rm -rf "$tmp"
-    return 4
+  cp "$act" "$act_with_rc"
+  if [[ -s "$act_with_rc" ]] && [[ "$(tail -c 1 "$act_with_rc")" != "" ]]; then
+    printf '\n' >>"$act_with_rc"
   fi
+  printf '%s\n' "$rc_act" >>"$act_with_rc"
 
   out="$dir/$base.out"
   rc_exp="$dir/$base.ret"
@@ -107,12 +122,12 @@ run_one() {
     return 10
   fi
 
-  if ! cmp -s "$out" "$act"; then
+  if ! cmp -s "$out" "$act" && ! cmp -s "$out" "$act_with_rc"; then
     echo "WA  $sy"
     echo "    --- expected"
     sed 's/^/    /' "$out" 2>/dev/null || true
-    echo "    --- actual"
-    sed 's/^/    /' "$act" 2>/dev/null || true
+    echo "    --- actual(stdout + exit)"
+    sed 's/^/    /' "$act_with_rc" 2>/dev/null || true
     rm -rf "$tmp"
     return 1
   fi

@@ -145,9 +145,9 @@ void irOptimizeBlock(IRFunction &fn) {
       out.push_back(in);
       continue;
     }
-    case IROp::LeaStr:
-    case IROp::LeaGlobal:
     case IROp::StoreLocal:
+      // Only real stores record the last stored vreg. LeaGlobal/LeaStr must not
+      // touch fwdStore: their `u` is unused (-1) and would poison LoadGlobal.
       fwdStore[in.sym] = in.u;
       in.u = remap(in.u);
       in.v = remap(in.v);
@@ -161,7 +161,7 @@ void irOptimizeBlock(IRFunction &fn) {
       continue;
     case IROp::LoadLocal: {
       auto it = fwdStore.find(in.sym);
-      if (it != fwdStore.end() && in.dst >= 0) {
+      if (it != fwdStore.end() && it->second >= 0 && in.dst >= 0) {
         // Forward to Copy: reuse stored vreg
         IRInst cp;
         cp.op = IROp::Copy;
@@ -180,7 +180,7 @@ void irOptimizeBlock(IRFunction &fn) {
     }
     case IROp::LoadGlobal: {
       auto it = fwdStore.find(in.sym);
-      if (it != fwdStore.end() && in.dst >= 0) {
+      if (it != fwdStore.end() && it->second >= 0 && in.dst >= 0) {
         IRInst cp;
         cp.op = IROp::Copy;
         cp.dst = in.dst;
@@ -196,6 +196,8 @@ void irOptimizeBlock(IRFunction &fn) {
       out.push_back(in);
       continue;
     }
+    case IROp::LeaStr:
+    case IROp::LeaGlobal:
     case IROp::LeaLocal:
     case IROp::LoadParamAddr:
     case IROp::StoreMem:

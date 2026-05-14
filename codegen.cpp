@@ -13,6 +13,8 @@ struct ArgLoc {
   bool valueIsFloat = false;
 };
 
+static constexpr bool kEnableMagicDivRem = false;
+
 static int intLog2Positive32(int32_t v) {
   if (v <= 0 || (v & (v - 1)) != 0) {
     return -1;
@@ -53,7 +55,7 @@ static uint32_t computeSDivMagic(int32_t d, int &shift) {
 
 // Emit code for signed division a0 = a0 / d using magic multiply
 static bool emitSDivByConst(CodeGen &cg, int32_t d) {
-  if (d <= 1) return false;
+  if (!kEnableMagicDivRem || d <= 1) return false;
   int shift = 0;
   uint32_t magic = computeSDivMagic(d, shift);
   if (magic == 0 || shift < 0 || shift > 31) return false;
@@ -64,13 +66,13 @@ static bool emitSDivByConst(CodeGen &cg, int32_t d) {
     cg.emit("\tsrai\ta0, a0, " + to_string(shift));
   }
   cg.emit("\tsrai\tt2, t2, 31");
-  cg.emit("\tadd\ta0, a0, t2");
+  cg.emit("\tsub\ta0, a0, t2");
   return true;
 }
 
 // Emit code for signed remainder a0 = a0 % d using magic multiply
 static bool emitSRemByConst(CodeGen &cg, int32_t d) {
-  if (d <= 1) return false;
+  if (!kEnableMagicDivRem || d <= 1) return false;
   int shift = 0;
   uint32_t magic = computeSDivMagic(d, shift);
   if (magic == 0 || shift < 0 || shift > 31) return false;
@@ -82,7 +84,7 @@ static bool emitSRemByConst(CodeGen &cg, int32_t d) {
     cg.emit("\tsrai\ta0, a0, " + to_string(shift));
   }
   cg.emit("\tsrai\tt2, t3, 31");                    // sign bit
-  cg.emit("\tadd\ta0, a0, t2");                     // a0 = x/d
+  cg.emit("\tsub\ta0, a0, t2");                     // a0 = x/d
   cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
   cg.emit("\tmulw\ta0, a0, t1");                    // a0 = (x/d)*d
   cg.emit("\tsubw\ta0, t3, a0");                    // a0 = x - (x/d)*d
@@ -154,6 +156,15 @@ static bool emitMulByConst(CodeGen &cg, int32_t k) {
   return tryEmit(-k, true);
 }
 
+static void emitAndA0Const(CodeGen &cg, uint32_t mask) {
+  if (mask <= 2047u) {
+    cg.emit("\tandi\ta0, a0, " + to_string(static_cast<int>(mask)));
+  } else {
+    cg.emit("\tli\tt6, " + to_string(mask));
+    cg.emit("\tand\ta0, a0, t6");
+  }
+}
+
 static bool exprIsLeaf(Expr *e) {
   if (!e) {
     return true;
@@ -165,6 +176,9 @@ static bool exprIsLeaf(Expr *e) {
     return true;
   case ExprKind::LVal: {
     auto *lv = static_cast<LValExpr *>(e);
+    if (!lv->indices.empty()) {
+      return false;
+    }
     for (auto &ix : lv->indices) {
       if (!exprIsLeaf(ix.get())) {
         return false;
@@ -202,6 +216,58 @@ static bool exprHasNoCall(Expr *e) {
     return false;
   }
   return false;
+}
+
+static bool exprUsesArrayAddress(Expr *e) {
+  if (!e) return false;
+  switch (e->kind) {
+  case ExprKind::Number:
+  case ExprKind::String:
+    return false;
+  case ExprKind::LVal: {
+    auto *lv = static_cast<LValExpr *>(e);
+    if (!lv->indices.empty()) return true;
+    return false;
+  }
+  case ExprKind::Unary:
+    return exprUsesArrayAddress(static_cast<UnaryExpr *>(e)->expr.get());
+  case ExprKind::Binary: {
+    auto *b = static_cast<BinaryExpr *>(e);
+    return exprUsesArrayAddress(b->lhs.get()) || exprUsesArrayAddress(b->rhs.get());
+  }
+  case ExprKind::Call: {
+    auto *c = static_cast<CallExpr *>(e);
+    for (auto &a : c->args) {
+      if (exprUsesArrayAddress(a.get())) return true;
+    }
+    return false;
+  }
+  }
+  return false;
+}
+
+// Under -O1, emitExpr may use t4 (binary fast paths, emitLValAddress simpleIndices base).
+static bool assignRhsMayClobberAddrRegT4(Expr *e) {
+  if (!e) {
+    return false;
+  }
+  switch (e->kind) {
+  case ExprKind::Number:
+  case ExprKind::String:
+    return false;
+  case ExprKind::Call:
+    return true;
+  case ExprKind::Binary:
+    return true;
+  case ExprKind::Unary:
+    return assignRhsMayClobberAddrRegT4(static_cast<UnaryExpr *>(e)->expr.get());
+  case ExprKind::LVal: {
+    auto *lv = static_cast<LValExpr *>(e);
+    return !lv->indices.empty();
+  }
+  default:
+    return true;
+  }
 }
 
 static bool stmtHasCall(Stmt *s);
@@ -432,7 +498,8 @@ void CodeGen::emitFunction(FuncDef &def) {
     int frame = currentFunction_->frameSize;
     IRFunction irBuf;
     bool useIr = false;
-    if (optO1_ && irFunctionEligible(def)) {
+    bool leaf = !stmtHasCall(def.body.get());
+    if (optO1_ && leaf && irFunctionEligible(def)) {
       irBuildFunction(def, semantic_, irBuf);
       irOptimizeBlock(irBuf);
       irAssignSlots(irBuf);
@@ -450,7 +517,6 @@ void CodeGen::emitFunction(FuncDef &def) {
       irSpillBase_ = 0;
       irTotalFrame_ = frame;
     }
-    bool leaf = !stmtHasCall(def.body.get());
     emitAdjustSp(-frame);
     emit("\tli\tt0, " + to_string(frame));
     emit("\tadd\tt0, sp, t0");
@@ -522,38 +588,13 @@ void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
   if (vid < 0) return;
   if (asFloat) {
     if (irLastVregInFa0_ == vid) return;
-    if (irCacheFt0_ == vid) {
-      emit("\tfmv.s\tfa0, ft0");
-      irCacheFt0_ = irLastVregInFa0_;
-      irLastVregInFa0_ = vid;
-      return;
-    }
     int off = irVregSlotOffset(vid);
     emitLoadMem("flw", "fa0", "s0", off);
-    irCacheFt0_ = irLastVregInFa0_;
     irLastVregInFa0_ = vid;
   } else {
     if (irLastVregInA0_ == vid) return;
-    // Check t4 cache: hit → mv a0,t4; rotate
-    if (irCacheT4_ == vid) {
-      emit("\tmv\ta0, t4");
-      irCacheT4_ = irLastVregInA0_;
-      irLastVregInA0_ = vid;
-      return;
-    }
-    // Check t5 cache: hit → mv a0,t5; rotate
-    if (irCacheT5_ == vid) {
-      emit("\tmv\ta0, t5");
-      irCacheT5_ = irCacheT4_;
-      irCacheT4_ = irLastVregInA0_;
-      irLastVregInA0_ = vid;
-      return;
-    }
     int off = irVregSlotOffset(vid);
     emitLoadMem("lw", "a0", "s0", off);
-    // Shift cache: t5←t4, t4←old-a0, a0←vid
-    irCacheT5_ = irCacheT4_;
-    irCacheT4_ = irLastVregInA0_;
     irLastVregInA0_ = vid;
   }
 }
@@ -561,17 +602,8 @@ void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
 // Load vreg into specified integer register (not a0), without tracking update
 void CodeGen::emitIrLoadVregTo(int vid, const string &reg) {
   if (vid < 0) return;
-  // Check cache first
   if (irLastVregInA0_ == vid) {
     emit("\tmv\t" + reg + ", a0");
-    return;
-  }
-  if (irCacheT4_ == vid) {
-    emit("\tmv\t" + reg + ", t4");
-    return;
-  }
-  if (irCacheT5_ == vid) {
-    emit("\tmv\t" + reg + ", t5");
     return;
   }
   int off = irVregSlotOffset(vid);
@@ -600,12 +632,9 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
   int off = irVregSlotOffset(vid);
   if (asFloat) {
     emitStoreMem("fsw", "fa0", "s0", off);
-    irCacheFt0_ = irLastVregInFa0_;
     irLastVregInFa0_ = vid;
   } else {
     emitStoreMem("sw", "a0", "s0", off);
-    irCacheT5_ = irCacheT4_;
-    irCacheT4_ = irLastVregInA0_;
     irLastVregInA0_ = vid;
   }
 }
@@ -688,23 +717,12 @@ static optional<float> irTraceConstF(const IRFunction &ir, int v, size_t before)
 }
 
 void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
-  // Compute use counts for skip-store optimization
+  (void)def;
   const int nv = static_cast<int>(ir.nextVreg);
-  vector<int> useCount(std::max(nv, 1));
-  for (const auto &inst : ir.insts) {
-    if (inst.u >= 0 && inst.u < nv) ++useCount[static_cast<size_t>(inst.u)];
-    if (inst.v >= 0 && inst.v < nv) ++useCount[static_cast<size_t>(inst.v)];
-    for (int a : inst.args) {
-      if (a >= 0 && a < nv) ++useCount[static_cast<size_t>(a)];
-    }
-  }
   irSkipStoreVregs_.assign(static_cast<size_t>(nv), false);
-  for (int v = 0; v < nv; ++v) {
-    if (useCount[static_cast<size_t>(v)] == 1) {
-      irSkipStoreVregs_[static_cast<size_t>(v)] = true;
-    }
-  }
-  irSkipStore_ = true;
+  // The old single-use skip-store path could leave a later load reading an
+  // uninitialized spill slot after cache invalidation. Keep IR spilling eager.
+  irSkipStore_ = false;
 
   irLastVregInA0_ = -1;
   irLastVregInFa0_ = -1;
@@ -831,6 +849,15 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
 
     emit("\tcall\t" + fn->asmName);
     if (stackArea > 0) emitAdjustSp(stackArea);
+    if (in.dst >= 0) {
+      if (in.isFloat) {
+        irVFloat_[static_cast<size_t>(in.dst)] = 1;
+        emitIrStoreVreg(in.dst, true);
+      } else {
+        irVFloat_[static_cast<size_t>(in.dst)] = 0;
+        emitIrStoreVreg(in.dst, false);
+      }
+    }
     return;
   }
 
@@ -1236,7 +1263,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         emit("\tsraiw\tt1, a0, 31");
         emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
         emit("\taddw\ta0, a0, t1");
-        emit("\tandi\ta0, a0, " + to_string(static_cast<int>(mask)));
+        emitAndA0Const(*this, mask);
         emit("\tsubw\ta0, a0, t1");
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
@@ -1612,41 +1639,37 @@ void CodeGen::emitAssign(AssignStmt &stmt) {
     Symbol *sym = stmt.lhs->symbol;
     bool lhsFloat = sym->base == BaseType::Float;
 
-    // 安全快路径：地址直接算到 t4（emitExpr 不使用 t4，float RHS 也不用）
+    // -O1: keep store address in t4 across emitExpr(rhs). Spill only when RHS may use t4
+    // (binary/call/subscript), avoiding extra stack in deep recursion; still fixes
+    // temp[i/2]=arr[...], g=i+j, etc.
     if (optO1_) {
-      // Simple scalar: address to t4, RHS w/o arrays keeps t4 safe
+      const bool spillT4 =
+          !stmt.lhs->indices.empty() || assignRhsMayClobberAddrRegT4(stmt.rhs.get());
       if (!sym->isGlobal && !sym->isParamArray && stmt.lhs->indices.empty() &&
           fitsImm12(sym->offset)) {
         emit("\taddi\tt4, s0, " + to_string(sym->offset));
-        auto exprHasArray = [](Expr *e, auto &self) -> bool {
-          if (!e) return false;
-          if (e->kind == ExprKind::LVal && !static_cast<LValExpr *>(e)->indices.empty())
-            return true;
-          if (e->kind == ExprKind::Binary) {
-            auto *b = static_cast<BinaryExpr *>(e);
-            return self(b->lhs.get(), self) || self(b->rhs.get(), self);
-          }
-          if (e->kind == ExprKind::Unary)
-            return self(static_cast<UnaryExpr *>(e)->expr.get(), self);
-          if (e->kind == ExprKind::Call) {
-            for (auto &a : static_cast<CallExpr *>(e)->args)
-              if (self(a.get(), self)) return true;
-          }
-          return false;
-        };
-        bool rhsHasArray = exprHasArray(stmt.rhs.get(), exprHasArray);
-        if (rhsHasArray) emitPushInt("t4");
+        if (spillT4) {
+          emitPushInt("t4");
+        }
         emitExpr(stmt.rhs.get());
         emitConvert(stmt.rhs->type, Type::scalar(sym->base));
-        if (rhsHasArray) emitPopInt("t4");
+        if (spillT4) {
+          emitPopInt("t4");
+        }
         if (lhsFloat) emit("\tfsw\tfa0, 0(t4)");
         else          emit("\tsw\ta0, 0(t4)");
         return;
       }
       emitLValAddress(stmt.lhs.get());
       emit("\tmv\tt4, a0");
+      if (spillT4) {
+        emitPushInt("t4");
+      }
       emitExpr(stmt.rhs.get());
       emitConvert(stmt.rhs->type, Type::scalar(sym->base));
+      if (spillT4) {
+        emitPopInt("t4");
+      }
       if (lhsFloat) emit("\tfsw\tfa0, 0(t4)");
       else          emit("\tsw\ta0, 0(t4)");
       return;
@@ -1981,7 +2004,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             emit("\tsraiw\tt1, a0, 31");
             emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
             emit("\taddw\ta0, a0, t1");
-            emit("\tandi\ta0, a0, " + to_string(static_cast<int>(mask)));
+            emitAndA0Const(*this, mask);
             emit("\tsubw\ta0, a0, t1");
             return;
           }
@@ -2043,8 +2066,8 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
       return;
     }
 
-    // T4-based path: save one side to t4 (preserved across sub-expr eval), avoid push/pop
-    // t4 is never used by any emitExpr path, so it survives sub-expression evaluation.
+    // T4-based path: save one side to t4 across the other sub-expr. Do not rely on
+    // t4 surviving outer emitExpr (e.g. emitAssign already spills t4 around RHS).
     if (optO1_ && !useFloat && !compare) {
       // RHS leaf: evaluate LHS first, save to t4, evaluate leaf RHS, combine
       if (exprIsLeaf(expr->rhs.get())) {
@@ -2134,7 +2157,8 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
     }
 
     // T5-based path: both sides non-leaf, save LHS to t5 (safe across sub-expr eval)
-    if (optO1_ && !useFloat && !compare) {
+    if (optO1_ && !useFloat && !compare && exprHasNoCall(expr->rhs.get()) &&
+        !exprUsesArrayAddress(expr->rhs.get())) {
       emitExpr(expr->lhs.get());
       emit("\tmv\tt5, a0");
       emitExpr(expr->rhs.get());
@@ -2151,7 +2175,8 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
       }
       return;
     }
-    if (optO1_ && !useFloat && compare) {
+    if (optO1_ && !useFloat && compare && exprHasNoCall(expr->rhs.get()) &&
+        !exprUsesArrayAddress(expr->rhs.get())) {
       emitExpr(expr->lhs.get());
       emit("\tmv\tt5, a0");
       emitExpr(expr->rhs.get());
@@ -2285,7 +2310,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         emit("\tsraiw\tt1, a0, 31");
         emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
         emit("\taddw\ta0, a0, t1");
-        emit("\tandi\ta0, a0, " + to_string(static_cast<int>(mask)));
+        emitAndA0Const(*this, mask);
         emit("\tsubw\ta0, a0, t1");
       } else if (emitSRemByConst(*this, k)) {
         /* optimized by magic multiply */
@@ -2425,8 +2450,14 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
     if (expr->indices.empty()) {
       return;
     }
-    // 安全快速路径：t4 存基址，t5 累加偏移（emitExpr 不使用 t4/t5）
-    if (optO1_) {
+    bool simpleIndices = true;
+    for (auto &ix : expr->indices) {
+      if (!exprIsLeaf(ix.get())) {
+        simpleIndices = false;
+        break;
+      }
+    }
+    if (optO1_ && simpleIndices) {
       emit("\tmv\tt4, a0");
       emit("\tli\tt5, 0");
       for (size_t i = 0; i < expr->indices.size(); ++i) {
@@ -2519,6 +2550,7 @@ void CodeGen::emitCall(CallExpr *expr) {
     if (noNestedCall) {
       for (size_t i = 0; i < args.size() && noNestedCall; ++i) {
         if (!exprHasNoCall(args[i])) noNestedCall = false;
+        if (exprUsesArrayAddress(args[i])) noNestedCall = false;
       }
       if (noNestedCall) {
         // Count safe registers needed: t4-t6 = 3 int; ft0-ft7 = 8 float
@@ -2528,6 +2560,13 @@ void CodeGen::emitCall(CallExpr *expr) {
         }
         if (intNeeded > 3) noNestedCall = false;
       }
+    }
+
+    // emitExpr(-O1) freely uses t4 for temporaries; the fast path below would stash
+    // earlier args in t4/t5/t6 and then evaluate later args, clobbering them
+    // (e.g. power(5, (mod-1)/d) loses the literal 5). Fall back to stack args.
+    if (noNestedCall && args.size() > 1) {
+      noNestedCall = false;
     }
 
     if (noNestedCall) {
@@ -2579,7 +2618,7 @@ void CodeGen::emitCall(CallExpr *expr) {
       emit("\tcall\t" + fn->asmName);
       if (stackArea > 0) emitAdjustSp(stackArea);
       return;
-    }
+  }
 
     // Fallback: stack-based arg passing
     int tempSlots = static_cast<int>(params.size());
