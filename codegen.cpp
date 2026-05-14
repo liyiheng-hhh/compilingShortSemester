@@ -1973,11 +1973,16 @@ void CodeGen::emitIf(IfStmt &stmt) {
     string thenLabel = newLabel("if_then");
     string elseLabel = newLabel("if_else");
     string endLabel = newLabel("if_end");
+    if (!stmt.elseStmt && tryEmitCondBranchFalse(stmt.cond.get(), endLabel)) {
+      emitStmt(stmt.thenStmt.get());
+      emit(endLabel + ":");
+      return;
+    }
     emitCond(stmt.cond.get(), thenLabel, stmt.elseStmt ? elseLabel : endLabel);
     emit(thenLabel + ":");
     emitStmt(stmt.thenStmt.get());
-    emit("\tj\t" + endLabel);
     if (stmt.elseStmt) {
+      emit("\tj\t" + endLabel);
       emit(elseLabel + ":");
       emitStmt(stmt.elseStmt.get());
     }
@@ -2002,7 +2007,9 @@ void CodeGen::emitWhile(WhileStmt &stmt) {
     continueLabels_.push_back(condLabel);
     breakLabels_.push_back(endLabel);
     emit(condLabel + ":");
-    emitCond(stmt.cond.get(), bodyLabel, endLabel);
+    if (!tryEmitCondBranchFalse(stmt.cond.get(), endLabel)) {
+      emitCond(stmt.cond.get(), bodyLabel, endLabel);
+    }
     emit(bodyLabel + ":");
     emitStmt(stmt.body.get());
     emit("\tj\t" + condLabel);
@@ -2011,7 +2018,46 @@ void CodeGen::emitWhile(WhileStmt &stmt) {
     continueLabels_.pop_back();
   }
 
+bool CodeGen::tryEmitTailCallReturn(ReturnStmt &stmt) {
+    if (!optO1_ || !stmt.expr || stmt.expr->kind != ExprKind::Call ||
+        currentFunction_->ret != BaseType::Int) {
+      return false;
+    }
+    auto *call = static_cast<CallExpr *>(stmt.expr.get());
+    Function *fn = call->function;
+    if (!fn || fn->runtime || fn->variadic || fn->injectLineArgument ||
+        fn->ret != currentFunction_->ret || call->args.size() != 2 ||
+        fn->params.size() != 2) {
+      return false;
+    }
+    for (size_t i = 0; i < 2; ++i) {
+      const ParamType &p = fn->params[i];
+      Expr *arg = call->args[i].get();
+      if (p.isArray || p.base != BaseType::Int || !arg->type.isIntScalar() ||
+          !exprHasNoCall(arg) || exprUsesArrayAddress(arg)) {
+        return false;
+      }
+    }
+
+    emitExpr(call->args[1].get());
+    emitConvert(call->args[1]->type, Type::scalar(BaseType::Int));
+    emit("\tmv\tt5, a0");
+    emitExpr(call->args[0].get());
+    emitConvert(call->args[0]->type, Type::scalar(BaseType::Int));
+    emit("\tmv\ta1, t5");
+
+    emit("\tld\tra, -8(s0)");
+    emit("\tld\tt0, -16(s0)");
+    emit("\tmv\tsp, s0");
+    emit("\tmv\ts0, t0");
+    emit("\tj\t" + fn->asmName);
+    return true;
+  }
+
 void CodeGen::emitReturn(ReturnStmt &stmt) {
+    if (tryEmitTailCallReturn(stmt)) {
+      return;
+    }
     if (stmt.expr) {
       emitExpr(stmt.expr.get());
       emitConvert(stmt.expr->type, Type::scalar(currentFunction_->ret));
@@ -2754,6 +2800,82 @@ void CodeGen::emitCond(Expr *expr, const string &trueLabel, const string &falseL
     if (!isCompare) emitBoolFromValue(expr->type);
     emit("\tbnez\ta0, " + trueLabel);
     emit("\tj\t" + falseLabel);
+  }
+
+bool CodeGen::tryEmitCondBranchFalse(Expr *expr, const string &falseLabel) {
+    if (!optO1_ || expr->kind != ExprKind::Binary) {
+      return false;
+    }
+    auto *bin = static_cast<BinaryExpr *>(expr);
+    const string &op = bin->op;
+    const bool compare = op == "==" || op == "!=" || op == "<" || op == ">" ||
+                         op == "<=" || op == ">=";
+    if (!compare || !bin->lhs->type.isIntScalar() || !bin->rhs->type.isIntScalar()) {
+      return false;
+    }
+
+    auto branchFalse = [&](const string &cmp, const string &lhs,
+                           const string &rhs) {
+      if (cmp == "==") {
+        emit("\tbne\t" + lhs + ", " + rhs + ", " + falseLabel);
+      } else if (cmp == "!=") {
+        emit("\tbeq\t" + lhs + ", " + rhs + ", " + falseLabel);
+      } else if (cmp == "<") {
+        emit("\tbge\t" + lhs + ", " + rhs + ", " + falseLabel);
+      } else if (cmp == ">") {
+        emit("\tbge\t" + rhs + ", " + lhs + ", " + falseLabel);
+      } else if (cmp == "<=") {
+        emit("\tblt\t" + rhs + ", " + lhs + ", " + falseLabel);
+      } else if (cmp == ">=") {
+        emit("\tblt\t" + lhs + ", " + rhs + ", " + falseLabel);
+      }
+    };
+    auto reverseOp = [](const string &cmp) -> string {
+      if (cmp == "<") return ">";
+      if (cmp == ">") return "<";
+      if (cmp == "<=") return ">=";
+      if (cmp == ">=") return "<=";
+      return cmp;
+    };
+
+    if (bin->rhs->isConst && bin->rhs->constVal.type == BaseType::Int) {
+      emitExpr(bin->lhs.get());
+      int32_t k = constAsInt(bin->rhs->constVal);
+      if (k == 0) {
+        branchFalse(op, "a0", "zero");
+      } else {
+        emit("\tli\tt1, " + to_string(static_cast<int>(k)));
+        branchFalse(op, "a0", "t1");
+      }
+      return true;
+    }
+    if (bin->lhs->isConst && bin->lhs->constVal.type == BaseType::Int) {
+      emitExpr(bin->rhs.get());
+      int32_t k = constAsInt(bin->lhs->constVal);
+      string rop = reverseOp(op);
+      if (k == 0) {
+        branchFalse(rop, "a0", "zero");
+      } else {
+        emit("\tli\tt1, " + to_string(static_cast<int>(k)));
+        branchFalse(rop, "a0", "t1");
+      }
+      return true;
+    }
+    if (exprIsLeaf(bin->rhs.get())) {
+      emitExpr(bin->lhs.get());
+      emit("\tmv\tt4, a0");
+      emitExpr(bin->rhs.get());
+      branchFalse(op, "t4", "a0");
+      return true;
+    }
+    if (exprIsLeaf(bin->lhs.get())) {
+      emitExpr(bin->rhs.get());
+      emit("\tmv\tt4, a0");
+      emitExpr(bin->lhs.get());
+      branchFalse(op, "a0", "t4");
+      return true;
+    }
+    return false;
   }
 
 void CodeGen::emitBoolFromValue(const Type &type) {

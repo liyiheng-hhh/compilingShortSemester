@@ -140,6 +140,8 @@ private:
 
   void emitCond(Expr *expr, const string &trueLabel, const string &falseLabel);
 
+  bool tryEmitCondBranchFalse(Expr *expr, const string &falseLabel);
+
   void emitBoolFromValue(const Type &type);
 
   void emitLValValue(LValExpr *expr);
@@ -151,6 +153,8 @@ private:
   void emitCall(CallExpr *expr);
 
   bool tryEmitInlineCall(CallExpr *expr);
+
+  bool tryEmitTailCallReturn(ReturnStmt &stmt);
 
   void emitConvert(const Type &from, const Type &to);
 
