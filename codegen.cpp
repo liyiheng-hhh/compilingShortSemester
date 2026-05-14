@@ -13,7 +13,8 @@ struct ArgLoc {
   bool valueIsFloat = false;
 };
 
-static constexpr bool kEnableMagicDivRem = false;
+static constexpr bool kEnableIrBackend = false;
+static constexpr bool kEnableRecursiveT5BinaryPath = false;
 
 static int intLog2Positive32(int32_t v) {
   if (v <= 0 || (v & (v - 1)) != 0) {
@@ -27,67 +28,20 @@ static int intLog2Positive32(int32_t v) {
   return r;
 }
 
-// Granlund-Montgomery: compute magic number and shift for signed division x/d
-// Returns magic=0 if d is not optimizable (d <= 1 or too large)
-static uint32_t computeSDivMagic(int32_t d, int &shift) {
-  if (d <= 1) return 0;
-  uint32_t ad = static_cast<uint32_t>(d);
-  uint32_t t = 0x80000000u;  // 2^31
-  uint32_t anc = t - 1 - t % ad;
-  int p = 31;
-  uint64_t q1 = 0x80000000u / anc;
-  uint64_t r1 = 0x80000000u - q1 * anc;
-  uint64_t q2 = 0x80000000u / ad;
-  uint64_t r2 = 0x80000000u - q2 * ad;
-  while (true) {
-    ++p;
-    q1 <<= 1; r1 <<= 1;
-    if (r1 >= anc) { ++q1; r1 -= anc; }
-    q2 <<= 1; r2 <<= 1;
-    if (r2 >= ad) { ++q2; r2 -= ad; }
-    uint64_t delta = ad - r2;
-    if (q1 < delta || (q1 == delta && r1 == 0)) continue;
-    break;
-  }
-  shift = p - 32;
-  return static_cast<uint32_t>(q2 + 1);
-}
-
-// Emit code for signed division a0 = a0 / d using magic multiply
+// -O1: constant-divisor path with exact divw/remw semantics.
 static bool emitSDivByConst(CodeGen &cg, int32_t d) {
-  if (!kEnableMagicDivRem || d <= 1) return false;
-  int shift = 0;
-  uint32_t magic = computeSDivMagic(d, shift);
-  if (magic == 0 || shift < 0 || shift > 31) return false;
-  cg.emit("\tmv\tt2, a0");
-  cg.emit("\tli\tt1, " + to_string(static_cast<int32_t>(magic)));
-  cg.emit("\tmulh\ta0, a0, t1");
-  if (shift > 0) {
-    cg.emit("\tsrai\ta0, a0, " + to_string(shift));
-  }
-  cg.emit("\tsrai\tt2, t2, 31");
-  cg.emit("\tsub\ta0, a0, t2");
+  if (!cg.optO1() || d <= 1) return false;
+  cg.emit("\tsext.w\ta0, a0");
+  cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
+  cg.emit("\tdivw\ta0, a0, t1");
   return true;
 }
 
-// Emit code for signed remainder a0 = a0 % d using magic multiply
 static bool emitSRemByConst(CodeGen &cg, int32_t d) {
-  if (!kEnableMagicDivRem || d <= 1) return false;
-  int shift = 0;
-  uint32_t magic = computeSDivMagic(d, shift);
-  if (magic == 0 || shift < 0 || shift > 31) return false;
-  // r = x - (x/d)*d
-  cg.emit("\tmv\tt3, a0");                          // t3 = x
-  cg.emit("\tli\tt1, " + to_string(static_cast<int32_t>(magic)));
-  cg.emit("\tmulh\ta0, a0, t1");                    // high mul for quotient
-  if (shift > 0) {
-    cg.emit("\tsrai\ta0, a0, " + to_string(shift));
-  }
-  cg.emit("\tsrai\tt2, t3, 31");                    // sign bit
-  cg.emit("\tsub\ta0, a0, t2");                     // a0 = x/d
+  if (!cg.optO1() || d <= 1) return false;
+  cg.emit("\tsext.w\ta0, a0");
   cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
-  cg.emit("\tmulw\ta0, a0, t1");                    // a0 = (x/d)*d
-  cg.emit("\tsubw\ta0, t3, a0");                    // a0 = x - (x/d)*d
+  cg.emit("\tremw\ta0, a0, t1");
   return true;
 }
 
@@ -268,6 +222,91 @@ static bool assignRhsMayClobberAddrRegT4(Expr *e) {
   default:
     return true;
   }
+}
+
+static ReturnStmt *singleReturnStmt(FuncDef *def) {
+  if (!def || !def->body || def->body->items.size() != 1) {
+    return nullptr;
+  }
+  Stmt *stmt = def->body->items[0].get();
+  if (stmt->kind != StmtKind::Return) {
+    return nullptr;
+  }
+  auto *ret = static_cast<ReturnStmt *>(stmt);
+  return ret->expr ? ret : nullptr;
+}
+
+static int exprNodeCount(Expr *e) {
+  if (!e) {
+    return 0;
+  }
+  switch (e->kind) {
+  case ExprKind::Number:
+  case ExprKind::String:
+    return 1;
+  case ExprKind::LVal: {
+    int n = 1;
+    auto *lv = static_cast<LValExpr *>(e);
+    for (auto &ix : lv->indices) {
+      n += exprNodeCount(ix.get());
+    }
+    return n;
+  }
+  case ExprKind::Unary:
+    return 1 + exprNodeCount(static_cast<UnaryExpr *>(e)->expr.get());
+  case ExprKind::Binary: {
+    auto *b = static_cast<BinaryExpr *>(e);
+    return 1 + exprNodeCount(b->lhs.get()) + exprNodeCount(b->rhs.get());
+  }
+  case ExprKind::Call: {
+    int n = 1;
+    auto *c = static_cast<CallExpr *>(e);
+    for (auto &a : c->args) {
+      n += exprNodeCount(a.get());
+    }
+    return n;
+  }
+  }
+  return 1;
+}
+
+static bool symbolInList(Symbol *sym, const vector<Symbol *> &symbols) {
+  for (Symbol *s : symbols) {
+    if (s == sym) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool inlineReturnExprEligible(Expr *e, const vector<Symbol *> &params) {
+  if (!e || e->type.isPointer || e->type.base != BaseType::Int) {
+    return false;
+  }
+  switch (e->kind) {
+  case ExprKind::Number:
+    return !static_cast<NumberExpr *>(e)->isFloat;
+  case ExprKind::String:
+  case ExprKind::Call:
+    return false;
+  case ExprKind::LVal: {
+    auto *lv = static_cast<LValExpr *>(e);
+    if (!lv->indices.empty()) {
+      return false;
+    }
+    Symbol *sym = lv->symbol;
+    return sym && (symbolInList(sym, params) ||
+                   (sym->isGlobal && !sym->isArray && sym->base == BaseType::Int));
+  }
+  case ExprKind::Unary:
+    return inlineReturnExprEligible(static_cast<UnaryExpr *>(e)->expr.get(), params);
+  case ExprKind::Binary: {
+    auto *b = static_cast<BinaryExpr *>(e);
+    return inlineReturnExprEligible(b->lhs.get(), params) &&
+           inlineReturnExprEligible(b->rhs.get(), params);
+  }
+  }
+  return false;
 }
 
 static bool stmtHasCall(Stmt *s);
@@ -499,7 +538,7 @@ void CodeGen::emitFunction(FuncDef &def) {
     IRFunction irBuf;
     bool useIr = false;
     bool leaf = !stmtHasCall(def.body.get());
-    if (optO1_ && leaf && irFunctionEligible(def)) {
+    if (kEnableIrBackend && optO1_ && leaf && irFunctionEligible(def)) {
       irBuildFunction(def, semantic_, irBuf);
       irOptimizeBlock(irBuf);
       irAssignSlots(irBuf);
@@ -1366,12 +1405,12 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         return;
       }
       emitIrLoadVreg(in.u, false);
-      emit("\tmv\tt2, a0");
       if (emitSDivByConst(*this, k)) {
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
         return;
       }
+      emit("\tmv\tt2, a0");
     }
     emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
@@ -1655,6 +1694,23 @@ void CodeGen::emitDecl(DeclStmt &decl) {
         continue;
       }
       if (!sym->isArray) {
+        if (optO1_) {
+          if (def.init && !def.init->isList) {
+            emitExpr(def.init->expr.get());
+            emitConvert(def.init->expr->type, Type::scalar(sym->base));
+            emitStoreMem(sym->base == BaseType::Float ? "fsw" : "sw",
+                         sym->base == BaseType::Float ? "fa0" : "a0", "s0",
+                         sym->offset);
+          } else if (!def.init) {
+            if (sym->base == BaseType::Float) {
+              emit("\tfmv.w.x\tfa0, zero");
+              emitStoreMem("fsw", "fa0", "s0", sym->offset);
+            } else {
+              emitStoreMem("sw", "zero", "s0", sym->offset);
+            }
+          }
+          continue;
+        }
         if (def.init && !def.init->isList) {
           emitExpr(def.init->expr.get());
           emitConvert(def.init->expr->type, Type::scalar(sym->base));
@@ -1787,23 +1843,21 @@ void CodeGen::emitAssign(AssignStmt &stmt) {
     // (binary/call/subscript), avoiding extra stack in deep recursion; still fixes
     // temp[i/2]=arr[...], g=i+j, etc.
     if (optO1_) {
-      const bool spillT4 =
-          !stmt.lhs->indices.empty() || assignRhsMayClobberAddrRegT4(stmt.rhs.get());
-      if (!sym->isGlobal && !sym->isParamArray && stmt.lhs->indices.empty() &&
-          fitsImm12(sym->offset)) {
-        emit("\taddi\tt4, s0, " + to_string(sym->offset));
-        if (spillT4) {
-          emitPushInt("t4");
-        }
+      if (stmt.lhs->indices.empty() && !sym->isParamArray) {
         emitExpr(stmt.rhs.get());
         emitConvert(stmt.rhs->type, Type::scalar(sym->base));
-        if (spillT4) {
-          emitPopInt("t4");
+        if (sym->isGlobal) {
+          emit("\tlla\tt4, " + sym->label);
+          if (lhsFloat) emit("\tfsw\tfa0, 0(t4)");
+          else          emit("\tsw\ta0, 0(t4)");
+        } else {
+          emitStoreMem(lhsFloat ? "fsw" : "sw", lhsFloat ? "fa0" : "a0", "s0",
+                       sym->offset);
         }
-        if (lhsFloat) emit("\tfsw\tfa0, 0(t4)");
-        else          emit("\tsw\ta0, 0(t4)");
         return;
       }
+      const bool spillT4 =
+          !stmt.lhs->indices.empty() || assignRhsMayClobberAddrRegT4(stmt.rhs.get());
       emitLValAddress(stmt.lhs.get());
       emit("\tmv\tt4, a0");
       if (spillT4) {
@@ -1836,6 +1890,20 @@ void CodeGen::emitAssign(AssignStmt &stmt) {
   }
 
 void CodeGen::emitIf(IfStmt &stmt) {
+    if (optO1_ && stmt.cond->isConst) {
+      bool takeThen = false;
+      if (stmt.cond->constVal.type == BaseType::Float) {
+        takeThen = constAsFloat(stmt.cond->constVal) != 0.0f;
+      } else {
+        takeThen = constAsInt(stmt.cond->constVal) != 0;
+      }
+      if (takeThen) {
+        emitStmt(stmt.thenStmt.get());
+      } else if (stmt.elseStmt) {
+        emitStmt(stmt.elseStmt.get());
+      }
+      return;
+    }
     string thenLabel = newLabel("if_then");
     string elseLabel = newLabel("if_else");
     string endLabel = newLabel("if_end");
@@ -1851,6 +1919,17 @@ void CodeGen::emitIf(IfStmt &stmt) {
   }
 
 void CodeGen::emitWhile(WhileStmt &stmt) {
+    if (optO1_ && stmt.cond->isConst) {
+      bool never = false;
+      if (stmt.cond->constVal.type == BaseType::Float) {
+        never = constAsFloat(stmt.cond->constVal) == 0.0f;
+      } else {
+        never = constAsInt(stmt.cond->constVal) == 0;
+      }
+      if (never) {
+        return;
+      }
+    }
     string condLabel = newLabel("while_cond");
     string bodyLabel = newLabel("while_body");
     string endLabel = newLabel("while_end");
@@ -2300,8 +2379,10 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
       }
     }
 
-    // T5-based path: both sides non-leaf, save LHS to t5 (safe across sub-expr eval)
-    if (optO1_ && !useFloat && !compare && exprHasNoCall(expr->rhs.get()) &&
+    // Disabled for correctness: recursive RHS codegen may also use t5 and clobber
+    // the saved LHS value. Re-enable only with explicit register-use tracking.
+    if (kEnableRecursiveT5BinaryPath && optO1_ && !useFloat && !compare &&
+        exprHasNoCall(expr->rhs.get()) &&
         !exprUsesArrayAddress(expr->rhs.get())) {
       emitExpr(expr->lhs.get());
       emit("\tmv\tt5, a0");
@@ -2319,7 +2400,8 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
       }
       return;
     }
-    if (optO1_ && !useFloat && compare && exprHasNoCall(expr->rhs.get()) &&
+    if (kEnableRecursiveT5BinaryPath && optO1_ && !useFloat && compare &&
+        exprHasNoCall(expr->rhs.get()) &&
         !exprUsesArrayAddress(expr->rhs.get())) {
       emitExpr(expr->lhs.get());
       emit("\tmv\tt5, a0");
@@ -2555,6 +2637,13 @@ void CodeGen::emitBoolFromValue(const Type &type) {
   }
 
 void CodeGen::emitLValValue(LValExpr *expr) {
+    if (!inlineArgMap_.empty() && expr->indices.empty()) {
+      auto it = inlineArgMap_.find(expr->symbol);
+      if (it != inlineArgMap_.end()) {
+        emitExpr(it->second);
+        return;
+      }
+    }
     if (expr->isConst && !expr->type.isPointer) {
       emitConst(expr->constVal);
       return;
@@ -2594,6 +2683,23 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
     if (expr->indices.empty()) {
       return;
     }
+    if (optO1_ && expr->indices.size() == 1 &&
+        exprHasNoCall(expr->indices[0].get()) &&
+        !exprUsesArrayAddress(expr->indices[0].get())) {
+      emit("\tmv\tt5, a0");
+      emitExpr(expr->indices[0].get());
+      emitConvert(expr->indices[0]->type, Type::scalar(BaseType::Int));
+      int strideBytes = strideForIndex(sym, 0) * 4;
+      int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
+      if (lg >= 0) {
+        emit("\tslliw\tt2, a0, " + to_string(lg));
+      } else {
+        emit("\tli\tt1, " + to_string(strideBytes));
+        emit("\tmulw\tt2, a0, t1");
+      }
+      emit("\tadd\ta0, t5, t2");
+      return;
+    }
     bool simpleIndices = true;
     for (auto &ix : expr->indices) {
       if (!exprIsLeaf(ix.get())) {
@@ -2618,6 +2724,33 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
         emit("\taddw\tt5, t5, t2");
       }
       emit("\tadd\ta0, t4, t5");
+      return;
+    }
+    bool safeIndexTemps = optO1_;
+    for (auto &ix : expr->indices) {
+      if (!exprHasNoCall(ix.get()) || exprUsesArrayAddress(ix.get())) {
+        safeIndexTemps = false;
+        break;
+      }
+    }
+    if (safeIndexTemps) {
+      emitPushInt("a0");
+      emit("\tli\tt5, 0");
+      for (size_t i = 0; i < expr->indices.size(); ++i) {
+        emitExpr(expr->indices[i].get());
+        emitConvert(expr->indices[i]->type, Type::scalar(BaseType::Int));
+        int strideBytes = strideForIndex(sym, i) * 4;
+        int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
+        if (lg >= 0) {
+          emit("\tslliw\tt2, a0, " + to_string(lg));
+        } else {
+          emit("\tli\tt1, " + to_string(strideBytes));
+          emit("\tmulw\tt2, a0, t1");
+        }
+        emit("\taddw\tt5, t5, t2");
+      }
+      emitPopInt("a0");
+      emit("\tadd\ta0, a0, t5");
       return;
     }
     // Fallback: stack-based accumulation
@@ -2660,7 +2793,56 @@ int CodeGen::strideForIndex(Symbol *sym, size_t index) {
     return index + 1 < sym->dims.size() ? product(sym->dims, index + 1) : 1;
   }
 
+bool CodeGen::tryEmitInlineCall(CallExpr *expr) {
+    if (!optO1_ || !inlineArgMap_.empty()) {
+      return false;
+    }
+    Function *fn = expr->function;
+    if (!fn || fn->runtime || fn->variadic || fn->injectLineArgument ||
+        fn->ret != BaseType::Int || !fn->def) {
+      return false;
+    }
+    FuncDef *def = fn->def;
+    if (def->params.size() != expr->args.size() || def->params.size() > 3) {
+      return false;
+    }
+
+    vector<Symbol *> paramSyms;
+    paramSyms.reserve(def->params.size());
+    for (const Param &p : def->params) {
+      if (p.isArray || p.base != BaseType::Int || !p.symbol) {
+        return false;
+      }
+      paramSyms.push_back(p.symbol);
+    }
+
+    ReturnStmt *ret = singleReturnStmt(def);
+    if (!ret || exprNodeCount(ret->expr.get()) > 12 ||
+        !inlineReturnExprEligible(ret->expr.get(), paramSyms)) {
+      return false;
+    }
+
+    for (auto &arg : expr->args) {
+      if (!arg->type.isIntScalar() || !exprHasNoCall(arg.get()) ||
+          exprUsesArrayAddress(arg.get())) {
+        return false;
+      }
+    }
+
+    auto saved = std::move(inlineArgMap_);
+    inlineArgMap_.clear();
+    for (size_t i = 0; i < def->params.size(); ++i) {
+      inlineArgMap_[def->params[i].symbol] = expr->args[i].get();
+    }
+    emitExpr(ret->expr.get());
+    inlineArgMap_ = std::move(saved);
+    return true;
+  }
+
 void CodeGen::emitCall(CallExpr *expr) {
+    if (tryEmitInlineCall(expr)) {
+      return;
+    }
     Function *fn = expr->function;
     vector<ParamType> params;
     vector<Expr *> args;
@@ -2687,14 +2869,51 @@ void CodeGen::emitCall(CallExpr *expr) {
     int stackSlots = 0;
     auto locs = computeArgLocations(params, fn->variadic, namedCount, &stackSlots);
 
-    // 快路径已禁用：后续参数求值可能覆盖前面已放入 a1/a2... 的参数
+    bool twoIntRegPath =
+        optO1_ && !fn->injectLineArgument && !fn->variadic && args.size() == 2 &&
+        params.size() == 2 && stackSlots == 0 &&
+        locs[0].kind == ArgLoc::IntReg && locs[0].index == 0 &&
+        locs[1].kind == ArgLoc::IntReg && locs[1].index == 1;
+    if (twoIntRegPath) {
+      for (size_t i = 0; i < 2; ++i) {
+        const ParamType &p = params[i];
+        if ((!p.isArray && p.base != BaseType::Int) ||
+            (p.isArray && !args[i]->type.isPointer) ||
+            (!p.isArray && !args[i]->type.isIntScalar()) ||
+            !exprHasNoCall(args[i]) || exprUsesArrayAddress(args[i])) {
+          twoIntRegPath = false;
+          break;
+        }
+      }
+    }
+    if (twoIntRegPath) {
+      ParamType p1 = params[1];
+      Type t1 = p1.isArray ? Type::pointer(p1.base, p1.dims) : Type::scalar(p1.base);
+      emitExpr(args[1]);
+      if (!p1.isArray) {
+        emitConvert(args[1]->type, t1);
+      }
+      emit("\tmv\tt5, a0");
+
+      ParamType p0 = params[0];
+      Type t0 = p0.isArray ? Type::pointer(p0.base, p0.dims) : Type::scalar(p0.base);
+      emitExpr(args[0]);
+      if (!p0.isArray) {
+        emitConvert(args[0]->type, t0);
+      }
+      emit("\tmv\ta1, t5");
+      emit("\tcall\t" + fn->asmName);
+      return;
+    }
 
     // 优化路径：无嵌套调用时，求值到安全寄存器(t4-t6,ft)，省去 temp 栈槽
     bool noNestedCall = optO1_ && !fn->injectLineArgument;
+    bool allArgsLeaf = true;
     if (noNestedCall) {
       for (size_t i = 0; i < args.size() && noNestedCall; ++i) {
         if (!exprHasNoCall(args[i])) noNestedCall = false;
         if (exprUsesArrayAddress(args[i])) noNestedCall = false;
+        if (!exprIsLeaf(args[i])) allArgsLeaf = false;
       }
       if (noNestedCall) {
         // Count safe registers needed: t4-t6 = 3 int; ft0-ft7 = 8 float
@@ -2706,10 +2925,9 @@ void CodeGen::emitCall(CallExpr *expr) {
       }
     }
 
-    // emitExpr(-O1) freely uses t4 for temporaries; the fast path below would stash
-    // earlier args in t4/t5/t6 and then evaluate later args, clobbering them
-    // (e.g. power(5, (mod-1)/d) loses the literal 5). Fall back to stack args.
-    if (noNestedCall && args.size() > 1) {
+    // emitExpr(-O1) freely uses t4 for non-leaf temporaries. Multi-arg calls are
+    // safe only when every later argument is leaf codegen (loads/constants/unary).
+    if (noNestedCall && args.size() > 1 && !allArgsLeaf) {
       noNestedCall = false;
     }
 

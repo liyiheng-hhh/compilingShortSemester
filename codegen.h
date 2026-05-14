@@ -21,6 +21,9 @@ public:
 
   string run();
 
+  /// True when compiling with -O1 (used by codegen helper fast paths).
+  bool optO1() const { return optO1_; }
+
   void emit(const string &line = "");
 
 private:
@@ -53,6 +56,7 @@ private:
   bool irSkippedLast_ = false;
   int irSkippedVreg_ = -1;
   std::unordered_map<Symbol *, std::string> irParamCache_;
+  std::unordered_map<Symbol *, Expr *> inlineArgMap_;
 
   int irVregSlotOffset(int vid) const;
 
@@ -145,6 +149,8 @@ private:
   int strideForIndex(Symbol *sym, size_t index);
 
   void emitCall(CallExpr *expr);
+
+  bool tryEmitInlineCall(CallExpr *expr);
 
   void emitConvert(const Type &from, const Type &to);
 

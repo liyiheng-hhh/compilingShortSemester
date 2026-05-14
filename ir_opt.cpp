@@ -332,7 +332,7 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = true;
         break;
       }
-      if (in.u == in.v) {
+      if (remap(in.u) == remap(in.v)) {
         folded = foldIntConst(0);
         break;
       }
@@ -359,6 +359,30 @@ void irOptimizeBlock(IRFunction &fn) {
       }
       if (cj && *cj == 1) {
         emitCopy(in.dst, in.u);
+        folded = true;
+        break;
+      }
+      if (ci && *ci == -1) {
+        IRInst ng;
+        ng.op = IROp::Neg;
+        ng.dst = in.dst;
+        ng.u = in.v;
+        out.push_back(ng);
+        if (in.dst >= 0 && in.dst < static_cast<int>(knownInt.size())) {
+          knownInt[in.dst].reset();
+        }
+        folded = true;
+        break;
+      }
+      if (cj && *cj == -1) {
+        IRInst ng;
+        ng.op = IROp::Neg;
+        ng.dst = in.dst;
+        ng.u = in.u;
+        out.push_back(ng);
+        if (in.dst >= 0 && in.dst < static_cast<int>(knownInt.size())) {
+          knownInt[in.dst].reset();
+        }
         folded = true;
         break;
       }
@@ -395,7 +419,7 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = foldIntConst(0);
         break;
       }
-      if (in.u == in.v) {
+      if (remap(in.u) == remap(in.v)) {
         folded = foldIntConst(0);
         break;
       }
@@ -461,6 +485,16 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = foldFloatConst(*fi + *fj);
         break;
       }
+      if (fj && *fj == 0.0f) {
+        emitCopy(in.dst, in.u);
+        folded = true;
+        break;
+      }
+      if (fi && *fi == 0.0f) {
+        emitCopy(in.dst, in.v);
+        folded = true;
+        break;
+      }
       k = makeKeyPlain(in);
       folded = tryCse(k);
       if (!folded) cse[k] = in.dst;
@@ -473,6 +507,24 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = foldFloatConst(*fi - *fj);
         break;
       }
+      if (fj && *fj == 0.0f) {
+        emitCopy(in.dst, in.u);
+        folded = true;
+        break;
+      }
+      if (fi && *fi == 0.0f) {
+        IRInst ng;
+        ng.op = IROp::FNeg;
+        ng.dst = in.dst;
+        ng.u = in.v;
+        ng.isFloat = true;
+        out.push_back(ng);
+        if (in.dst >= 0 && in.dst < static_cast<int>(knownFloat.size())) {
+          knownFloat[in.dst].reset();
+        }
+        folded = true;
+        break;
+      }
       k = makeKeyPlain(in);
       folded = tryCse(k);
       if (!folded) cse[k] = in.dst;
@@ -483,6 +535,46 @@ void irOptimizeBlock(IRFunction &fn) {
       auto fj = followConstF(in.v);
       if (fi && fj) {
         folded = foldFloatConst(*fi * *fj);
+        break;
+      }
+      if ((fi && *fi == 0.0f) || (fj && *fj == 0.0f)) {
+        folded = foldFloatConst(0.0f);
+        break;
+      }
+      if (fi && *fi == 1.0f) {
+        emitCopy(in.dst, in.v);
+        folded = true;
+        break;
+      }
+      if (fj && *fj == 1.0f) {
+        emitCopy(in.dst, in.u);
+        folded = true;
+        break;
+      }
+      if (fi && *fi == -1.0f) {
+        IRInst ng;
+        ng.op = IROp::FNeg;
+        ng.dst = in.dst;
+        ng.u = in.v;
+        ng.isFloat = true;
+        out.push_back(ng);
+        if (in.dst >= 0 && in.dst < static_cast<int>(knownFloat.size())) {
+          knownFloat[in.dst].reset();
+        }
+        folded = true;
+        break;
+      }
+      if (fj && *fj == -1.0f) {
+        IRInst ng;
+        ng.op = IROp::FNeg;
+        ng.dst = in.dst;
+        ng.u = in.u;
+        ng.isFloat = true;
+        out.push_back(ng);
+        if (in.dst >= 0 && in.dst < static_cast<int>(knownFloat.size())) {
+          knownFloat[in.dst].reset();
+        }
+        folded = true;
         break;
       }
       k = makeKeyPlain(in);
@@ -640,20 +732,33 @@ void irAssignSlots(IRFunction &fn) {
     // Allocate slot for dst
     if (in.dst >= 0 && in.dst < nv && allocated[static_cast<size_t>(in.dst)] < 0) {
       int slot = -1;
-      // Find a freed slot
-      for (size_t s = 0; s < slotFreeAt.size(); ++s) {
-        if (slotFreeAt[s] < 0) {
-          slot = static_cast<int>(s);
-          break;
+      if (in.op == IROp::Copy && in.u >= 0 && in.u < nv &&
+          lastUse[static_cast<size_t>(in.u)] == idx &&
+          allocated[static_cast<size_t>(in.u)] >= 0) {
+        slot = allocated[static_cast<size_t>(in.u)];
+        allocated[static_cast<size_t>(in.dst)] = slot;
+        int lu = static_cast<int>(lastUse[static_cast<size_t>(in.dst)]);
+        size_t su = static_cast<size_t>(slot);
+        if (lu > slotFreeAt[su]) {
+          slotFreeAt[su] = lu;
         }
+      } else {
+        // Find a freed slot
+        for (size_t s = 0; s < slotFreeAt.size(); ++s) {
+          if (slotFreeAt[s] < 0) {
+            slot = static_cast<int>(s);
+            break;
+          }
+        }
+        if (slot < 0) {
+          // Allocate new slot
+          slot = static_cast<int>(slotFreeAt.size());
+          slotFreeAt.push_back(-1);
+        }
+        slotFreeAt[static_cast<size_t>(slot)] =
+            static_cast<int>(lastUse[static_cast<size_t>(in.dst)]);
+        allocated[static_cast<size_t>(in.dst)] = slot;
       }
-      if (slot < 0) {
-        // Allocate new slot
-        slot = static_cast<int>(slotFreeAt.size());
-        slotFreeAt.push_back(-1);
-      }
-      slotFreeAt[static_cast<size_t>(slot)] = static_cast<int>(lastUse[static_cast<size_t>(in.dst)]);
-      allocated[static_cast<size_t>(in.dst)] = slot;
     }
   }
 
