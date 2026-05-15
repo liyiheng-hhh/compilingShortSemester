@@ -1,0 +1,27 @@
+int main() {
+  int a = 0 - 2147483647;
+  a = a - 1;
+  putint(a / 7);
+  putch(10);
+  putint(a / (-7));
+  putch(10);
+  putint(a % 7);
+  putch(10);
+  putint(100 / 7);
+  putch(10);
+  putint(100 % 7);
+  putch(10);
+  putint(-100 / 7);
+  putch(10);
+  putint(-100 % 7);
+  putch(10);
+  putint(17 / 4);
+  putch(10);
+  putint(17 % 4);
+  putch(10);
+  putint(-17 / 4);
+  putch(10);
+  putint(-17 % 4);
+  putch(10);
+  return 0;
+}

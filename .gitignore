@@ -2,5 +2,7 @@
 compiler
 *.o
 *.s
+# Docker/CI 在仓库内生成的编译副本：勿提交；官方递归编译 .cpp 时会与根目录源码重复链接
+.docker-compiler-build/
 2026初赛RISCV赛道功能用例/
 performance/

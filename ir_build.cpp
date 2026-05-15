@@ -8,7 +8,8 @@
 using namespace std;
 
 static bool exprHasLandLor(Expr *e);
-static bool blockSequential(const BlockStmt &block);
+static bool stmtIrShapeOk(Stmt *s);
+static bool blockIrShapeOk(const BlockStmt &block);
 static bool blockHasLocalArrayDecl(const BlockStmt &block);
 
 bool irExprHasLogicalShortCircuit(Expr *e) { return exprHasLandLor(e); }
@@ -67,69 +68,94 @@ static bool blockHasLocalArrayDecl(const BlockStmt &block) {
   return false;
 }
 
-static bool blockSequential(const BlockStmt &block) {
+static bool stmtIrShapeOk(Stmt *s);
+
+static bool blockIrShapeOk(const BlockStmt &block) {
   for (const auto &sp : block.items) {
-    Stmt *s = sp.get();
-    switch (s->kind) {
-    case StmtKind::If:
-    case StmtKind::While:
-    case StmtKind::Break:
-    case StmtKind::Continue:
+    if (!stmtIrShapeOk(sp.get())) {
       return false;
-    case StmtKind::Block:
-      if (!blockSequential(*static_cast<BlockStmt *>(s))) {
-        return false;
-      }
-      break;
-    case StmtKind::Expr: {
-      auto *es = static_cast<ExprStmt *>(s);
-      if (es->expr && exprHasLandLor(es->expr.get())) {
-        return false;
-      }
-      break;
-    }
-    case StmtKind::Assign: {
-      auto *as = static_cast<AssignStmt *>(s);
-      if (exprHasLandLor(as->rhs.get())) {
-        return false;
-      }
-      for (auto &ix : as->lhs->indices) {
-        if (exprHasLandLor(ix.get())) {
-          return false;
-        }
-      }
-      break;
-    }
-    case StmtKind::Decl: {
-      auto *d = static_cast<DeclStmt *>(s);
-      for (VarDef &vd : d->defs) {
-        if (vd.init) {
-          if (!vd.init->isList && vd.init->expr && exprHasLandLor(vd.init->expr.get())) {
-            return false;
-          }
-          if (vd.init->isList) {
-            return false;
-          }
-        }
-      }
-      break;
-    }
-    case StmtKind::Return: {
-      auto *r = static_cast<ReturnStmt *>(s);
-      if (r->expr && exprHasLandLor(r->expr.get())) {
-        return false;
-      }
-      break;
-    }
-    default:
-      break;
     }
   }
   return true;
 }
 
+static bool stmtIrShapeOk(Stmt *s) {
+  if (!s) {
+    return true;
+  }
+  switch (s->kind) {
+  case StmtKind::Decl: {
+    auto *d = static_cast<DeclStmt *>(s);
+    for (VarDef &vd : d->defs) {
+      if (vd.init) {
+        if (!vd.init->isList && vd.init->expr && exprHasLandLor(vd.init->expr.get())) {
+          return false;
+        }
+        if (vd.init->isList) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+  case StmtKind::Block:
+    return blockIrShapeOk(*static_cast<BlockStmt *>(s));
+  case StmtKind::Expr: {
+    auto *es = static_cast<ExprStmt *>(s);
+    if (es->expr && exprHasLandLor(es->expr.get())) {
+      return false;
+    }
+    return true;
+  }
+  case StmtKind::Assign: {
+    auto *as = static_cast<AssignStmt *>(s);
+    if (exprHasLandLor(as->rhs.get())) {
+      return false;
+    }
+    for (auto &ix : as->lhs->indices) {
+      if (exprHasLandLor(ix.get())) {
+        return false;
+      }
+    }
+    return true;
+  }
+  case StmtKind::If: {
+    auto *ifs = static_cast<IfStmt *>(s);
+    if (exprHasLandLor(ifs->cond.get())) {
+      return false;
+    }
+    if (!stmtIrShapeOk(ifs->thenStmt.get())) {
+      return false;
+    }
+    if (ifs->elseStmt && !stmtIrShapeOk(ifs->elseStmt.get())) {
+      return false;
+    }
+    return true;
+  }
+  case StmtKind::While: {
+    auto *w = static_cast<WhileStmt *>(s);
+    if (exprHasLandLor(w->cond.get())) {
+      return false;
+    }
+    return stmtIrShapeOk(w->body.get());
+  }
+  case StmtKind::Break:
+  case StmtKind::Continue:
+    return true;
+  case StmtKind::Return: {
+    auto *r = static_cast<ReturnStmt *>(s);
+    if (r->expr && exprHasLandLor(r->expr.get())) {
+      return false;
+    }
+    return true;
+  }
+  default:
+    return true;
+  }
+}
+
 bool irFunctionEligible(const FuncDef &def) {
-  return blockSequential(*def.body) && !blockHasLocalArrayDecl(*def.body);
+  return !blockHasLocalArrayDecl(*def.body) && blockIrShapeOk(*def.body);
 }
 
 static int strideFor(Symbol *sym, size_t index) {
@@ -142,6 +168,13 @@ static int strideFor(Symbol *sym, size_t index) {
 struct IRBuilder {
   IRFunction *ir = nullptr;
   FuncDef *func = nullptr;
+  int labelSeq_ = 0;
+  vector<string> breakLbl_;
+  vector<string> contLbl_;
+
+  string newLabel(const char *suffix) {
+    return ".L_" + string(suffix) + "_" + func->name + "_" + to_string(labelSeq_++);
+  }
 
   void push(const IRInst &in) { ir->insts.push_back(in); }
 
@@ -681,6 +714,92 @@ void IRBuilder::buildStmt(Stmt *s) {
     }
     break;
   }
+  case StmtKind::If: {
+    auto *ifs = static_cast<IfStmt *>(s);
+    int c = buildExpr(ifs->cond.get());
+    string lEnd = newLabel("ifend");
+    if (ifs->elseStmt) {
+      string lElse = newLabel("ifelse");
+      IRInst bz;
+      bz.op = IROp::Beqz;
+      bz.u = c;
+      bz.ext = lElse;
+      push(bz);
+      buildStmt(ifs->thenStmt.get());
+      IRInst jn;
+      jn.op = IROp::J;
+      jn.ext = lEnd;
+      push(jn);
+      IRInst le;
+      le.op = IROp::Label;
+      le.ext = lElse;
+      push(le);
+      buildStmt(ifs->elseStmt.get());
+      IRInst lm;
+      lm.op = IROp::Label;
+      lm.ext = lEnd;
+      push(lm);
+    } else {
+      IRInst bz;
+      bz.op = IROp::Beqz;
+      bz.u = c;
+      bz.ext = lEnd;
+      push(bz);
+      buildStmt(ifs->thenStmt.get());
+      IRInst lm;
+      lm.op = IROp::Label;
+      lm.ext = lEnd;
+      push(lm);
+    }
+    break;
+  }
+  case StmtKind::While: {
+    auto *w = static_cast<WhileStmt *>(s);
+    string lHead = newLabel("wh");
+    string lEnd = newLabel("whe");
+    IRInst lh;
+    lh.op = IROp::Label;
+    lh.ext = lHead;
+    push(lh);
+    int c = buildExpr(w->cond.get());
+    IRInst bz;
+    bz.op = IROp::Beqz;
+    bz.u = c;
+    bz.ext = lEnd;
+    push(bz);
+    breakLbl_.push_back(lEnd);
+    contLbl_.push_back(lHead);
+    buildStmt(w->body.get());
+    breakLbl_.pop_back();
+    contLbl_.pop_back();
+    IRInst jh;
+    jh.op = IROp::J;
+    jh.ext = lHead;
+    push(jh);
+    IRInst le;
+    le.op = IROp::Label;
+    le.ext = lEnd;
+    push(le);
+    break;
+  }
+  case StmtKind::Break: {
+    if (!breakLbl_.empty()) {
+      IRInst j;
+      j.op = IROp::J;
+      j.ext = breakLbl_.back();
+      push(j);
+    }
+    break;
+  }
+  case StmtKind::Continue: {
+    if (!contLbl_.empty()) {
+      IRInst j;
+      j.op = IROp::J;
+      j.ext = contLbl_.back();
+      push(j);
+    }
+    break;
+  }
   case StmtKind::Return: {
     auto *r = static_cast<ReturnStmt *>(s);
     IRInst ret;
@@ -727,6 +846,7 @@ void irBuildFunction(FuncDef &def, const Semantic & /*semantic*/, IRFunction &ou
   out.ret = def.ret;
   out.nextVreg = 0;
   out.insts.clear();
+  out.blocks.clear();
   b.buildBlock(*def.body);
   if (out.insts.empty() || out.insts.back().op != IROp::Ret) {
     IRInst ret;
@@ -734,4 +854,5 @@ void irBuildFunction(FuncDef &def, const Semantic & /*semantic*/, IRFunction &ou
     ret.u = -1;
     out.insts.push_back(ret);
   }
+  irRefreshCFG(out);
 }

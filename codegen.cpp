@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdint>
 #include <optional>
 
 using namespace std;
@@ -29,24 +30,121 @@ static int intLog2Positive32(int32_t v) {
   return r;
 }
 
-// -O1: exact SysY 32-bit signed division by known constant (divw after sext.w).
+// ---- Signed 32-bit division by constant (libdivide-style magic + power-of-2) ----
+
+static constexpr uint8_t kLd32ShiftMask = 0x1F;
+static constexpr uint8_t kLdAddMarker = 0x40;
+static constexpr uint8_t kLdNegDivisor = 0x80;
+
+static uint32_t u64Div32To32(uint32_t u1, uint32_t u0, uint32_t v, uint32_t *r) {
+  uint64_t n = (static_cast<uint64_t>(u1) << 32) | u0;
+  uint32_t q = static_cast<uint32_t>(n / v);
+  *r = static_cast<uint32_t>(n - static_cast<uint64_t>(q) * static_cast<uint64_t>(v));
+  return q;
+}
+
+static bool libdivideS32Gen(int32_t d, int32_t *magicOut, uint8_t *moreOut) {
+  if (d == 0) {
+    return false;
+  }
+  uint32_t ud = static_cast<uint32_t>(d);
+  uint32_t absD = d < 0 ? -ud : ud;
+  uint32_t floorLog2D = 31u - static_cast<uint32_t>(__builtin_clz(absD));
+  if ((absD & (absD - 1)) == 0) {
+    *magicOut = 0;
+    *moreOut = static_cast<uint8_t>(floorLog2D | (d < 0 ? kLdNegDivisor : 0));
+    return true;
+  }
+  uint32_t rem = 0;
+  uint32_t proposedM =
+      u64Div32To32(1u << (floorLog2D - 1), 0, absD, &rem);
+  const uint32_t e = absD - rem;
+  uint8_t more = 0;
+  if (e < (1u << floorLog2D)) {
+    more = static_cast<uint8_t>(floorLog2D - 1);
+  } else {
+    proposedM += proposedM;
+    const uint32_t twiceRem = rem + rem;
+    if (twiceRem >= absD || twiceRem < rem) {
+      proposedM += 1;
+    }
+    more = static_cast<uint8_t>(floorLog2D | kLdAddMarker);
+  }
+  proposedM += 1;
+  int32_t magic = static_cast<int32_t>(proposedM);
+  if (d < 0) {
+    more |= kLdNegDivisor;
+    magic = -magic;
+  }
+  *magicOut = magic;
+  *moreOut = more;
+  return true;
+}
+
+// Pre: a0 = 32-bit dividend (sign-extended by caller). Post: a0 = trunc(n / d).
+static bool emitSigned32DivByConstMagicPayload(CodeGen &cg, int32_t d) {
+  int32_t magic = 0;
+  uint8_t more = 0;
+  if (!libdivideS32Gen(d, &magic, &more)) {
+    return false;
+  }
+  const uint8_t shift = more & kLd32ShiftMask;
+  if (magic == 0) {
+    uint32_t mask =
+        shift >= 31 ? 0x7FFFFFFFu : (((uint32_t)1u << shift) - 1u);
+    cg.emit("\tsraiw\tt1, a0, 31");
+    if (mask <= 2047u) {
+      cg.emit("\tandi\tt1, t1, " + to_string(static_cast<int>(mask)));
+    } else {
+      cg.emit("\tli\tt2, " + to_string(static_cast<int>(mask)));
+      cg.emit("\tand\tt1, t1, t2");
+    }
+    cg.emit("\taddw\ta0, a0, t1");
+    cg.emit("\tsraiw\ta0, a0, " + to_string(static_cast<int>(shift)));
+    if (more & kLdNegDivisor) {
+      cg.emit("\tnegw\ta0, a0");
+    }
+    return true;
+  }
+  cg.emit("\tli\tt1, " + to_string(static_cast<int>(magic)));
+  cg.emit("\tsext.w\tt1, t1");
+  cg.emit("\tmul\tt2, a0, t1");
+  cg.emit("\tsrli\tt2, t2, 32");
+  cg.emit("\tsext.w\tt2, t2");
+  if (more & kLdAddMarker) {
+    if (more & kLdNegDivisor) {
+      cg.emit("\tsubw\tt2, t2, a0");
+    } else {
+      cg.emit("\taddw\tt2, t2, a0");
+    }
+  }
+  cg.emit("\tsraiw\tt2, t2, " + to_string(static_cast<int>(shift)));
+  cg.emit("\tsraiw\tt3, t2, 31");
+  cg.emit("\taddw\ta0, t2, t3");
+  return true;
+}
+
+// -O1: exact SysY 32-bit signed division by known constant.
 static bool emitSDivByConst(CodeGen &cg, int32_t d) {
   if (!cg.optO1() || d == 0 || d == 1 || d == -1) {
     return false;
   }
   cg.emit("\tsext.w\ta0, a0");
-  cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
-  cg.emit("\tdivw\ta0, a0, t1");
-  return true;
+  return emitSigned32DivByConstMagicPayload(cg, d);
 }
 
 static bool emitSRemByConst(CodeGen &cg, int32_t d) {
   if (!cg.optO1() || d == 0 || d == 1 || d == -1) {
     return false;
   }
-  cg.emit("\tsext.w\ta0, a0");
+  cg.emit("\tmv\tt6, a0");
+  cg.emit("\tsext.w\ta0, t6");
+  if (!emitSigned32DivByConstMagicPayload(cg, d)) {
+    return false;
+  }
   cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
-  cg.emit("\tremw\ta0, a0, t1");
+  cg.emit("\tmulw\tt1, a0, t1");
+  cg.emit("\tsubw\ta0, t6, t1");
   return true;
 }
 
@@ -542,8 +640,7 @@ void CodeGen::emitFunction(FuncDef &def) {
     int frame = currentFunction_->frameSize;
     IRFunction irBuf;
     bool useIr = false;
-    bool leaf = !stmtHasCall(def.body.get());
-    if (kEnableIrBackend && optO1_ && leaf && irFunctionEligible(def)) {
+    if (kEnableIrBackend && optO1_ && irFunctionEligible(def)) {
       irBuildFunction(def, semantic_, irBuf);
       irOptimizeBlock(irBuf);
       irAssignSlots(irBuf);
@@ -858,6 +955,7 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
         op == IROp::ConstI || op == IROp::ConstF ||
         op == IROp::LeaStr || op == IROp::LeaGlobal ||
         op == IROp::LeaLocal || op == IROp::LoadParamAddr ||
+        op == IROp::Label || op == IROp::J || op == IROp::Beqz ||
         op == IROp::Nop) {
       emitIrFlushSkipped();
       irLastVregInA0_ = -1;
@@ -1340,57 +1438,46 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   }
   case IROp::Mul: {
-    auto tryMulConst = [&](int constV, int otherV) -> bool {
-      optional<int32_t> ck = irTraceConstI(ir, constV, instIdx);
-      if (!ck) {
-        return false;
-      }
-      int32_t k = *ck;
+    if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
+      int32_t k = *kv;
       if (k == 0) {
         emit("\tli\ta0, 0");
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
-        return true;
+        return;
       }
-      if (k == 1) {
-        emitIrLoadVreg(otherV, false);
+      emitIrLoadVreg(in.u, false);
+      if (emitMulByConst(*this, k)) {
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
-        return true;
+        return;
       }
-      if (k == -1) {
-        emitIrLoadVreg(otherV, false);
-        emit("\tnegw\ta0, a0");
-        emitIrStoreVreg(in.dst, false);
-        markInt(in.dst);
-        return true;
-      }
-      if (k < 0 && k != INT32_MIN) {
-        int32_t ak = static_cast<int32_t>(-static_cast<int64_t>(k));
-        int lgn = intLog2Positive32(ak);
-        if (lgn >= 0) {
-          emitIrLoadVreg(otherV, false);
-          emit("\tslliw\ta0, a0, " + to_string(lgn));
-          emit("\tnegw\ta0, a0");
-          emitIrStoreVreg(in.dst, false);
-          markInt(in.dst);
-          return true;
-        }
-      }
-      int lg = intLog2Positive32(k > 0 ? k : 0);
-      if (lg >= 0) {
-        emitIrLoadVreg(otherV, false);
-        emit("\tslliw\ta0, a0, " + to_string(lg));
-        emitIrStoreVreg(in.dst, false);
-        markInt(in.dst);
-        return true;
-      }
-      return false;
-    };
-    if (tryMulConst(in.v, in.u)) {
+      emit("\tmv\tt2, a0");
+      emit("\tli\ta0, " + to_string(static_cast<int>(k)));
+      emit("\tmulw\ta0, t2, a0");
+      emitIrStoreVreg(in.dst, false);
+      markInt(in.dst);
       return;
     }
-    if (tryMulConst(in.u, in.v)) {
+    if (auto ku = irTraceConstI(ir, in.u, instIdx)) {
+      int32_t k = *ku;
+      if (k == 0) {
+        emit("\tli\ta0, 0");
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
+      emitIrLoadVreg(in.v, false);
+      if (emitMulByConst(*this, k)) {
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
+      emit("\tmv\tt2, a0");
+      emit("\tli\ta0, " + to_string(static_cast<int>(k)));
+      emit("\tmulw\ta0, t2, a0");
+      emitIrStoreVreg(in.dst, false);
+      markInt(in.dst);
       return;
     }
     emitIrLoadVregTo(in.u, "t2");
@@ -1409,6 +1496,19 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
   case IROp::Div: {
     if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
       int32_t k = *kv;
+      if (k == 1) {
+        emitIrLoadVreg(in.u, false);
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
+      if (k == -1) {
+        emitIrLoadVreg(in.u, false);
+        emit("\tnegw\ta0, a0");
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
       int lg = intLog2Positive32(k);
       if (k > 0 && lg >= 0) {
         emitIrLoadVreg(in.u, false);
@@ -1428,6 +1528,11 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         return;
       }
       emit("\tmv\tt2, a0");
+      emit("\tli\ta0, " + to_string(static_cast<int>(k)));
+      emit("\tdivw\ta0, t2, a0");
+      emitIrStoreVreg(in.dst, false);
+      markInt(in.dst);
+      return;
     }
     emitIrLoadVregTo(in.u, "t2");
     emitIrLoadVreg(in.v, false);
@@ -1439,6 +1544,12 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
   case IROp::Rem: {
     if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
       int32_t k = *kv;
+      if (k == 1 || k == -1) {
+        emit("\tli\ta0, 0");
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
+        return;
+      }
       int lg = intLog2Positive32(k);
       if (lg >= 1) {
         emitIrLoadVreg(in.u, false);
@@ -1593,6 +1704,34 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   case IROp::Call:
     emitIrCall(def, ir, in, instIdx);
+    return;
+  case IROp::Label:
+    emitIrFlushSkipped();
+    irLastVregInA0_ = -1;
+    irLastVregInFa0_ = -1;
+    irCacheT4_ = -1;
+    irCacheT5_ = -1;
+    irCacheFt0_ = -1;
+    emit(in.ext + ":");
+    return;
+  case IROp::J:
+    emitIrFlushSkipped();
+    irLastVregInA0_ = -1;
+    irLastVregInFa0_ = -1;
+    irCacheT4_ = -1;
+    irCacheT5_ = -1;
+    irCacheFt0_ = -1;
+    emit("\tj\t" + in.ext);
+    return;
+  case IROp::Beqz:
+    emitIrFlushSkipped();
+    irLastVregInA0_ = -1;
+    irLastVregInFa0_ = -1;
+    irCacheT4_ = -1;
+    irCacheT5_ = -1;
+    irCacheFt0_ = -1;
+    emitIrLoadVreg(in.u, false);
+    emit("\tbeqz\ta0, " + in.ext);
     return;
   case IROp::Ret:
     if (def.ret == BaseType::Void) {
@@ -2257,6 +2396,11 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             emitExpr(expr->lhs.get());
             return;
           }
+          if (k == -1) {
+            emitExpr(expr->lhs.get());
+            emit("\tnegw\ta0, a0");
+            return;
+          }
           int lg = intLog2Positive32(k);
           if (k > 0 && lg >= 0) {
             emitExpr(expr->lhs.get());
@@ -2277,7 +2421,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
           return;
         }
         if (op == "%") {
-          if (k == 1) {
+          if (k == 1 || k == -1) {
             emit("\tli\ta0, 0");
             return;
           }
@@ -2393,9 +2537,63 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             emit("\tmulw\ta0, t4, a0");
           }
         } else if (op == "/") {
-          emit("\tdivw\ta0, t4, a0");
+          if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
+            int32_t k = constAsInt(expr->rhs->constVal);
+            emit("\tmv\ta0, t4");
+            if (k == 1) {
+              /* a0 = lhs */
+            } else if (k == -1) {
+              emit("\tnegw\ta0, a0");
+            } else if (k != 0 && k > 0) {
+              int lg = intLog2Positive32(k);
+              if (lg >= 0) {
+                emit("\tli\ta2, " + to_string(static_cast<int>(k - 1)));
+                emit("\tsraiw\tt1, a0, 31");
+                emit("\tand\tt1, t1, a2");
+                emit("\taddw\tt3, a0, t1");
+                emit("\tsraiw\ta0, t3, " + to_string(lg));
+              } else if (optO1_ && emitSDivByConst(*this, k)) {
+              } else {
+                emit("\tmv\tt2, a0");
+                emit("\tli\ta0, " + to_string(static_cast<int>(k)));
+                emit("\tdivw\ta0, t2, a0");
+              }
+            } else {
+              if (optO1_ && emitSDivByConst(*this, k)) {
+              } else {
+                emit("\tmv\tt2, a0");
+                emit("\tli\ta0, " + to_string(static_cast<int>(k)));
+                emit("\tdivw\ta0, t2, a0");
+              }
+            }
+          } else {
+            emit("\tdivw\ta0, t4, a0");
+          }
         } else if (op == "%") {
-          emit("\tremw\ta0, t4, a0");
+          if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
+            int32_t k = constAsInt(expr->rhs->constVal);
+            emit("\tmv\ta0, t4");
+            if (k == 1 || k == -1) {
+              emit("\tli\ta0, 0");
+            } else if (k != 0) {
+              int lg = intLog2Positive32(k);
+              if (lg >= 1) {
+                uint32_t mask = static_cast<uint32_t>(k) - 1;
+                emit("\tsraiw\tt1, a0, 31");
+                emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
+                emit("\taddw\ta0, a0, t1");
+                emitAndA0Const(*this, mask);
+                emit("\tsubw\ta0, a0, t1");
+              } else if (optO1_ && emitSRemByConst(*this, k)) {
+              } else {
+                emit("\tmv\tt2, a0");
+                emit("\tli\ta0, " + to_string(static_cast<int>(k)));
+                emit("\tremw\ta0, t2, a0");
+              }
+            }
+          } else {
+            emit("\tremw\ta0, t4, a0");
+          }
         }
         return;
       }
@@ -2430,9 +2628,55 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             emit("\tmulw\ta0, a0, t4");
           }
         } else if (op == "/") {
-          emit("\tdivw\ta0, a0, t4");
+          if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
+            int32_t k = constAsInt(expr->rhs->constVal);
+            if (k == 1) {
+              /* a0 = lhs */
+            } else if (k == -1) {
+              emit("\tnegw\ta0, a0");
+            } else if (k != 0 && k > 0) {
+              int lg = intLog2Positive32(k);
+              if (lg >= 0) {
+                emit("\tli\ta2, " + to_string(static_cast<int>(k - 1)));
+                emit("\tsraiw\tt1, a0, 31");
+                emit("\tand\tt1, t1, a2");
+                emit("\taddw\tt3, a0, t1");
+                emit("\tsraiw\ta0, t3, " + to_string(lg));
+              } else if (optO1_ && emitSDivByConst(*this, k)) {
+              } else {
+                emit("\tdivw\ta0, a0, t4");
+              }
+            } else {
+              if (optO1_ && emitSDivByConst(*this, k)) {
+              } else {
+                emit("\tdivw\ta0, a0, t4");
+              }
+            }
+          } else {
+            emit("\tdivw\ta0, a0, t4");
+          }
         } else if (op == "%") {
-          emit("\tremw\ta0, a0, t4");
+          if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
+            int32_t k = constAsInt(expr->rhs->constVal);
+            if (k == 1 || k == -1) {
+              emit("\tli\ta0, 0");
+            } else if (k != 0) {
+              int lg = intLog2Positive32(k);
+              if (lg >= 1) {
+                uint32_t mask = static_cast<uint32_t>(k) - 1;
+                emit("\tsraiw\tt1, a0, 31");
+                emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
+                emit("\taddw\ta0, a0, t1");
+                emitAndA0Const(*this, mask);
+                emit("\tsubw\ta0, a0, t1");
+              } else if (optO1_ && emitSRemByConst(*this, k)) {
+              } else {
+                emit("\tremw\ta0, a0, t4");
+              }
+            }
+          } else {
+            emit("\tremw\ta0, a0, t4");
+          }
         }
         return;
       }
@@ -2943,6 +3187,8 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
       int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
       if (lg >= 0) {
         emit("\tslliw\tt2, a0, " + to_string(lg));
+      } else if (emitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
+        emit("\tmv\tt2, a0");
       } else {
         emit("\tli\tt1, " + to_string(strideBytes));
         emit("\tmulw\tt2, a0, t1");
@@ -2967,6 +3213,8 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
         int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
         if (lg >= 0) {
           emit("\tslliw\tt2, a0, " + to_string(lg));
+        } else if (emitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
+          emit("\tmv\tt2, a0");
         } else {
           emit("\tli\tt1, " + to_string(strideBytes));
           emit("\tmulw\tt2, a0, t1");
@@ -2993,6 +3241,8 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
         int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
         if (lg >= 0) {
           emit("\tslliw\tt2, a0, " + to_string(lg));
+        } else if (emitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
+          emit("\tmv\tt2, a0");
         } else {
           emit("\tli\tt1, " + to_string(strideBytes));
           emit("\tmulw\tt2, a0, t1");
@@ -3015,6 +3265,8 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
         int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
         if (lg >= 0) {
           emit("\tslliw\ta0, a0, " + to_string(lg));
+        } else if (emitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
+          /* scaled offset in a0 */
         } else {
           emit("\tli\tt3, " + to_string(strideBytes));
           emit("\tmulw\tt1, a0, t3");

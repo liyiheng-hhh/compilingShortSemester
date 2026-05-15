@@ -105,6 +105,8 @@ private:
 
   void visitCall(CallExpr *expr);
 
+  void checkCallArgs(CallExpr *expr);
+
   void visitUnary(UnaryExpr *expr);
 
   void visitBinary(BinaryExpr *expr);

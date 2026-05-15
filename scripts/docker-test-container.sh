@@ -5,6 +5,7 @@
 #   scripts/docker-test-container.sh init
 #   scripts/docker-test-container.sh test /work/performance
 #   USE_O1=1 scripts/docker-test-container.sh test /work/performance
+#   SY_TEST_DIRS="/work/a /work/b" scripts/docker-test-container.sh test ""
 #   scripts/docker-test-container.sh shell
 #   scripts/docker-test-container.sh exec bash -lc 'riscv64-linux-gnu-gcc --version'
 
@@ -70,24 +71,19 @@ run_test() {
   local test_dir="${1:-}"
   shift || true
   ensure
+  local exec_env=(
+    -w /work
+    -e SKIP_APT=1
+    -e USE_O1="${USE_O1:-0}"
+    -e LINK_FLAGS="${LINK_FLAGS:--static -mcmodel=medany}"
+  )
   if [[ -n "$test_dir" ]]; then
-    docker exec \
-      -w /work \
-      -e SKIP_APT=1 \
-      -e USE_O1="${USE_O1:-0}" \
-      -e SY_TEST_DIR="$test_dir" \
-      -e LINK_FLAGS="${LINK_FLAGS:--static -mcmodel=medany}" \
-      "$NAME" \
-      bash /work/scripts/e2e-docker.sh "$@"
-  else
-    docker exec \
-      -w /work \
-      -e SKIP_APT=1 \
-      -e USE_O1="${USE_O1:-0}" \
-      -e LINK_FLAGS="${LINK_FLAGS:--static -mcmodel=medany}" \
-      "$NAME" \
-      bash /work/scripts/e2e-docker.sh "$@"
+    exec_env+=(-e "SY_TEST_DIR=$test_dir")
   fi
+  if [[ -n "${SY_TEST_DIRS:-}" ]]; then
+    exec_env+=(-e "SY_TEST_DIRS=$SY_TEST_DIRS")
+  fi
+  docker exec "${exec_env[@]}" "$NAME" bash /work/scripts/e2e-docker.sh "$@"
 }
 
 case "${1:-init}" in

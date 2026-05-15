@@ -333,6 +333,9 @@ void Semantic::visitStmt(Stmt *stmt) {
     case StmtKind::Assign: {
       auto *s = static_cast<AssignStmt *>(stmt);
       visitExpr(s->lhs.get());
+      if (s->lhs->symbol && s->lhs->symbol->isConst) {
+        fail(s->line, "assignment to const " + s->lhs->name);
+      }
       visitExpr(s->rhs.get());
       break;
     }
@@ -513,6 +516,91 @@ int Semantic::flattenIndex(const Symbol &sym, const vector<int> &idxValues) {
     return flat;
   }
 
+void Semantic::checkCallArgs(CallExpr *expr) {
+    Function *fn = expr->function;
+    const size_t na = expr->args.size();
+
+    if (fn->variadic) {
+      if (na < fn->params.size()) {
+        fail(expr->line, "too few arguments to " + expr->name);
+      }
+      for (size_t i = 0; i < fn->params.size(); ++i) {
+        Expr *arg = expr->args[i].get();
+        const ParamType &pt = fn->params[i];
+        if (pt.isArray) {
+          if (!arg->type.isPointer || arg->type.base != pt.base) {
+            fail(arg->line, "argument type mismatch in call to " + expr->name);
+          }
+        } else if (pt.base == BaseType::Int) {
+          if (!arg->type.isIntScalar()) {
+            fail(arg->line, "argument type mismatch in call to " + expr->name);
+          }
+        } else {
+          if (!arg->type.isFloatScalar() && !arg->type.isIntScalar()) {
+            fail(arg->line, "argument type mismatch in call to " + expr->name);
+          }
+        }
+      }
+      return;
+    }
+
+    if (fn->injectLineArgument && fn->runtime) {
+      if (fn->params.empty()) {
+        fail(expr->line, "internal: injectLine function has no params");
+      }
+      if (na + 1 != fn->params.size()) {
+        fail(expr->line, "wrong number of arguments to " + expr->name);
+      }
+      return;
+    }
+
+    if (!fn->def) {
+      if (na != fn->params.size()) {
+        fail(expr->line, "wrong number of arguments to " + expr->name);
+      }
+      for (size_t i = 0; i < na; ++i) {
+        Expr *arg = expr->args[i].get();
+        const ParamType &pt = fn->params[i];
+        if (pt.isArray) {
+          if (!arg->type.isPointer || arg->type.base != pt.base) {
+            fail(arg->line, "argument type mismatch in call to " + expr->name);
+          }
+        } else if (pt.base == BaseType::Int) {
+          if (!arg->type.isIntScalar()) {
+            fail(arg->line, "argument type mismatch in call to " + expr->name);
+          }
+        } else {
+          if (!arg->type.isFloatScalar() && !arg->type.isIntScalar()) {
+            fail(arg->line, "argument type mismatch in call to " + expr->name);
+          }
+        }
+      }
+      return;
+    }
+
+    FuncDef *def = fn->def;
+    if (na != def->params.size()) {
+      fail(expr->line, "wrong number of arguments to " + expr->name);
+    }
+    for (size_t i = 0; i < na; ++i) {
+      Expr *arg = expr->args[i].get();
+      const Param &p = def->params[i];
+      if (p.isArray) {
+        if (!arg->type.isPointer || arg->type.base != p.base) {
+          fail(arg->line, "argument type mismatch in call to " + expr->name);
+        }
+      } else if (p.base == BaseType::Int) {
+        if (!arg->type.isIntScalar()) {
+          fail(arg->line, "argument type mismatch in call to " + expr->name);
+        }
+      } else {
+        if (!arg->type.isFloatScalar() && !arg->type.isIntScalar()) {
+          fail(arg->line, "argument type mismatch in call to " + expr->name);
+        }
+      }
+    }
+  }
+
 void Semantic::visitCall(CallExpr *expr) {
     auto it = functions_.find(expr->name);
     if (it == functions_.end()) {
@@ -523,6 +611,7 @@ void Semantic::visitCall(CallExpr *expr) {
       visitExpr(arg.get());
     }
     expr->type = Type::scalar(expr->function->ret);
+    checkCallArgs(expr);
   }
 
 void Semantic::visitUnary(UnaryExpr *expr) {

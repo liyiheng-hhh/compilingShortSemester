@@ -2,6 +2,7 @@
 
 #include "common.h"
 
+#include <algorithm>
 #include <climits>
 #include <cstdint>
 #include <optional>
@@ -47,7 +48,209 @@ static int findRoot(vector<int> &uf, int x) {
   return x;
 }
 
+void irRefreshCFG(IRFunction &fn) {
+  fn.blocks.clear();
+  fn.entryBlockIndex = 0;
+  auto &inst = fn.insts;
+  const size_t n = inst.size();
+  if (n == 0) {
+    return;
+  }
+
+  vector<size_t> leaders;
+  leaders.reserve(32);
+  leaders.push_back(0);
+  for (size_t i = 1; i < n; ++i) {
+    if (inst[i].op == IROp::Label) {
+      leaders.push_back(i);
+    }
+    const IROp p = inst[i - 1].op;
+    if (p == IROp::J || p == IROp::Ret || p == IROp::Beqz) {
+      leaders.push_back(i);
+    }
+  }
+  sort(leaders.begin(), leaders.end());
+  leaders.erase(unique(leaders.begin(), leaders.end()), leaders.end());
+
+  unordered_map<string, int> labelToBlock;
+  for (size_t k = 0; k < leaders.size(); ++k) {
+    const size_t b = leaders[k];
+    const size_t e = (k + 1 < leaders.size()) ? leaders[k + 1] : n;
+    IRBlock blk;
+    blk.begin = b;
+    blk.end = e;
+    fn.blocks.push_back(blk);
+    if (b < e && inst[b].op == IROp::Label) {
+      labelToBlock[inst[b].ext] = static_cast<int>(k);
+    }
+  }
+
+  auto findBlk = [&](const string &lab) -> int {
+    auto it = labelToBlock.find(lab);
+    return it == labelToBlock.end() ? -1 : it->second;
+  };
+
+  const int nb = static_cast<int>(fn.blocks.size());
+  for (int bi = 0; bi < nb; ++bi) {
+    IRBlock &blk = fn.blocks[static_cast<size_t>(bi)];
+    blk.succ.clear();
+    if (blk.begin >= blk.end) {
+      if (bi + 1 < nb) {
+        blk.succ.push_back(bi + 1);
+      }
+      continue;
+    }
+    size_t t = blk.end;
+    while (t > blk.begin && inst[t - 1].op == IROp::Nop) {
+      --t;
+    }
+    if (t == blk.begin) {
+      if (bi + 1 < nb) {
+        blk.succ.push_back(bi + 1);
+      }
+      continue;
+    }
+    const IRInst &term = inst[t - 1];
+    if (term.op == IROp::J) {
+      const int tg = findBlk(term.ext);
+      if (tg >= 0) {
+        blk.succ.push_back(tg);
+      }
+    } else if (term.op == IROp::Beqz) {
+      if (bi + 1 < nb) {
+        blk.succ.push_back(bi + 1);
+      }
+      const int tg = findBlk(term.ext);
+      if (tg >= 0) {
+        blk.succ.push_back(tg);
+      }
+    } else if (term.op == IROp::Ret) {
+      // no successors
+    } else {
+      if (bi + 1 < nb) {
+        blk.succ.push_back(bi + 1);
+      }
+    }
+  }
+}
+
+// Single-block while: Label L; body (no inner Label); J L. Hoist LoadGlobal(s)
+// with no StoreGlobal to the same symbol in the body and no Call in the body.
+static void irHoistInvariantLoadGlobalSimpleWhile(IRFunction &fn) {
+  vector<IRInst> &inst = fn.insts;
+  const size_t n = inst.size();
+  for (size_t i = 0; i + 2 < n; ++i) {
+    if (inst[i].op != IROp::Label) {
+      continue;
+    }
+    const string &lab = inst[i].ext;
+    size_t j = i + 1;
+    while (j < n && inst[j].op != IROp::Label) {
+      ++j;
+    }
+    if (j <= i + 1 || inst[j - 1].op != IROp::J || inst[j - 1].ext != lab) {
+      continue;
+    }
+    const size_t bodyStart = i + 1;
+    const size_t bodyEnd = j - 2;
+    bool hasCall = false;
+    for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+      if (inst[k].op == IROp::Call) {
+        hasCall = true;
+        break;
+      }
+    }
+    if (hasCall) {
+      continue;
+    }
+    vector<pair<Symbol *, IRInst>> prelude;
+    unordered_map<Symbol *, int> symToLoadVreg;
+    unordered_map<Symbol *, int> symToLeaVreg;
+    for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+      if (inst[k].op != IROp::LoadGlobal && inst[k].op != IROp::LeaGlobal) {
+        continue;
+      }
+      Symbol *sym = inst[k].sym;
+      if (!sym) {
+        continue;
+      }
+      bool stored = false;
+      for (size_t t = bodyStart; t <= bodyEnd; ++t) {
+        if (inst[t].op == IROp::StoreGlobal && inst[t].sym == sym) {
+          stored = true;
+          break;
+        }
+      }
+      if (stored) {
+        continue;
+      }
+      if (inst[k].op == IROp::LoadGlobal) {
+        if (symToLoadVreg.count(sym)) {
+          continue;
+        }
+        int h = fn.allocVreg();
+        symToLoadVreg[sym] = h;
+        IRInst ld = inst[k];
+        ld.dst = h;
+        prelude.push_back({sym, ld});
+      } else {
+        if (symToLeaVreg.count(sym)) {
+          continue;
+        }
+        int h = fn.allocVreg();
+        symToLeaVreg[sym] = h;
+        IRInst lea = inst[k];
+        lea.dst = h;
+        prelude.push_back({sym, lea});
+      }
+    }
+    if (prelude.empty()) {
+      continue;
+    }
+    vector<IRInst> out;
+    out.reserve(inst.size() + prelude.size());
+    size_t p = 0;
+    while (p < n) {
+      if (p == i) {
+        out.push_back(inst[i]);
+        for (const auto &pr : prelude) {
+          out.push_back(pr.second);
+        }
+        for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+          IRInst w = inst[k];
+          if (w.op == IROp::LoadGlobal && symToLoadVreg.count(w.sym)) {
+            IRInst cp;
+            cp.op = IROp::Copy;
+            cp.dst = w.dst;
+            cp.u = symToLoadVreg[w.sym];
+            cp.isFloat = w.isFloat;
+            out.push_back(cp);
+          } else if (w.op == IROp::LeaGlobal && symToLeaVreg.count(w.sym)) {
+            IRInst cp;
+            cp.op = IROp::Copy;
+            cp.dst = w.dst;
+            cp.u = symToLeaVreg[w.sym];
+            cp.isFloat = false;
+            out.push_back(cp);
+          } else {
+            out.push_back(w);
+          }
+        }
+        out.push_back(inst[j - 1]);
+        p = j;
+      } else {
+        out.push_back(inst[p++]);
+      }
+    }
+    inst.swap(out);
+    irHoistInvariantLoadGlobalSimpleWhile(fn);
+    return;
+  }
+}
+
 void irOptimizeBlock(IRFunction &fn) {
+  irHoistInvariantLoadGlobalSimpleWhile(fn);
+  irRefreshCFG(fn);
   if (fn.insts.empty()) {
     return;
   }
@@ -89,13 +292,14 @@ void irOptimizeBlock(IRFunction &fn) {
   };
 
   unordered_map<Key, int, KeyHash> cse;
-  cse.reserve(64);
+  cse.reserve(256);
 
   auto makeKeyComm = [&](const IRInst &in) -> Key {
     Key k{in.op, 0, 0, in.immI, in.isFloat};
     int ru = remap(in.u);
     int rv = remap(in.v);
-    if (in.op == IROp::Add || in.op == IROp::Mul) {
+    if (in.op == IROp::Add || in.op == IROp::Mul || in.op == IROp::FAdd ||
+        in.op == IROp::FMul) {
       if (ru > rv) {
         swap(ru, rv);
       }
@@ -150,8 +354,37 @@ void irOptimizeBlock(IRFunction &fn) {
     if (sideEffecting(in)) {
       cse.clear();
     }
+    if (in.op == IROp::Label) {
+      cse.clear();
+    }
 
     switch (in.op) {
+    case IROp::Label:
+      cse.clear();
+      fwdStore.clear();
+      for (int t = 0; t < n; ++t) {
+        copyUF[static_cast<size_t>(t)] = t;
+      }
+      fill(knownInt.begin(), knownInt.end(), nullopt);
+      fill(knownFloat.begin(), knownFloat.end(), nullopt);
+      out.push_back(in);
+      continue;
+    case IROp::J:
+      cse.clear();
+      fwdStore.clear();
+      for (int t = 0; t < n; ++t) {
+        copyUF[static_cast<size_t>(t)] = t;
+      }
+      fill(knownInt.begin(), knownInt.end(), nullopt);
+      fill(knownFloat.begin(), knownFloat.end(), nullopt);
+      out.push_back(in);
+      continue;
+    case IROp::Beqz:
+      cse.clear();
+      fwdStore.clear();
+      in.u = remap(in.u);
+      out.push_back(in);
+      continue;
     case IROp::Copy: {
       int u = remap(in.u);
       if (u >= 0 && in.dst >= 0 && in.dst < static_cast<int>(copyUF.size())) {
@@ -629,7 +862,7 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = true;
         break;
       }
-      k = makeKeyPlain(in);
+      k = makeKeyComm(in);
       folded = tryCse(k);
       if (!folded) cse[k] = in.dst;
       break;
@@ -711,7 +944,7 @@ void irOptimizeBlock(IRFunction &fn) {
         folded = true;
         break;
       }
-      k = makeKeyPlain(in);
+      k = makeKeyComm(in);
       folded = tryCse(k);
       if (!folded) cse[k] = in.dst;
       break;
@@ -840,14 +1073,138 @@ void irOptimizeBlock(IRFunction &fn) {
     }
     fn.insts.swap(live);
   }
+  // 刷新 CFG；跨块常量传播可在此后基于 blocks/succ 增量接入
+  irRefreshCFG(fn);
+}
+
+static void irAugmentLastUseWithCFG(IRFunction &fn, vector<size_t> &lastUse) {
+  irRefreshCFG(fn);
+  const int nb = static_cast<int>(fn.blocks.size());
+  const int nv = static_cast<int>(fn.nextVreg);
+  if (nb <= 0 || nv <= 0) {
+    return;
+  }
+
+  vector<vector<char>> useB(static_cast<size_t>(nb)),
+      defB(static_cast<size_t>(nb));
+  for (int b = 0; b < nb; ++b) {
+    useB[static_cast<size_t>(b)].assign(static_cast<size_t>(nv), 0);
+    defB[static_cast<size_t>(b)].assign(static_cast<size_t>(nv), 0);
+    const IRBlock &blk = fn.blocks[static_cast<size_t>(b)];
+    for (size_t i = blk.begin; i < blk.end; ++i) {
+      const IRInst &in = fn.insts[i];
+      if (in.dst >= 0 && in.dst < nv) {
+        defB[static_cast<size_t>(b)][static_cast<size_t>(in.dst)] = 1;
+      }
+    }
+    for (size_t i = blk.begin; i < blk.end; ++i) {
+      const IRInst &in = fn.insts[i];
+      auto uu = [&](int r) {
+        if (r >= 0 && r < nv) {
+          useB[static_cast<size_t>(b)][static_cast<size_t>(r)] = 1;
+        }
+      };
+      uu(in.u);
+      uu(in.v);
+      for (int a : in.args) {
+        uu(a);
+      }
+    }
+  }
+
+  vector<vector<char>> inn(static_cast<size_t>(nb)),
+      out(static_cast<size_t>(nb));
+  for (int b = 0; b < nb; ++b) {
+    inn[static_cast<size_t>(b)].assign(static_cast<size_t>(nv), 0);
+    out[static_cast<size_t>(b)].assign(static_cast<size_t>(nv), 0);
+  }
+
+  for (int it = 0; it < nb + 64; ++it) {
+    bool chg = false;
+    for (int b = nb - 1; b >= 0; --b) {
+      vector<char> nOut(static_cast<size_t>(nv), 0);
+      for (int s : fn.blocks[static_cast<size_t>(b)].succ) {
+        if (s >= 0 && s < nb) {
+          for (int v = 0; v < nv; ++v) {
+            if (inn[static_cast<size_t>(s)][static_cast<size_t>(v)]) {
+              nOut[static_cast<size_t>(v)] = 1;
+            }
+          }
+        }
+      }
+      for (int v = 0; v < nv; ++v) {
+        if (out[static_cast<size_t>(b)][static_cast<size_t>(v)] !=
+            nOut[static_cast<size_t>(v)]) {
+          chg = true;
+        }
+      }
+      out[static_cast<size_t>(b)].swap(nOut);
+    }
+    for (int b = 0; b < nb; ++b) {
+      vector<char> nIn(static_cast<size_t>(nv), 0);
+      for (int v = 0; v < nv; ++v) {
+        const size_t vi = static_cast<size_t>(v);
+        if (useB[static_cast<size_t>(b)][vi] ||
+            (out[static_cast<size_t>(b)][vi] && !defB[static_cast<size_t>(b)][vi])) {
+          nIn[vi] = 1;
+        }
+      }
+      for (int v = 0; v < nv; ++v) {
+        const size_t vi = static_cast<size_t>(v);
+        if (inn[static_cast<size_t>(b)][vi] != nIn[vi]) {
+          chg = true;
+        }
+      }
+      inn[static_cast<size_t>(b)].swap(nIn);
+    }
+    if (!chg) {
+      break;
+    }
+  }
+
+  for (int b = 0; b < nb; ++b) {
+    const IRBlock &blk = fn.blocks[static_cast<size_t>(b)];
+    vector<char> live(static_cast<size_t>(nv), 0);
+    for (int v = 0; v < nv; ++v) {
+      live[static_cast<size_t>(v)] = inn[static_cast<size_t>(b)][static_cast<size_t>(v)];
+    }
+    for (size_t i = blk.begin; i < blk.end; ++i) {
+      const IRInst &in = fn.insts[i];
+      auto bump = [&](int r) {
+        if (r >= 0 && r < nv) {
+          lastUse[static_cast<size_t>(r)] =
+              max(lastUse[static_cast<size_t>(r)], i);
+        }
+      };
+      for (int v = 0; v < nv; ++v) {
+        if (live[static_cast<size_t>(v)]) {
+          lastUse[static_cast<size_t>(v)] =
+              max(lastUse[static_cast<size_t>(v)], i);
+        }
+      }
+      bump(in.u);
+      bump(in.v);
+      for (int a : in.args) {
+        bump(a);
+      }
+      if (in.dst >= 0 && in.dst < nv) {
+        live[static_cast<size_t>(in.dst)] = 0;
+      }
+      if (in.dst >= 0 && in.dst < nv) {
+        live[static_cast<size_t>(in.dst)] = 1;
+      }
+    }
+  }
 }
 
 void irAssignSlots(IRFunction &fn) {
   const int nv = static_cast<int>(fn.nextVreg);
   fn.vregSlots.assign(static_cast<size_t>(std::max(nv, 0)), -1);
-  if (nv <= 0) return;
+  if (nv <= 0) {
+    return;
+  }
 
-  // Compute last-use position for each vreg
+  // Compute last-use position for each vreg (linear scan)
   vector<size_t> lastUse(static_cast<size_t>(nv), 0);
   for (size_t idx = 0; idx < fn.insts.size(); ++idx) {
     const IRInst &in = fn.insts[idx];
@@ -857,6 +1214,7 @@ void irAssignSlots(IRFunction &fn) {
       if (a >= 0 && a < nv) lastUse[static_cast<size_t>(a)] = idx;
     }
   }
+  irAugmentLastUseWithCFG(fn, lastUse);
 
   // Linear scan slot assignment: reuse slots after last use
   vector<int> slotFreeAt; // slot → freed after instruction index
