@@ -732,8 +732,6 @@ void CodeGen::emitFunction(FuncDef &def) {
     bool useIr = false;
     if (kEnableIrBackend && optO1_ && irFunctionEligible(def)) {
       irBuildFunction(def, semantic_, irBuf);
-      // 第二轮块优化：在 Copy 折叠/CSE 之后常能再消一批冗余（低成本、安全）
-      irOptimizeBlock(irBuf);
       irOptimizeBlock(irBuf);
       irAssignSlots(irBuf);
       irVregSlots_ = irBuf.vregSlots;

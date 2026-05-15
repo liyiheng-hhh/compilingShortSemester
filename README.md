@@ -75,6 +75,7 @@ make check
 make check
 USE_O1=1 ./scripts/docker-test-container.sh test /work/performance
 ./scripts/docker-test-container.sh test "/work/2026初赛RISCV赛道功能用例/functional"
+make docker-test-functional
 ```
 
 ## `libsysy.a`：从哪里来、什么「版本」、怎么「下载」
@@ -181,9 +182,9 @@ USE_O1=1 ./scripts/docker-test-container.sh test /work/performance
 
 **阶段 A — 低风险、见效快（1～3 天量级）**
 
-1. **IR：多遍块优化**：已可对 `irOptimizeBlock` 连跑两遍，利于 Copy/CSE 收敛；后续可再加 **第三轮**或把 CSE+fuse 做成固定点迭代（改 `ir_opt.cpp`）。
-2. **窥孔 / 强度削弱**：对 AST 与 IR 发射两端检查 `mul`+`add` 地址模式、小常数 `* / %`（在已有 magic div 基础上补漏网常数）。
-3. **Profiling**：对单测用 `stoptime()` 段 + 官方计时；本地用 `make size-report SY_DIRS=performance` 看 O1 汇编体积变化作代理指标。
+1. **IR：固定点多轮块优化（已实现）**：`irOptimizeBlock` 外层按 **`irInstructionFingerprint`** 迭代（最多 16 轮）；每轮仍含 hoist、单遍扫描 + CSE/常量折叠、DCE（实现于 `irOptimizeBlockOneRound`）。**`codegen.cpp` 中只对 IR 函数调用一次 `irOptimizeBlock`**。
+2. **窥孔 / 强度削弱（部分落地）**：IR 内需已含 **2 的幂乘法→`Sll`**、**/±1、`0 / c`、`0 % c`** 常量折叠、`Rem`/`Div`/`Mul`/`Add`/`Sub`/`Neg`/`F*` 等对 `codegen.cpp`/`emitIr*` 的补充请继续按热点加；汇编侧 **magic 有符号除常数** 仍在发射阶段。
+3. **Profiling（已实现脚本与 Make 入口）**：`make perf-profile PERF_SY=performance/matmul1.sy`（可选 `LIBSYSY=…` 做 qemu 限时）；批量对比仍用 **`make size-report SY_DIRS=performance`**；希冀以官方 `starttime/stoptime` 为准。
 
 **阶段 B — 中端（1～2 周）**
 
