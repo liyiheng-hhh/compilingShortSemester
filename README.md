@@ -56,7 +56,8 @@ make check
 - 若环境无 `python3`，脚本仍使用仓库内已提交的 **`_gen_divmod.sy` / `.out`**；有 Python 时会用 **`tools/gen_divmod_property_sy.py`** 再生除法属性用例。
 - **`scripts/compile_memlimit.sh`**：在受限虚拟内存下执行 **`./compiler ...`**，模拟评测机编译阶段 **`Killed`**。示例：  
   `./scripts/compile_memlimit.sh 512M ./compiler -S -O1 -o /tmp/x.s path/to/large.sy`
-- 在 **Docker** 里跑上述脚本前，请在挂载的仓库根（如 **`/work`**）执行 **`make`**，使 **`./compiler`** 与容器内 glibc 一致；若单独使用 **`BUILD_DIR=/tmp/compiler-build`**，请 **`export COMPILER=/tmp/compiler-build/compiler`**。
+- **一键（推荐）**：宿主机仓库根执行 **`make docker-init`**（首次）后 **`make docker-local-eval`** — 在容器内 **`make /work`**、若无则编 **`/tmp/sysy-runtime-lib/build/libsysy.a`**，再跑 **`run_local_eval`**，**不必**在宿主机 `export LIBSYSY`。
+- 若自行在容器里跑脚本：在挂载的仓库根（如 **`/work`**）先 **`make`**，使 **`./compiler`** 与容器 glibc 一致。
 
 ## 批量编译 / 回归 / 体积对比
 
@@ -74,6 +75,7 @@ make check
 | 目标 | 说明 |
 |------|------|
 | `make docker-init` | 创建/启动容器并安装 RISC-V 工具链与 qemu（同 `e2e-docker.sh`） |
+| `make docker-local-eval` | 容器内 `local_eval_cases` + O0/O1 对拍；自动编 `libsysy.a`（需 `runtime/sysy_runtime.c`） |
 | `make docker-test-functional` | `SY_TEST_DIR=$(DOCKER_FUNC)`，`USE_O1` 默认 0，可覆盖 |
 | `make docker-test-performance` | `SY_TEST_DIR=$(DOCKER_PERF)`，`USE_O1` 默认 1，可覆盖 |
 | `make docker-test-dirs` | 需设 **`SY_TEST_DIRS="dir1 dir2..."`**（容器内路径），走 `e2e-docker.sh` 多目录逻辑 |
@@ -84,6 +86,7 @@ make check
 make check
 USE_O1=1 ./scripts/docker-test-container.sh test /work/performance
 ./scripts/docker-test-container.sh test "/work/2026初赛RISCV赛道功能用例/functional"
+make docker-local-eval
 make docker-test-functional
 ```
 

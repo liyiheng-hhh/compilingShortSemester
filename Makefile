@@ -79,6 +79,10 @@ DOCKER_PERF ?= /work/performance
 docker-init:
 	@./scripts/docker-test-container.sh init
 
+# 容器内 local_eval_cases（自动编 libsysy.a；需先 docker-init）
+docker-local-eval:
+	@./scripts/docker_local_eval.sh
+
 # 功能集 O0（可覆盖 USE_O1）
 docker-test-functional:
 	@USE_O1=$${USE_O1:-0} ./scripts/docker-test-container.sh test "$(DOCKER_FUNC)"
@@ -94,4 +98,4 @@ docker-test-dirs:
 	@SY_TEST_DIRS="$(SY_TEST_DIRS)" ./scripts/docker-test-container.sh test ""
 
 .PHONY: all clean check sytest sytest-o0 sytest-o1 compile-all compile-all-o1 size-report perf-profile \
-	local-eval docker-init docker-test-functional docker-test-performance docker-test-dirs
+	local-eval docker-local-eval docker-init docker-test-functional docker-test-performance docker-test-dirs
