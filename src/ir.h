@@ -31,6 +31,7 @@ enum class IROp {
   Sub,
   Mul,
   Sll,
+  Sra,
   Div,
   Rem,
   Neg,

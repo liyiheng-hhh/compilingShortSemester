@@ -25,7 +25,9 @@ check: compiler
 	./compiler -S -o examples/smoke_O1.s examples/smoke.sy -O1
 	./compiler -S -O1 -o examples/_cmp_check.s examples/golden_o1_cmp/cmp.sy
 	./compiler -S -O1 -o examples/_magic_check.s examples/golden_magic_div/boundary.sy
-	rm -f examples/_cmp_check.s examples/_magic_check.s
+	./compiler -S -O1 -o examples/_shift_check.s examples/golden_shift/shift.sy
+	./compiler -S -o examples/_shift_check0.s examples/golden_shift/shift.sy
+	rm -f examples/_cmp_check.s examples/_magic_check.s examples/_shift_check.s examples/_shift_check0.s
 
 # 递归编译所有 .sy → .s（无需 qemu；大测试树传 SY_DIRS）
 #   make compile-all SY_DIRS="examples path/to/functional path/to/performance"

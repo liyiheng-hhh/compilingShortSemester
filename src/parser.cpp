@@ -320,11 +320,22 @@ ExprPtr Parser::parseMul() {
     return lhs;
   }
 
-ExprPtr Parser::parseAdd() {
+ExprPtr Parser::parseShift() {
     auto lhs = parseMul();
-    while (check(TokenKind::Plus) || check(TokenKind::Minus)) {
+    while (check(TokenKind::Shl) || check(TokenKind::Shr)) {
       const Token &op = tokens_[pos_++];
       auto rhs = parseMul();
+      lhs = make_unique<BinaryExpr>(op.line, op.text, std::move(lhs),
+                                    std::move(rhs));
+    }
+    return lhs;
+  }
+
+ExprPtr Parser::parseAdd() {
+    auto lhs = parseShift();
+    while (check(TokenKind::Plus) || check(TokenKind::Minus)) {
+      const Token &op = tokens_[pos_++];
+      auto rhs = parseShift();
       lhs = make_unique<BinaryExpr>(op.line, op.text, std::move(lhs),
                                     std::move(rhs));
     }

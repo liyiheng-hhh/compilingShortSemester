@@ -288,12 +288,20 @@ Token Lexer::scanPunct(){
       }
       return one(TokenKind::Assign);
     case '<':
+      if (peek() == '<') {
+        tok.text.push_back(get());
+        return one(TokenKind::Shl);
+      }
       if (peek() == '=') {
         tok.text.push_back(get());
         return one(TokenKind::Le);
       }
       return one(TokenKind::Lt);
     case '>':
+      if (peek() == '>') {
+        tok.text.push_back(get());
+        return one(TokenKind::Shr);
+      }
       if (peek() == '=') {
         tok.text.push_back(get());
         return one(TokenKind::Ge);

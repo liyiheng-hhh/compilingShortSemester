@@ -275,6 +275,7 @@ static bool irHoistOpcodeEligibleForLICM(IROp op) {
   case IROp::Sub:
   case IROp::Mul:
   case IROp::Sll:
+  case IROp::Sra:
   case IROp::Div:
   case IROp::Rem:
   case IROp::Neg:
@@ -337,7 +338,8 @@ static bool irHoistOperandsInvariant(const IRInst &in, const vector<char> &invRe
   case IROp::FCmp:
     return ok(in.u) && ok(in.v);
   case IROp::Sll:
-    return ok(in.u);
+  case IROp::Sra:
+    return in.v < 0 ? ok(in.u) : ok(in.u) && ok(in.v);
   default:
     return false;
   }
@@ -1474,21 +1476,61 @@ static void irOptimizeBlockOneRound(IRFunction &fn) {
       break;
     }
     case IROp::Sll: {
-      int sh = in.immI & 31;
       auto cu = followConstI(in.u);
-      if (cu) {
+      optional<int32_t> csh;
+      if (in.v < 0) {
+        csh = static_cast<int32_t>(in.immI & 31);
+      } else {
+        csh = followConstI(in.v);
+        if (csh) {
+          *csh = static_cast<int32_t>(*csh & 31);
+        }
+      }
+      if (cu && csh) {
         uint32_t bits = static_cast<uint32_t>(*cu);
+        int sh = *csh & 31;
         folded = foldIntConst(static_cast<int32_t>(bits << sh));
         break;
       }
-      if (sh == 0) {
+      if (in.v < 0 && (in.immI & 31) == 0) {
         emitCopy(in.dst, in.u);
         folded = true;
         break;
       }
       k = makeKeyPlain(in);
       folded = tryCse(k);
-      if (!folded) cse[k] = in.dst;
+      if (!folded) {
+        cse[k] = in.dst;
+      }
+      break;
+    }
+    case IROp::Sra: {
+      auto cu = followConstI(in.u);
+      optional<int32_t> csh;
+      if (in.v < 0) {
+        csh = static_cast<int32_t>(in.immI & 31);
+      } else {
+        csh = followConstI(in.v);
+        if (csh) {
+          *csh = static_cast<int32_t>(*csh & 31);
+        }
+      }
+      if (cu && csh) {
+        int32_t l = *cu;
+        int sh = *csh & 31;
+        folded = foldIntConst(static_cast<int32_t>(l >> sh));
+        break;
+      }
+      if (in.v < 0 && (in.immI & 31) == 0) {
+        emitCopy(in.dst, in.u);
+        folded = true;
+        break;
+      }
+      k = makeKeyPlain(in);
+      folded = tryCse(k);
+      if (!folded) {
+        cse[k] = in.dst;
+      }
       break;
     }
     case IROp::FAdd: {

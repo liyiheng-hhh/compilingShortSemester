@@ -4,6 +4,7 @@
 #include "semantic.h"
 
 #include <algorithm>
+#include <string>
 
 using namespace std;
 
@@ -560,8 +561,22 @@ int IRBuilder::buildExpr(Expr *e) {
       op.op = IROp::Div;
     } else if (b->op == "%") {
       op.op = IROp::Rem;
+    } else if (b->op == "<<") {
+      op.op = IROp::Sll;
+      op.u = L;
+      op.v = R;
+      op.immI = 0;
+      push(op);
+      return d;
+    } else if (b->op == ">>") {
+      op.op = IROp::Sra;
+      op.u = L;
+      op.v = R;
+      op.immI = 0;
+      push(op);
+      return d;
     } else {
-      op.op = IROp::Add;
+      throw CompileError("line " + to_string(b->line) + ": unsupported binary operator '" + b->op + "'");
     }
     push(op);
     return d;

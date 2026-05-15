@@ -68,6 +68,8 @@ private:
 
   ExprPtr parseMul();
 
+  ExprPtr parseShift();
+
   ExprPtr parseAdd();
 
   ExprPtr parseRel();

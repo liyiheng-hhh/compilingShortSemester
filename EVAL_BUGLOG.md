@@ -16,7 +16,9 @@
 |------|----------------|------|----------|-------------|
 | 2026-05-15 | `golden_magic_div/boundary.sy` + `-O1` | fixed | 第三行输出应为 `-2`，实为 `12` | 有符号除常数 magic 与 libdivide 不一致：移位后应为 `q += (q < 0)`，误写成 `q += (q >> 31)`；见 `codegen.cpp` `emitSigned32DivByConstMagicPayload` |
 | 2026-05-15 | 性能榜大量 `matmul*` / `conv2d*` 等 | mitigated | 日志 `Killed`（非语法 CE） | 评测机 OOM：`irHoistLoopInvariantCFG` 支配矩阵 `O(nb²)`；已对 `nb²` 超预算跳过 CFG LICM，大题仍若 `Killed` 需继续压内存或稀疏化 |
+| 2026-05-15 | `codegen.cpp` `leaf` 未声明 | fixed | Docker 编编译器失败 | `emitFunction` 补充 `leaf` 与 `funcDefAstContainsCall` / `irContainsCall` |
 | 2026-05-15 | `irHoistLoopInvariantCFG` / `irHoistPureInvariantSimpleWhile` / `irHoistInvariantLoadGlobalSimpleWhile` | fixed | `-O1` 编译小段循环时栈溢出 / SIGSEGV | 外提后曾尾递归自调，可无限递归；改为有限轮迭代 +「一轮无外提则返回」 |
+| 2026-05-15 | `crc*` / `03_sort*` 等（含 `<<`/`>>` 的 SysY） | fixed（常见 WA） | 移位被误编译为加法 | `lexer`/`parser`/`semantic`/`ir_build`/`ir_opt`/`codegen` 补全 `<<`/`>>`；`ir_build` 对未知二元运算符改为报错 |
 
 ---
 

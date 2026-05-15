@@ -1582,7 +1582,27 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
   }
   case IROp::Sll:
     emitIrLoadVreg(in.u, false);
-    emit("\tslliw\ta0, a0, " + to_string(in.immI));
+    if (in.v < 0) {
+      emit("\tslliw\ta0, a0, " + to_string(in.immI & 31));
+    } else {
+      emit("\tmv\tt2, a0");
+      emitIrLoadVregTo(in.v, "t3");
+      emit("\tandi\tt3, t3, 31");
+      emit("\tsllw\ta0, t2, t3");
+    }
+    emitIrStoreVreg(in.dst, false);
+    markInt(in.dst);
+    return;
+  case IROp::Sra:
+    emitIrLoadVreg(in.u, false);
+    if (in.v < 0) {
+      emit("\tsraiw\ta0, a0, " + to_string(in.immI & 31));
+    } else {
+      emit("\tmv\tt2, a0");
+      emitIrLoadVregTo(in.v, "t3");
+      emit("\tandi\tt3, t3, 31");
+      emit("\tsraw\ta0, t2, t3");
+    }
     emitIrStoreVreg(in.dst, false);
     markInt(in.dst);
     return;
@@ -2352,6 +2372,20 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
     bool compare = op == "==" || op == "!=" || op == "<" || op == ">" ||
                    op == "<=" || op == ">=";
     bool useFloat = expr->lhs->type.isFloatScalar() || expr->rhs->type.isFloatScalar();
+
+    if (!useFloat && (op == "<<" || op == ">>")) {
+      emitExpr(expr->lhs.get());
+      emit("\tmv\tt0, a0");
+      emitExpr(expr->rhs.get());
+      emit("\tandi\tt1, a0, 31");
+      emit("\tmv\ta0, t0");
+      if (op == "<<") {
+        emit("\tsllw\ta0, a0, t1");
+      } else {
+        emit("\tsraw\ta0, a0, t1");
+      }
+      return;
+    }
 
     if (!useFloat && compare && optO1_ && expr->lhs->type.isIntScalar() &&
         expr->rhs->type.isIntScalar()) {
