@@ -14,6 +14,10 @@ static bool endsAsmOutPath(const string &tail) {
   return n >= 2 && tail[n - 2] == '.' && (tail[n - 1] == 's' || tail[n - 1] == 'S');
 }
 
+static bool endsWithSy(const string &path) {
+  return path.size() >= 3 && path.rfind(".sy") == path.size() - 3;
+}
+
 static int compileFile(const string &input, const string &output, bool optO1) {
   string source = readFile(input);
   Lexer lexer(source);
@@ -39,8 +43,17 @@ int main(int argc, char **argv) {
       optO1 = true;
       continue;
     }
+    // GNU 风格：--output=path 或 --output path（部分评测/脚本会写成长选项）
     if (arg.rfind("--output=", 0) == 0 && arg.size() > 9) {
       output = arg.substr(9);
+      continue;
+    }
+    if (arg == "--output") {
+      if (i + 1 >= argc) {
+        cerr << "compiler: missing argument after --output\n";
+        return 1;
+      }
+      output = argv[++i];
       continue;
     }
     if (arg == "-o") {
@@ -74,7 +87,12 @@ int main(int argc, char **argv) {
     if (!arg.empty() && arg[0] == '-') {
       continue;
     }
-    input = arg;
+    // 源文件：优先任何以 .sy 结尾的路径（应对「先 .s 后 .sy」等多位置参数顺序）
+    if (endsWithSy(arg)) {
+      input = arg;
+    } else if (input.empty()) {
+      input = arg;
+    }
   }
   if (input.empty() || output.empty()) {
     cerr << "usage: compiler -S -o output.s input.sy [-O1]\n";
