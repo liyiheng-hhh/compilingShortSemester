@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""One-shot splitter: reads compiler.cpp and emits modular sources next to this script's parent."""
+"""One-shot splitter: reads compiler.cpp and emits modular sources under <repo>/src/."""
 from pathlib import Path
 from textwrap import dedent
 
 ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "src"
 SRC = ROOT / "compiler.cpp"
 
 
@@ -104,7 +105,7 @@ def main():
 
     # --- common.h / common.cpp ---
     write(
-        ROOT / "common.h",
+        OUT / "common.h",
         dedent(
             """\
 #pragma once
@@ -132,7 +133,7 @@ int product(const std::vector<int> &dims, std::size_t from = 0);
     product_fn = "\n".join(lines_slice(1093, 1102))
     rw = "\n".join(lines_slice(2582, 2598))
     write(
-        ROOT / "common.cpp",
+        OUT / "common.cpp",
         dedent(
             f"""\
 #include "common.h"
@@ -156,12 +157,12 @@ using namespace std;
     )
 
     # --- token.h ---
-    write(ROOT / "token.h", "#pragma once\n\n" + "\n".join(lines_slice(73, 121)))
+    write(OUT / "token.h", "#pragma once\n\n" + "\n".join(lines_slice(73, 121)))
 
     # --- ast.h ---
     ast_body = "\n".join(lines_slice(434, 710))
     write(
-        ROOT / "ast.h",
+        OUT / "ast.h",
         dedent(
             f"""\
 #pragma once
@@ -220,7 +221,7 @@ private:
 };
 """
     )
-    write(ROOT / "lexer.h", lexer_private_decl)
+    write(OUT / "lexer.h", lexer_private_decl)
 
     lexer_methods = lines_slice(164, 431)
     lexer_cpp = ['#include "lexer.h"', "", "using namespace std;", ""]
@@ -264,20 +265,20 @@ private:
     lexer_cpp.insert(4, '#include <cstdlib>')
     lexer_cpp.insert(5, '#include <cstring>')
     lexer_cpp.insert(6, '#include <unordered_map>')
-    write(ROOT / "lexer.cpp", "\n".join(lexer_cpp))
+    write(OUT / "lexer.cpp", "\n".join(lexer_cpp))
 
     # Lexer::run stays — need to handle vector<Token> Lexer::run()
     run_body = lines_slice(127, 156)
     run_lines = ['vector<Token> Lexer::run() {']
     run_lines.extend(["  " + x.lstrip() if x.strip() else "" for x in run_body[1:]])
     # Insert run after constructor in lexer.cpp
-    text = (ROOT / "lexer.cpp").read_text(encoding="utf-8")
+    text = (OUT / "lexer.cpp").read_text(encoding="utf-8")
     marker = "Lexer::Lexer(string source) : src_(std::move(source)) {}\n\n"
     if marker not in text:
         raise SystemExit("lexer.cpp marker missing")
     insertion = marker + "\n".join(run_lines) + "\n\n"
     text = text.replace(marker, insertion, 1)
-    ROOT.joinpath("lexer.cpp").write_text(text, encoding="utf-8")
+    OUT.joinpath("lexer.cpp").write_text(text, encoding="utf-8")
 
     # --- parser ---
     parser_decl = dedent(
@@ -364,7 +365,7 @@ private:
 };
 """
     )
-    write(ROOT / "parser.h", parser_decl)
+    write(OUT / "parser.h", parser_decl)
 
     parser_cpp = ['#include "parser.h"', "", "using namespace std;", ""]
     parser_cpp.append(
@@ -407,7 +408,7 @@ private:
     emit_parser(["ExprPtr Parser::parseLAnd()"], 1070)
     emit_parser(["ExprPtr Parser::parseLOr()"], 1081)
 
-    write(ROOT / "parser.cpp", "\n".join(parser_cpp))
+    write(OUT / "parser.cpp", "\n".join(parser_cpp))
 
     # --- semantic ---
     sem_decl = dedent(
@@ -528,7 +529,7 @@ private:
 };
 """
     )
-    write(ROOT / "semantic.h", sem_decl)
+    write(OUT / "semantic.h", sem_decl)
 
     sem_cpp = [
         '#include "semantic.h"',
@@ -621,7 +622,7 @@ private:
         1693,
     )
 
-    write(ROOT / "semantic.cpp", "\n".join(sem_cpp))
+    write(OUT / "semantic.cpp", "\n".join(sem_cpp))
 
     # --- codegen ---
     cg_decl = dedent(
@@ -745,7 +746,7 @@ private:
 };
 """
     )
-    write(ROOT / "codegen.h", cg_decl)
+    write(OUT / "codegen.h", cg_decl)
 
     cg_cpp = [
         '#include "codegen.h"',
@@ -848,11 +849,11 @@ private:
     emit_cg(["void CodeGen::emitPopFloat(const string &reg)"], 2559)
     emit_cg(["void CodeGen::emitLiteralPools()"], 2564)
 
-    write(ROOT / "codegen.cpp", "\n".join(cg_cpp))
+    write(OUT / "codegen.cpp", "\n".join(cg_cpp))
 
     # --- main ---
     write(
-        ROOT / "main.cpp",
+        OUT / "main.cpp",
         dedent(
             """\
 #include "codegen.h"
@@ -920,7 +921,7 @@ int main(int argc, char **argv) {
         ),
     )
 
-    print("generated modular sources under", ROOT)
+    print("generated modular sources under", OUT)
 
 
 if __name__ == "__main__":

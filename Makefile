@@ -4,15 +4,17 @@ CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra
 # 供 compile-all / size-report 递归扫描（空格分隔多个根目录）
 SY_DIRS ?= examples
 
-SRCS = main.cpp common.cpp lexer.cpp parser.cpp semantic.cpp codegen.cpp ir_build.cpp ir_opt.cpp
-OBJS = $(SRCS:.cpp=.o)
+SRCDIR := src
+SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/parser.cpp \
+	$(SRCDIR)/semantic.cpp $(SRCDIR)/codegen.cpp $(SRCDIR)/ir_build.cpp $(SRCDIR)/ir_opt.cpp
+OBJS := $(SRCS:.cpp=.o)
 
 all: compiler
 
 compiler: $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $(OBJS)
 
-%.o: %.cpp
+$(SRCDIR)/%.o: $(SRCDIR)/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:

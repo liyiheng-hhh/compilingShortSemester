@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# 在 Linux 容器内：安装 RISC-V 交叉工具链与 qemu-user，拉取 SysY 运行时，
+# 在 Linux 容器内：安装 RISC-V 交叉工具链与 qemu-user，**现场编译** libsysy.a，
 # 编译本仓库 compiler，smoke 端到端；可选跑批量官方样例目录。
 #
+# libsysy.a 来源（本脚本不下载预编译 .a，也不使用 libsysy.so）：
+#   - 默认：/work/runtime/sysy_runtime.c → sysy.o → ar 成 /tmp/sysy-runtime-lib/build/libsysy.a
+#   - 备选：无本地 C 源时 git clone pku-minic/sysy-runtime-lib（默认分支最新，无固定 tag）
+#   - 批测：export LIBSYSY="$RT/build/libsysy.a" 交给 scripts/run_sy_tests.sh
+#   - 链接：LINK_FLAGS 默认 -static -mcmodel=medany
+#
 # 用法：
-#   docker run --rm -v "$PWD:/work" ubuntu:24.04 bash /work/scripts/e2e-docker.sh
+#   docker run --rm -v "$PWD:/work" ubuntu:22.04 bash /work/scripts/e2e-docker.sh
 # 挂载官方 .sy 目录并比对 golden（需每个用例旁有同名 .out）：
-#   docker run --rm -v "$PWD:/work" -e SY_TEST_DIR=/work/path/to/sy_tests ubuntu:24.04 bash /work/scripts/e2e-docker.sh
+#   docker run --rm -v "$PWD:/work" -e SY_TEST_DIR=/work/path/to/sy_tests ubuntu:22.04 bash /work/scripts/e2e-docker.sh
 # 多个目录（空格分隔）：
 #   -e SY_TEST_DIRS="/work/examples/golden_smoke /work/examples/golden_o1_const"
 #
 # 可选：LINK_FLAGS（默认 -static -mcmodel=medany）、APT_MIRROR_HTTP、USE_O1=1（传给批量脚本）
-#      SKIP_APT=1（容器已配置好工具链时跳过 apt 安装）
+#      SKIP_APT=1（仅当容器内已有 riscv64-linux-gnu-gcc 与 qemu-riscv64-static 时跳过 apt；缺则自动安装）
 #      INSTALL_ONLY=1（只完成 apt 工具链安装，供长期容器初始化使用）
 
 set -euo pipefail
@@ -36,8 +42,19 @@ replace_apt_mirror_tsinghua() {
   done
 }
 
-LOCAL_SYSY=/work/scripts/sysy_runtime.c
-if [[ "${SKIP_APT:-0}" != "1" ]]; then
+LOCAL_SYSY=/work/runtime/sysy_runtime.c
+
+# SKIP_APT=1 仅在容器里已装好交叉 gcc 与 qemu-user-static 时生效；否则仍跑 apt（避免「已 ready」但命令不存在）
+toolchain_present() {
+  command -v riscv64-linux-gnu-gcc >/dev/null 2>&1 && command -v qemu-riscv64-static >/dev/null 2>&1
+}
+
+if [[ "${SKIP_APT:-0}" == "1" ]] && toolchain_present; then
+  echo "=== Skip apt setup (SKIP_APT=1, toolchain present) ==="
+else
+  if [[ "${SKIP_APT:-0}" == "1" ]]; then
+    echo "=== SKIP_APT=1 but riscv64-linux-gnu-gcc or qemu-riscv64-static missing; running apt install ===" >&2
+  fi
   replace_apt_mirror_tsinghua
   apt-get -o Acquire::Retries="${APT_RETRIES:-5}" update -qq
   APT_PKGS=(make g++ gcc-riscv64-linux-gnu libc6-dev-riscv64-cross binutils-riscv64-linux-gnu qemu-user-static)
@@ -45,8 +62,6 @@ if [[ "${SKIP_APT:-0}" != "1" ]]; then
     APT_PKGS+=(ca-certificates git)
   fi
   apt-get -o Acquire::Retries="${APT_RETRIES:-5}" install -y -qq --no-install-recommends "${APT_PKGS[@]}"
-else
-  echo "=== Skip apt setup (SKIP_APT=1) ==="
 fi
 
 if [[ "${INSTALL_ONLY:-0}" == "1" ]]; then
@@ -75,8 +90,9 @@ export LINK_FLAGS="${LINK_FLAGS:--static -mcmodel=medany}"
 echo "=== Build compiler (host g++) ==="
 BUILD_DIR="${BUILD_DIR:-/tmp/compiler-build}"
 rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
-cp /work/Makefile /work/*.cpp /work/*.h "$BUILD_DIR/"
+mkdir -p "$BUILD_DIR/src"
+cp /work/Makefile "$BUILD_DIR/"
+cp /work/src/*.cpp /work/src/*.h "$BUILD_DIR/src/"
 make -C "$BUILD_DIR" clean
 make -C "$BUILD_DIR"
 export COMPILER="$BUILD_DIR/compiler"

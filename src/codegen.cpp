@@ -629,6 +629,96 @@ void CodeGen::emitGlobals() {
     }
   }
 
+namespace {
+
+bool exprContainsCall(Expr *e) {
+  if (!e) return false;
+  switch (e->kind) {
+  case ExprKind::Number:
+  case ExprKind::String:
+    return false;
+  case ExprKind::LVal: {
+    auto *lv = static_cast<LValExpr *>(e);
+    for (const auto &ix : lv->indices) {
+      if (exprContainsCall(ix.get())) return true;
+    }
+    return false;
+  }
+  case ExprKind::Call:
+    return true;
+  case ExprKind::Unary:
+    return exprContainsCall(static_cast<UnaryExpr *>(e)->expr.get());
+  case ExprKind::Binary:
+    return exprContainsCall(static_cast<BinaryExpr *>(e)->lhs.get()) ||
+           exprContainsCall(static_cast<BinaryExpr *>(e)->rhs.get());
+  default:
+    return false;
+  }
+}
+
+bool initValContainsCall(const InitVal *iv) {
+  if (!iv) return false;
+  if (!iv->isList && iv->expr) return exprContainsCall(iv->expr.get());
+  for (const auto &ch : iv->list) {
+    if (initValContainsCall(ch.get())) return true;
+  }
+  return false;
+}
+
+bool stmtContainsCall(Stmt *s);
+
+bool blockContainsCall(BlockStmt &b) {
+  for (const auto &it : b.items) {
+    if (stmtContainsCall(it.get())) return true;
+  }
+  return false;
+}
+
+bool stmtContainsCall(Stmt *s) {
+  if (!s) return false;
+  switch (s->kind) {
+  case StmtKind::Decl: {
+    auto *d = static_cast<DeclStmt *>(s);
+    for (const auto &vd : d->defs) {
+      if (vd.init && initValContainsCall(vd.init.get())) return true;
+    }
+    return false;
+  }
+  case StmtKind::Block:
+    return blockContainsCall(*static_cast<BlockStmt *>(s));
+  case StmtKind::Assign:
+    return exprContainsCall(static_cast<AssignStmt *>(s)->lhs.get()) ||
+           exprContainsCall(static_cast<AssignStmt *>(s)->rhs.get());
+  case StmtKind::Expr:
+    return exprContainsCall(static_cast<ExprStmt *>(s)->expr.get());
+  case StmtKind::If: {
+    auto *i = static_cast<IfStmt *>(s);
+    return exprContainsCall(i->cond.get()) || stmtContainsCall(i->thenStmt.get()) ||
+           stmtContainsCall(i->elseStmt.get());
+  }
+  case StmtKind::While:
+    return exprContainsCall(static_cast<WhileStmt *>(s)->cond.get()) ||
+           stmtContainsCall(static_cast<WhileStmt *>(s)->body.get());
+  case StmtKind::Return:
+    return exprContainsCall(static_cast<ReturnStmt *>(s)->expr.get());
+  default:
+    return false;
+  }
+}
+
+bool funcDefAstContainsCall(const FuncDef &def) {
+  return def.body && blockContainsCall(*def.body);
+}
+
+bool irContainsCall(const IRFunction &ir) {
+  for (const auto &in : ir.insts) {
+    if (in.op == IROp::Call) return true;
+  }
+  return false;
+}
+
+} // namespace
+
 void CodeGen::emitFunction(FuncDef &def) {
     currentFunction_ = def.function;
     currentFunction_->returnLabel = newLabel("return_" + def.name);
@@ -642,6 +732,8 @@ void CodeGen::emitFunction(FuncDef &def) {
     bool useIr = false;
     if (kEnableIrBackend && optO1_ && irFunctionEligible(def)) {
       irBuildFunction(def, semantic_, irBuf);
+      // 第二轮块优化：在 Copy 折叠/CSE 之后常能再消一批冗余（低成本、安全）
+      irOptimizeBlock(irBuf);
       irOptimizeBlock(irBuf);
       irAssignSlots(irBuf);
       irVregSlots_ = irBuf.vregSlots;
@@ -659,6 +751,7 @@ void CodeGen::emitFunction(FuncDef &def) {
       irSpillBase_ = 0;
       irTotalFrame_ = frame;
     }
+    const bool leaf = useIr ? !irContainsCall(irBuf) : !funcDefAstContainsCall(def);
     emitAdjustSp(-frame);
     emit("\tli\tt0, " + to_string(frame));
     emit("\tadd\tt0, sp, t0");

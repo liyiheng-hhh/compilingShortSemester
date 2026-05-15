@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Reusable Docker test environment for SysY RISC-V regression.
 #
-# Usage:
-#   scripts/docker-test-container.sh init
+#   SYSY_DOCKER_IMAGE=ubuntu:22.04 scripts/docker-test-container.sh init   # 默认已是 22.04；可改为 24.04 等
 #   scripts/docker-test-container.sh test /work/performance
 #   USE_O1=1 scripts/docker-test-container.sh test /work/performance
 #   SY_TEST_DIRS="/work/a /work/b" scripts/docker-test-container.sh test ""
@@ -13,7 +12,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NAME="${SYSY_DOCKER_NAME:-sysy-riscv-test}"
-IMAGE="${SYSY_DOCKER_IMAGE:-ubuntu:24.04}"
+IMAGE="${SYSY_DOCKER_IMAGE:-ubuntu:22.04}"
 READY="/opt/sysy-test-env.ready"
 APT_MIRROR_HTTP="${APT_MIRROR_HTTP:-http://mirrors.tuna.tsinghua.edu.cn}"
 APT_RETRIES="${APT_RETRIES:-5}"
@@ -45,10 +44,19 @@ start_container() {
   fi
 }
 
+container_toolchain_ok() {
+  docker exec "$NAME" bash -lc \
+    'command -v riscv64-linux-gnu-gcc >/dev/null 2>&1 && command -v qemu-riscv64-static >/dev/null 2>&1'
+}
+
 install_tools() {
-  if docker exec "$NAME" test -f "$READY"; then
+  if docker exec "$NAME" test -f "$READY" 2>/dev/null && container_toolchain_ok; then
     echo "container already ready: $NAME"
     return
+  fi
+  if docker exec "$NAME" test -f "$READY" 2>/dev/null; then
+    echo "warn: $READY exists but toolchain missing; reinstalling packages..." >&2
+    docker exec "$NAME" rm -f "$READY" 2>/dev/null || true
   fi
   docker exec \
     -e INSTALL_ONLY=1 \

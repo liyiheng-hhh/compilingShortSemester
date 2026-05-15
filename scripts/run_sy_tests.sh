@@ -107,6 +107,11 @@ run_one() {
     sed 's/^/    /' "$tmp/qemu.err" >&2
   fi
 
+  # 部分用例（如 68_brainfk）BF 会 putch('\r')；官方 .out 常按「stdout + 退出码」合并，
+  # 且不含 '\r'。对拍前去掉 stdout 中的 '\r'，避免 WA。
+  tr -d '\r' <"$act" >"$tmp/act.norm"
+  act="$tmp/act.norm"
+
   cp "$act" "$act_with_rc"
   if [[ -s "$act_with_rc" ]] && [[ "$(tail -c 1 "$act_with_rc")" != "" ]]; then
     printf '\n' >>"$act_with_rc"

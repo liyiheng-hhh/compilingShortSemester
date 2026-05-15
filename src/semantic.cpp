@@ -532,7 +532,7 @@ void Semantic::checkCallArgs(CallExpr *expr) {
             fail(arg->line, "argument type mismatch in call to " + expr->name);
           }
         } else if (pt.base == BaseType::Int) {
-          if (!arg->type.isIntScalar()) {
+          if (!arg->type.isIntScalar() && !arg->type.isFloatScalar()) {
             fail(arg->line, "argument type mismatch in call to " + expr->name);
           }
         } else {
@@ -566,7 +566,7 @@ void Semantic::checkCallArgs(CallExpr *expr) {
             fail(arg->line, "argument type mismatch in call to " + expr->name);
           }
         } else if (pt.base == BaseType::Int) {
-          if (!arg->type.isIntScalar()) {
+          if (!arg->type.isIntScalar() && !arg->type.isFloatScalar()) {
             fail(arg->line, "argument type mismatch in call to " + expr->name);
           }
         } else {
@@ -590,7 +590,7 @@ void Semantic::checkCallArgs(CallExpr *expr) {
           fail(arg->line, "argument type mismatch in call to " + expr->name);
         }
       } else if (p.base == BaseType::Int) {
-        if (!arg->type.isIntScalar()) {
+        if (!arg->type.isIntScalar() && !arg->type.isFloatScalar()) {
           fail(arg->line, "argument type mismatch in call to " + expr->name);
         }
       } else {
