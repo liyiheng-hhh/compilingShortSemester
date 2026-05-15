@@ -20,7 +20,16 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-COMPILER="${COMPILER:-$ROOT/compiler}"
+COMPILER="${COMPILER:-}"
+if [[ -z "$COMPILER" || ! -x "$COMPILER" ]]; then
+  if [[ -x "$ROOT/compiler" ]]; then
+    COMPILER="$ROOT/compiler"
+  elif [[ -x "/tmp/compiler-build/compiler" ]]; then
+    COMPILER="/tmp/compiler-build/compiler"
+  else
+    COMPILER="$ROOT/compiler"
+  fi
+fi
 RISCV_GCC="${RISCV_GCC:-riscv64-linux-gnu-gcc}"
 QEMU="${QEMU:-qemu-riscv64-static}"
 LINK_FLAGS="${LINK_FLAGS:--static -mcmodel=medany}"

@@ -1,0 +1,24 @@
+// 多层 if + while，便于轰分支与循环头
+int main() {
+  int i = 0;
+  int s = 0;
+  while (i < 8) {
+    if (i == 0) {
+      s = s + 1;
+    } else {
+      if (i == 1) {
+        s = s + 2;
+      } else {
+        if (i == 2) {
+          s = s + 3;
+        } else {
+          s = s + i;
+        }
+      }
+    }
+    i = i + 1;
+  }
+  putint(s);
+  putch(10);
+  return 0;
+}

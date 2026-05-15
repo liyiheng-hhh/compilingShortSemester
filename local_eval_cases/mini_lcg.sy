@@ -1,0 +1,12 @@
+// 32 位线性同余（每步 int32 溢出），输出确定值便于 O0/O1 对拍
+int main() {
+  int x = 1;
+  int i = 0;
+  while (i < 50) {
+    x = x * 1103515245 + 12345;
+    i = i + 1;
+  }
+  putint(x);
+  putch(10);
+  return 0;
+}

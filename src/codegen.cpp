@@ -119,7 +119,9 @@ static bool emitSigned32DivByConstMagicPayload(CodeGen &cg, int32_t d) {
     }
   }
   cg.emit("\tsraiw\tt2, t2, " + to_string(static_cast<int>(shift)));
+  // libdivide_s32_do_raw: q += (q < 0) after arithmetic shift (not q += q>>31).
   cg.emit("\tsraiw\tt3, t2, 31");
+  cg.emit("\tnegw\tt3, t3");
   cg.emit("\taddw\ta0, t2, t3");
   return true;
 }

@@ -53,6 +53,13 @@ sytest-o1: compiler
 	@if [ -z "$(TESTDIR)" ]; then echo 'sytest-o1: set TESTDIR=directory-with-.sy'; exit 1; fi
 	USE_O1=1 LIBSYSY="$(LIBSYSY)" ./scripts/run_sy_tests.sh "$(TESTDIR)"
 
+# 本地评测套：local_eval_cases（小用例 + 除法/取模属性；O0/O1 批测 + O0 vs O1 对拍）
+#   export LIBSYSY=/path/to/libsysy.a && make local-eval
+# Docker 内先在挂载目录（如 /work）下 make，使 ./compiler 与容器 glibc 一致；或 export COMPILER=BUILD_DIR/compiler
+local-eval:
+	@if [ -z "$(LIBSYSY)" ]; then echo 'local-eval: set LIBSYSY=/path/to/libsysy.a'; exit 1; fi
+	@LIBSYSY="$(LIBSYSY)" ./scripts/run_local_eval.sh
+
 # 单条性能用例 Profiling（见 scripts/profile_sy.sh）
 #   make perf-profile PERF_SY=performance/matmul1.sy
 #   make perf-profile PERF_SY=performance/fft0.sy LIBSYSY=/path/to/libsysy.a
@@ -87,4 +94,4 @@ docker-test-dirs:
 	@SY_TEST_DIRS="$(SY_TEST_DIRS)" ./scripts/docker-test-container.sh test ""
 
 .PHONY: all clean check sytest sytest-o0 sytest-o1 compile-all compile-all-o1 size-report perf-profile \
-	docker-init docker-test-functional docker-test-performance docker-test-dirs
+	local-eval docker-init docker-test-functional docker-test-performance docker-test-dirs

@@ -50,10 +50,19 @@ make check
 
 会在 `examples/` 下生成 `smoke.s`、`smoke_O1.s`（已被 `.gitignore` 忽略），并 **`-O1` 编译** `examples/golden_magic_div/boundary.sy` 做除常数/取模边界 CE 检查。需在具备 RISC-V 工具链与 SysY 运行时的环境中再将 `.s` 汇编链接执行以做端到端验证。
 
+### 无隐藏点时的本地套（`local_eval_cases`）
+
+- **`make local-eval`**（需 **`LIBSYSY`**）：跑 `scripts/run_local_eval.sh` — 对 `local_eval_cases/` 做 O0/O1 批测，并对每个 `.sy`（除 `_gen_divmod`）跑 **`scripts/cmp_o0_o1.sh`**，判断 WA 是否仅出在优化路径。
+- 若环境无 `python3`，脚本仍使用仓库内已提交的 **`_gen_divmod.sy` / `.out`**；有 Python 时会用 **`tools/gen_divmod_property_sy.py`** 再生除法属性用例。
+- **`scripts/compile_memlimit.sh`**：在受限虚拟内存下执行 **`./compiler ...`**，模拟评测机编译阶段 **`Killed`**。示例：  
+  `./scripts/compile_memlimit.sh 512M ./compiler -S -O1 -o /tmp/x.s path/to/large.sy`
+- 在 **Docker** 里跑上述脚本前，请在挂载的仓库根（如 **`/work`**）执行 **`make`**，使 **`./compiler`** 与容器内 glibc 一致；若单独使用 **`BUILD_DIR=/tmp/compiler-build`**，请 **`export COMPILER=/tmp/compiler-build/compiler`**。
+
 ## 批量编译 / 回归 / 体积对比
 
 | 目标 | 说明 |
 |------|------|
+| `make local-eval` | 需 `LIBSYSY`；跑 `local_eval_cases` + O0/O1 对拍（见上节） |
 | `make compile-all` | 递归编译 `SY_DIRS`（默认 `examples`）下全部 `*.sy` → 同名 `.s`，**不需要** qemu |
 | `make compile-all-o1` | 同上且加 **`-O1`** |
 | `make sytest` | 需 `LIBSYSY`、`TESTDIR`；沿用 `scripts/run_sy_tests.sh` |

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace std;
@@ -137,9 +138,12 @@ void irRefreshCFG(IRFunction &fn) {
 // Single-block while: Label L; body (no inner Label); J L. Hoist LoadGlobal(s)
 // with no StoreGlobal to the same symbol in the body and no Call in the body.
 static void irHoistInvariantLoadGlobalSimpleWhile(IRFunction &fn) {
-  vector<IRInst> &inst = fn.insts;
-  const size_t n = inst.size();
-  for (size_t i = 0; i + 2 < n; ++i) {
+  constexpr int kMaxRounds = 4096;
+  for (int round = 0; round < kMaxRounds; ++round) {
+    vector<IRInst> &inst = fn.insts;
+    const size_t n = inst.size();
+    bool hoistedThisRound = false;
+    for (size_t i = 0; i + 2 < n; ++i) {
     if (inst[i].op != IROp::Label) {
       continue;
     }
@@ -243,8 +247,613 @@ static void irHoistInvariantLoadGlobalSimpleWhile(IRFunction &fn) {
       }
     }
     inst.swap(out);
-    irHoistInvariantLoadGlobalSimpleWhile(fn);
+    hoistedThisRound = true;
+    break;
+    }
+    if (!hoistedThisRound) {
+      return;
+    }
+  }
+}
+
+// 单块 while（Label L; …无内层 Label…; J L）：把循环不变、无副作用的 IR 提到 L 之后、循环体之前。
+// 与 irHoistInvariantLoadGlobalSimpleWhile 互补：覆盖纯算术、Lea*、LoadMem(基址不变且无 StoreMem)、
+// LoadLocal(循环内无 StoreLocal 同 sym) 等；循环体内含 Call 时不外提 LoadGlobal/LoadMem（防别名）。
+static bool irHoistOpcodeEligibleForLICM(IROp op) {
+  switch (op) {
+  case IROp::ConstI:
+  case IROp::ConstF:
+  case IROp::Copy:
+  case IROp::LeaStr:
+  case IROp::LeaGlobal:
+  case IROp::LeaLocal:
+  case IROp::LoadParamAddr:
+  case IROp::LoadGlobal:
+  case IROp::LoadLocal:
+  case IROp::LoadMem:
+  case IROp::Add:
+  case IROp::Sub:
+  case IROp::Mul:
+  case IROp::Sll:
+  case IROp::Div:
+  case IROp::Rem:
+  case IROp::Neg:
+  case IROp::FAdd:
+  case IROp::FSub:
+  case IROp::FMul:
+  case IROp::FDiv:
+  case IROp::FNeg:
+  case IROp::ICvtF:
+  case IROp::FCvtI:
+  case IROp::Slt:
+  case IROp::Seqz:
+  case IROp::Snez:
+  case IROp::FCmp:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static bool irHoistOperandsInvariant(const IRInst &in, const vector<char> &invReg, int maxV) {
+  auto ok = [&](int r) {
+    if (r < 0) {
+      return true;
+    }
+    if (r >= maxV) {
+      return false;
+    }
+    return invReg[static_cast<size_t>(r)] != 0;
+  };
+  switch (in.op) {
+  case IROp::ConstI:
+  case IROp::ConstF:
+  case IROp::LeaStr:
+  case IROp::LeaGlobal:
+  case IROp::LeaLocal:
+  case IROp::LoadParamAddr:
+  case IROp::LoadGlobal:
+  case IROp::LoadLocal:
+    return true;
+  case IROp::Copy:
+  case IROp::Neg:
+  case IROp::FNeg:
+  case IROp::Seqz:
+  case IROp::Snez:
+  case IROp::ICvtF:
+  case IROp::FCvtI:
+  case IROp::LoadMem:
+    return ok(in.u);
+  case IROp::Add:
+  case IROp::Sub:
+  case IROp::Mul:
+  case IROp::Div:
+  case IROp::Rem:
+  case IROp::Slt:
+  case IROp::FAdd:
+  case IROp::FSub:
+  case IROp::FMul:
+  case IROp::FDiv:
+  case IROp::FCmp:
+    return ok(in.u) && ok(in.v);
+  case IROp::Sll:
+    return ok(in.u);
+  default:
+    return false;
+  }
+}
+
+static void irHoistPureInvariantSimpleWhile(IRFunction &fn) {
+  constexpr int kMaxRounds = 4096;
+  for (int round = 0; round < kMaxRounds; ++round) {
+    vector<IRInst> &inst = fn.insts;
+    const size_t n = inst.size();
+    const int maxV = fn.nextVreg;
+    if (maxV <= 0) {
+      return;
+    }
+
+    vector<int> defPos(static_cast<size_t>(maxV), -1);
+    for (size_t ix = 0; ix < n; ++ix) {
+      const IRInst &in = inst[ix];
+      if (in.dst >= 0 && in.dst < maxV) {
+        defPos[static_cast<size_t>(in.dst)] = static_cast<int>(ix);
+      }
+    }
+
+    bool hoistedThisRound = false;
+    for (size_t i = 0; i + 2 < n; ++i) {
+    if (inst[i].op != IROp::Label) {
+      continue;
+    }
+    const string &lab = inst[i].ext;
+    size_t j = i + 1;
+    while (j < n && inst[j].op != IROp::Label) {
+      ++j;
+    }
+    if (j <= i + 1 || inst[j - 1].op != IROp::J || inst[j - 1].ext != lab) {
+      continue;
+    }
+    const size_t bodyStart = i + 1;
+    const size_t bodyEnd = j - 2;
+
+    bool hasCall = false;
+    bool hasStoreMem = false;
+    unordered_set<Symbol *> storeLocalSym;
+    unordered_set<Symbol *> storeGlobalSym;
+    for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+      const IRInst &w = inst[k];
+      if (w.op == IROp::Call) {
+        hasCall = true;
+      }
+      if (w.op == IROp::StoreMem) {
+        hasStoreMem = true;
+      }
+      if (w.op == IROp::StoreLocal && w.sym) {
+        storeLocalSym.insert(w.sym);
+      }
+      if (w.op == IROp::StoreGlobal && w.sym) {
+        storeGlobalSym.insert(w.sym);
+      }
+    }
+
+    vector<char> invReg(static_cast<size_t>(maxV), 0);
+    for (int r = 0; r < maxV; ++r) {
+      const int d = defPos[static_cast<size_t>(r)];
+      if (d >= 0 && d < static_cast<int>(i)) {
+        invReg[static_cast<size_t>(r)] = 1;
+      }
+    }
+
+    vector<char> hoist(n, 0);
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+        if (hoist[k]) {
+          continue;
+        }
+        const IRInst &in = inst[k];
+        if (!irHoistOpcodeEligibleForLICM(in.op)) {
+          continue;
+        }
+        if (!irHoistOperandsInvariant(in, invReg, maxV)) {
+          continue;
+        }
+        if (hasCall) {
+          if (in.op == IROp::LoadGlobal || in.op == IROp::LoadMem) {
+            continue;
+          }
+        }
+        if (in.op == IROp::LoadGlobal) {
+          if (!in.sym || storeGlobalSym.count(in.sym)) {
+            continue;
+          }
+        }
+        if (in.op == IROp::LoadLocal) {
+          if (!in.sym || storeLocalSym.count(in.sym)) {
+            continue;
+          }
+        }
+        if (in.op == IROp::LoadMem && hasStoreMem) {
+          continue;
+        }
+
+        hoist[k] = 1;
+        if (in.dst >= 0 && in.dst < maxV) {
+          const size_t di = static_cast<size_t>(in.dst);
+          if (!invReg[di]) {
+            invReg[di] = 1;
+            changed = true;
+          }
+        }
+      }
+    }
+
+    vector<size_t> hoistedIdx;
+    for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+      if (hoist[k]) {
+        hoistedIdx.push_back(k);
+      }
+    }
+    if (hoistedIdx.empty()) {
+      continue;
+    }
+
+    vector<IRInst> out;
+    out.reserve(inst.size());
+    size_t p = 0;
+    while (p < n) {
+      if (p == i) {
+        out.push_back(inst[i]);
+        for (size_t idx : hoistedIdx) {
+          out.push_back(inst[idx]);
+        }
+        for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+          if (!hoist[k]) {
+            out.push_back(inst[k]);
+          }
+        }
+        out.push_back(inst[j - 1]);
+        p = j;
+      } else {
+        out.push_back(inst[p++]);
+      }
+    }
+    inst.swap(out);
+    hoistedThisRound = true;
+    break;
+    }
+    if (!hoistedThisRound) {
+      return;
+    }
+  }
+}
+
+// ---------- CFG 上的循环不变量外提（多块循环、内层 Label）----------
+
+static void irBuildPredecessors(const IRFunction &fn, vector<vector<int>> &pred) {
+  const int nb = static_cast<int>(fn.blocks.size());
+  pred.assign(static_cast<size_t>(nb), {});
+  for (int b = 0; b < nb; ++b) {
+    for (int s : fn.blocks[static_cast<size_t>(b)].succ) {
+      if (s >= 0 && s < nb) {
+        pred[static_cast<size_t>(s)].push_back(b);
+      }
+    }
+  }
+}
+
+// dom[b][a]==1 表示：从入口块 0 到块 b 的每条路径都经过块 a（即 a 支配 b）。dom[0] 固定为仅块 0 支配入口。
+static void irComputeDominators(const IRFunction &fn, const vector<vector<int>> &pred,
+                                  vector<vector<char>> &dom) {
+  const int nb = static_cast<int>(fn.blocks.size());
+  if (nb <= 0) {
+    dom.clear();
     return;
+  }
+  dom.assign(static_cast<size_t>(nb), vector<char>(static_cast<size_t>(nb), 0));
+  dom[0][0] = 1;
+  for (int b = 1; b < nb; ++b) {
+    fill(dom[static_cast<size_t>(b)].begin(), dom[static_cast<size_t>(b)].end(), 1);
+  }
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (int b = 1; b < nb; ++b) {
+      const auto &pb = pred[static_cast<size_t>(b)];
+      vector<char> newd(static_cast<size_t>(nb), 0);
+      newd[static_cast<size_t>(b)] = 1;
+      if (pb.empty()) {
+        if (dom[static_cast<size_t>(b)] != newd) {
+          dom[static_cast<size_t>(b)] = newd;
+          changed = true;
+        }
+        continue;
+      }
+      copy(dom[static_cast<size_t>(pb[0])].begin(), dom[static_cast<size_t>(pb[0])].end(),
+           newd.begin());
+      for (size_t pi = 1; pi < pb.size(); ++pi) {
+        const int p = pb[pi];
+        for (int x = 0; x < nb; ++x) {
+          newd[static_cast<size_t>(x)] =
+              static_cast<char>(newd[static_cast<size_t>(x)] & dom[static_cast<size_t>(p)][static_cast<size_t>(x)]);
+        }
+      }
+      newd[static_cast<size_t>(b)] = 1;
+      if (newd != dom[static_cast<size_t>(b)]) {
+        dom[static_cast<size_t>(b)] = std::move(newd);
+        changed = true;
+      }
+    }
+  }
+}
+
+static void irDefiningBlockPerVreg(const IRFunction &fn, vector<int> &defBlock) {
+  const int nv = fn.nextVreg;
+  const int nb = static_cast<int>(fn.blocks.size());
+  defBlock.assign(max(nv, 0), -1);
+  if (nv <= 0 || nb <= 0) {
+    return;
+  }
+  for (int bi = 0; bi < nb; ++bi) {
+    const IRBlock &blk = fn.blocks[static_cast<size_t>(bi)];
+    for (size_t ii = blk.begin; ii < blk.end; ++ii) {
+      const IRInst &in = fn.insts[ii];
+      if (in.dst >= 0 && in.dst < nv) {
+        defBlock[static_cast<size_t>(in.dst)] = bi;
+      }
+    }
+  }
+}
+
+struct IrCfgLoop {
+  int header = -1;
+  vector<int> latches;
+  unordered_set<int> blocks;
+};
+
+// 背边 tail->header 且 header 支配 tail 的自然循环（Cooper：从 tail 沿 pred 回溯，不穿过 header）。
+static void irNaturalLoopBlocks(int nb, const vector<vector<int>> &pred, int header, int tail,
+                                unordered_set<int> &outBlocks) {
+  outBlocks.clear();
+  outBlocks.insert(tail);
+  vector<int> stack;
+  stack.push_back(tail);
+  while (!stack.empty()) {
+    const int m = stack.back();
+    stack.pop_back();
+    for (int p : pred[static_cast<size_t>(m)]) {
+      if (p >= 0 && p < nb && !outBlocks.count(p) && p != header) {
+        outBlocks.insert(p);
+        stack.push_back(p);
+      }
+    }
+  }
+  outBlocks.insert(header);
+}
+
+// 只保留被循环头支配的块，剔除假回边/不可约图回溯到的函数入口等。
+static void irFilterLoopBlocksByHeaderDom(int nb, const vector<vector<char>> &dom, int header,
+                                          unordered_set<int> &blocks) {
+  vector<int> rm;
+  for (int bb : blocks) {
+    if (bb < 0 || bb >= nb || !dom[static_cast<size_t>(bb)][static_cast<size_t>(header)]) {
+      rm.push_back(bb);
+    }
+  }
+  for (int x : rm) {
+    blocks.erase(x);
+  }
+}
+
+static void irCollectLoopMemorySummary(const IRFunction &fn, const unordered_set<int> &loopBlks,
+                                       bool &hasCall, bool &hasStoreMem,
+                                       unordered_set<Symbol *> &storeLocalSym,
+                                       unordered_set<Symbol *> &storeGlobalSym) {
+  hasCall = false;
+  hasStoreMem = false;
+  storeLocalSym.clear();
+  storeGlobalSym.clear();
+  const int nb = static_cast<int>(fn.blocks.size());
+  for (int bid : loopBlks) {
+    if (bid < 0 || bid >= nb) {
+      continue;
+    }
+    const IRBlock &blk = fn.blocks[static_cast<size_t>(bid)];
+    for (size_t ii = blk.begin; ii < blk.end; ++ii) {
+      const IRInst &w = fn.insts[ii];
+      if (w.op == IROp::Call) {
+        hasCall = true;
+      }
+      if (w.op == IROp::StoreMem) {
+        hasStoreMem = true;
+      }
+      if (w.op == IROp::StoreLocal && w.sym) {
+        storeLocalSym.insert(w.sym);
+      }
+      if (w.op == IROp::StoreGlobal && w.sym) {
+        storeGlobalSym.insert(w.sym);
+      }
+    }
+  }
+}
+
+// 在支配关系与「定义块支配所有 latch」条件下外提不变量；插入位置为循环头块首条 Label 之后（每轮迭代执行一次，与单块 LICM 一致）。
+static void irHoistLoopInvariantCFG(IRFunction &fn) {
+  // 外提会改指令序列与 CFG；用迭代重建支配/循环，禁止尾递归自调（小图上也会无限递归栈溢出）。
+  constexpr int kMaxRounds = 4096;
+  for (int round = 0; round < kMaxRounds; ++round) {
+    irRefreshCFG(fn);
+    vector<IRInst> &inst = fn.insts;
+    const int nb = static_cast<int>(fn.blocks.size());
+    const int maxV = fn.nextVreg;
+    const size_t n = inst.size();
+    if (nb <= 0 || n == 0 || maxV <= 0) {
+      return;
+    }
+  // 支配矩阵 dom 为 nb×nb 字节；大源文件基本块极多时可达数百 MB～数 GB，易被评测机 OOM Killer
+  // 直接 SIGKILL（脚本里常误标为「编译错误」）。超过预算则跳过本遍 CFG LICM。
+  constexpr size_t kMaxDomMatrixCells = 12u * 1024u * 1024u;
+  if (static_cast<size_t>(nb) * static_cast<size_t>(nb) > kMaxDomMatrixCells) {
+    return;
+  }
+
+  vector<vector<int>> pred;
+  irBuildPredecessors(fn, pred);
+  vector<vector<char>> dom;
+  irComputeDominators(fn, pred, dom);
+  if (static_cast<int>(dom.size()) != nb) {
+    return;
+  }
+
+  vector<int> defBlock;
+  irDefiningBlockPerVreg(fn, defBlock);
+
+  // 按 header 合并背边与自然循环体
+  unordered_map<int, IrCfgLoop> loops;
+  for (int b = 0; b < nb; ++b) {
+    for (int s : fn.blocks[static_cast<size_t>(b)].succ) {
+      if (s < 0 || s >= nb) {
+        continue;
+      }
+      // s 支配 b ⇒ 边 b->s 为背边，s 为循环头
+      if (!dom[static_cast<size_t>(b)][static_cast<size_t>(s)]) {
+        continue;
+      }
+      unordered_set<int> body;
+      irNaturalLoopBlocks(nb, pred, s, b, body);
+      irFilterLoopBlocksByHeaderDom(nb, dom, s, body);
+      if (body.size() <= 1) {
+        continue;
+      }
+      IrCfgLoop &L = loops[s];
+      if (L.header < 0) {
+        L.header = s;
+      }
+      bool found = false;
+      for (int t : L.latches) {
+        if (t == b) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        L.latches.push_back(b);
+      }
+      for (int bb : body) {
+        L.blocks.insert(bb);
+      }
+    }
+  }
+
+  if (loops.empty()) {
+    return;
+  }
+
+  vector<IrCfgLoop> loopVec;
+  loopVec.reserve(loops.size());
+  for (auto &pr : loops) {
+    loopVec.push_back(std::move(pr.second));
+  }
+  sort(loopVec.begin(), loopVec.end(), [](const IrCfgLoop &a, const IrCfgLoop &b) {
+    if (a.blocks.size() != b.blocks.size()) {
+      return a.blocks.size() < b.blocks.size();
+    }
+    return a.header < b.header;
+  });
+
+  bool hoistedThisRound = false;
+  for (IrCfgLoop &loop : loopVec) {
+    const int h = loop.header;
+    if (h < 0 || h >= nb || loop.latches.empty() || loop.blocks.empty()) {
+      continue;
+    }
+    bool latchesInLoop = true;
+    for (int lat : loop.latches) {
+      if (lat < 0 || lat >= nb || !loop.blocks.count(lat)) {
+        latchesInLoop = false;
+        break;
+      }
+    }
+    if (!latchesInLoop) {
+      continue;
+    }
+    const IRBlock &hblk = fn.blocks[static_cast<size_t>(h)];
+    if (hblk.begin >= hblk.end || inst[hblk.begin].op != IROp::Label) {
+      continue;
+    }
+    const size_t headerLabelIdx = hblk.begin;
+
+    bool hasCall = false;
+    bool hasStoreMem = false;
+    unordered_set<Symbol *> storeLocalSym;
+    unordered_set<Symbol *> storeGlobalSym;
+    irCollectLoopMemorySummary(fn, loop.blocks, hasCall, hasStoreMem, storeLocalSym,
+                               storeGlobalSym);
+
+    vector<char> invReg(static_cast<size_t>(maxV), 0);
+    for (int r = 0; r < maxV; ++r) {
+      const int db = defBlock[static_cast<size_t>(r)];
+      if (db < 0 || !loop.blocks.count(db)) {
+        invReg[static_cast<size_t>(r)] = 1;
+      }
+    }
+
+    vector<char> hoist(n, 0);
+    bool chg = true;
+    while (chg) {
+      chg = false;
+      for (int bid : loop.blocks) {
+        if (bid < 0 || bid >= nb) {
+          continue;
+        }
+        bool domAllLatches = true;
+        for (int lat : loop.latches) {
+          if (lat < 0 || lat >= nb || !dom[static_cast<size_t>(lat)][static_cast<size_t>(bid)]) {
+            domAllLatches = false;
+            break;
+          }
+        }
+        if (!domAllLatches) {
+          continue;
+        }
+        const IRBlock &blk = fn.blocks[static_cast<size_t>(bid)];
+        for (size_t ii = blk.begin; ii < blk.end; ++ii) {
+          if (hoist[ii]) {
+            continue;
+          }
+          const IRInst &in = inst[ii];
+          if (!irHoistOpcodeEligibleForLICM(in.op)) {
+            continue;
+          }
+          if (!irHoistOperandsInvariant(in, invReg, maxV)) {
+            continue;
+          }
+          if (hasCall) {
+            if (in.op == IROp::LoadGlobal || in.op == IROp::LoadMem) {
+              continue;
+            }
+          }
+          if (in.op == IROp::LoadGlobal) {
+            if (!in.sym || storeGlobalSym.count(in.sym)) {
+              continue;
+            }
+          }
+          if (in.op == IROp::LoadLocal) {
+            if (!in.sym || storeLocalSym.count(in.sym)) {
+              continue;
+            }
+          }
+          if (in.op == IROp::LoadMem && hasStoreMem) {
+            continue;
+          }
+
+          hoist[ii] = 1;
+          if (in.dst >= 0 && in.dst < maxV) {
+            const size_t di = static_cast<size_t>(in.dst);
+            if (!invReg[di]) {
+              invReg[di] = 1;
+              chg = true;
+            }
+          }
+        }
+      }
+    }
+
+    vector<size_t> hoistedIdx;
+    for (size_t i = 0; i < n; ++i) {
+      if (hoist[i]) {
+        hoistedIdx.push_back(i);
+      }
+    }
+    if (hoistedIdx.empty()) {
+      continue;
+    }
+    sort(hoistedIdx.begin(), hoistedIdx.end());
+
+    vector<IRInst> out;
+    out.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+      if (i == headerLabelIdx) {
+        out.push_back(inst[i]);
+        for (size_t idx : hoistedIdx) {
+          out.push_back(inst[idx]);
+        }
+        continue;
+      }
+      if (hoist[i]) {
+        continue;
+      }
+      out.push_back(inst[i]);
+    }
+    inst.swap(out);
+    hoistedThisRound = true;
+    break;
+  }
+  if (!hoistedThisRound) {
+    return;
+  }
   }
 }
 
@@ -277,6 +886,8 @@ static uint64_t irInstructionFingerprint(const IRFunction &fn) {
 
 static void irOptimizeBlockOneRound(IRFunction &fn) {
   irHoistInvariantLoadGlobalSimpleWhile(fn);
+  irHoistPureInvariantSimpleWhile(fn);
+  irHoistLoopInvariantCFG(fn);
   irRefreshCFG(fn);
   if (fn.insts.empty()) {
     return;

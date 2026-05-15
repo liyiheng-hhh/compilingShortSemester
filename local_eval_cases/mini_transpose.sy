@@ -1,0 +1,20 @@
+// 小矩阵转置后按行输出
+int main() {
+  int m0 = 1;
+  int m1 = 2;
+  int m2 = 3;
+  int m3 = 4;
+  int t0 = m0;
+  int t1 = m2;
+  int t2 = m1;
+  int t3 = m3;
+  putint(t0);
+  putch(32);
+  putint(t1);
+  putch(10);
+  putint(t2);
+  putch(32);
+  putint(t3);
+  putch(10);
+  return 0;
+}
