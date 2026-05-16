@@ -9,6 +9,9 @@ struct CompileError : std::runtime_error {
   using std::runtime_error::runtime_error;
 };
 
+// truthy getenv：未设置、`""`、`"0"` 为 false（用于评测/本地二分，不影响默认行为）。
+bool envFlagTruthy(const char *envName);
+
 int alignTo(int value, int align);
 std::uint32_t floatBits(float value);
 std::string escapeAsmString(const std::string &s);

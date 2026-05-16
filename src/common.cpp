@@ -2,12 +2,21 @@
 
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <limits>
 #include <sstream>
 
 using namespace std;
+
+bool envFlagTruthy(const char *envName) {
+  const char *v = getenv(envName);
+  if (!v || v[0] == '\0') {
+    return false;
+  }
+  return strcmp(v, "0") != 0;
+}
 
 int alignTo(int value, int align) {
   return (value + align - 1) / align * align;

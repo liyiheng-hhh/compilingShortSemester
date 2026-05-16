@@ -96,6 +96,45 @@ static bool cmpRelOp(const string &o) {
   return o == "<" || o == "<=" || o == ">" || o == ">=";
 }
 
+// 循环交换仅对「矩形」嵌套安全：任一层界不能依赖另一层的归纳变量（例如 j < i 时禁止交换）。
+static bool exprUsesVarName(const Expr *e, const string &name) {
+  if (!e) {
+    return false;
+  }
+  switch (e->kind) {
+  case ExprKind::LVal: {
+    auto *lv = static_cast<const LValExpr *>(e);
+    if (lv->name == name) {
+      return true;
+    }
+    for (const auto &ix : lv->indices) {
+      if (exprUsesVarName(ix.get(), name)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  case ExprKind::Unary:
+    return exprUsesVarName(static_cast<const UnaryExpr *>(e)->expr.get(), name);
+  case ExprKind::Binary: {
+    auto *b = static_cast<const BinaryExpr *>(e);
+    return exprUsesVarName(b->lhs.get(), name) ||
+           exprUsesVarName(b->rhs.get(), name);
+  }
+  case ExprKind::Call: {
+    auto *c = static_cast<const CallExpr *>(e);
+    for (const auto &a : c->args) {
+      if (exprUsesVarName(a.get(), name)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  default:
+    return false;
+  }
+}
+
 static bool extractLoopIv(const WhileStmt *w, string *iv) {
   auto *b = dynamic_cast<const BinaryExpr *>(w->cond.get());
   if (!b || !cmpRelOp(b->op)) {
@@ -281,6 +320,12 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
   (void)symOut;
   (void)symIn;
   if (iv1 != outerIv || iv2 != innerIv) {
+    return false;
+  }
+
+  // 外层界含内层变量、或内层界含外层变量时，交换会改变遍历顺序 → 语义错误。
+  if (exprUsesVarName(outer->cond.get(), innerIv) ||
+      exprUsesVarName(inner->cond.get(), outerIv)) {
     return false;
   }
 

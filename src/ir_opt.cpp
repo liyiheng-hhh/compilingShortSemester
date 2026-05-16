@@ -1,6 +1,7 @@
 #include "ir.h"
 
 #include "common.h"
+#include "opt_config.h"
 
 #include <algorithm>
 #include <climits>
@@ -887,9 +888,15 @@ static uint64_t irInstructionFingerprint(const IRFunction &fn) {
 }
 
 static void irOptimizeBlockOneRound(IRFunction &fn) {
-  irHoistInvariantLoadGlobalSimpleWhile(fn);
-  irHoistPureInvariantSimpleWhile(fn);
-  irHoistLoopInvariantCFG(fn);
+  // 本地/远程二分：`SYSY_CC_NO_SIMPLE_WHILE_LICM` / `SYSY_CC_NO_CFG_LICM`；
+  // 整块 IR 中端优化见 `irOptimizeBlock` 的 `SYSY_CC_NO_IR_OPT`。
+  if (!envFlagTruthy("SYSY_CC_NO_SIMPLE_WHILE_LICM")) {
+    irHoistInvariantLoadGlobalSimpleWhile(fn);
+    irHoistPureInvariantSimpleWhile(fn);
+  }
+  if (o1IrCfgLicmEnabled()) {
+    irHoistLoopInvariantCFG(fn);
+  }
   irRefreshCFG(fn);
   if (fn.insts.empty()) {
     return;
@@ -1766,6 +1773,10 @@ static void irOptimizeBlockOneRound(IRFunction &fn) {
 }
 
 void irOptimizeBlock(IRFunction &fn) {
+  if (envFlagTruthy("SYSY_CC_NO_IR_OPT")) {
+    irRefreshCFG(fn);
+    return;
+  }
   // Too many outer rounds makes compile time / memory prohibitive on large IR
   // (grader may SIGKILL on OOM or wall-clock).
   const int maxOuter = 6;

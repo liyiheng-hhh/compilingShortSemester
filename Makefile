@@ -1,5 +1,6 @@
 CXX ?= clang++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra
+# 可选：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1 make` → AST 交换 + CFG LICM 全开（默认保守见 src/opt_config.h）
 
 # 供 compile-all / size-report 递归扫描（空格分隔多个根目录）
 SY_DIRS ?= examples
@@ -13,10 +14,10 @@ OBJS := $(SRCS:.cpp=.o)
 all: compiler
 
 compiler: $(OBJS)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJS)
+	$(CXX) $(CXXFLAGS) $(CXXFLAGS_EXTRA) -o $@ $(OBJS)
 
 $(SRCDIR)/%.o: $(SRCDIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(CXXFLAGS_EXTRA) -c $< -o $@
 
 clean:
 	rm -f compiler $(OBJS)
@@ -28,8 +29,9 @@ check: compiler
 	./compiler -S -O1 -o examples/_magic_check.s examples/golden_magic_div/boundary.sy
 	./compiler -S -O1 -o examples/_shift_check.s examples/golden_shift/shift.sy
 	./compiler -S -O1 -o examples/_loop_ix_check.s examples/golden_transpose_ix/transpose_ix.sy
+	./compiler -S -O1 -o examples/_loop_ix_tri_check.s examples/golden_transpose_ix/transpose_ix_tri_guard.sy
 	./compiler -S -o examples/_shift_check0.s examples/golden_shift/shift.sy
-	rm -f examples/_cmp_check.s examples/_magic_check.s examples/_shift_check.s examples/_shift_check0.s examples/_loop_ix_check.s
+	rm -f examples/_cmp_check.s examples/_magic_check.s examples/_shift_check.s examples/_shift_check0.s examples/_loop_ix_check.s examples/_loop_ix_tri_check.s
 
 # 递归编译所有 .sy → .s（无需 qemu；大测试树传 SY_DIRS）
 #   make compile-all SY_DIRS="examples path/to/functional path/to/performance"

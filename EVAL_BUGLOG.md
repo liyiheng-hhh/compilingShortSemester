@@ -42,6 +42,30 @@
 
 拿到其中一种后，可以按下面顺序查（也可交给 Cursor 按文件跑）：
 
+### O1 子系统二分：`SYSY_CC_*` 环境变量（不改变默认提交行为）
+
+在未改命令行（仍是 `compiler ... -O1`）的前提下，通过环境变量**单独关掉**某类优化（本地或自管评测机上设置即可；官方希冀未设置则与默认一致）。
+
+| 变量 | 为真时效果（`1` 或非空、`0` 为关） |
+|------|-------------------------------------|
+| `SYSY_CC_NO_AST_LOOP_INTERCHANGE` | 关闭 AST **`loopInterchangePass`（双 `while` 转置交换）** |
+| `SYSY_CC_NO_CFG_LICM` | 关闭 **`irHoistLoopInvariantCFG`（CFG 跨块循环不变量外提）** |
+| `SYSY_CC_NO_SIMPLE_WHILE_LICM` | 关闭 **`irHoistInvariantLoadGlobalSimpleWhile` + `irHoistPureInvariantSimpleWhile`（单块 `while` 外提）** |
+| 同时设 `NO_SIMPLE_WHILE_LICM` 与 `NO_CFG_LICM` | 关闭上述 **全部三类 LICM** |
+| `SYSY_CC_NO_IR_OPT` | **跳过整个 `irOptimizeBlock`**（仅 `irRefreshCFG`），保留 IR 路径与槽分配；用于判断 WA 是否来自任意 IR 中端轮 |
+| `SYSY_CC_FORCE_AST_LOOP_INTERCHANGE` | 在 **保守默认**（未 `-DSYSY_O1_FULL`）下强行打开 AST 转置交换（本地要打榜用） |
+| `SYSY_CC_FORCE_CFG_LICM` | 在保守默认下强行打开 **CFG LICM** |
+
+默认提交构建（未定 `SYSY_O1_FULL`）为 **稳健 O1**：不传环境变量时不做 AST 交换与 CFG LICM，`make` 中加 `CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1` 可恢复全开。
+
+一键对同一文件试多种组合（打 MD5，不跑 qemu）：
+
+```bash
+./scripts/bisect_sysy_o1_env.sh path/to/fail.sy
+```
+
+若某模式下 **MD5 与 baseline 不同** 且 **qemu 输出由 WA 变 AC**，即可把锅缩小到对应 pass。
+
 | 步骤 | 命令 / 动作 |
 |------|----------------|
 | 确认是 O0 还是 O1 | 对同一 `.sy` 分别 `-O0`（或不加）与 `-O1` 生成 `.s`，看 WA 是否仅 O1 出现 |

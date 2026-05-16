@@ -2,6 +2,7 @@
 #include "common.h"
 #include "lexer.h"
 #include "loop_interchange.h"
+#include "opt_config.h"
 #include "parser.h"
 #include "semantic.h"
 
@@ -26,7 +27,7 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   Program program = parser.parseProgram();
   Semantic semantic(program);
   semantic.run();
-  if (optO1) {
+  if (o1AstLoopInterchangeEnabled(optO1)) {
     loopInterchangePass(program);
   }
   CodeGen codegen(program, semantic, optO1);
