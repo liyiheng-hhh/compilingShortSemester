@@ -42,7 +42,7 @@
 - `k-i-j` 外层 k、中层可 `if (A[i][k]==1) continue`（`01_mm2` 的 `mm`）
 - `SYSY_CC_NO_LOOP_TILING=1` 关闭；常数上界 `<16`、三角界（`j<i`）不分块
 - AST 变换在 **semantic 之前**；多分块 nest 用 `_ti_i_0` 等唯一名，并避免覆盖 `init+while` 后的下一条语句
-- **WA 修复**：`tryTile3DMatmul` / `tryTile3DKOuter` 的 `midCore` 勿再含 `j++/i++`（`buildTiled2D` 已追加），否则 `many_mat_cal-*` / `h-10-*` 内层归纳变量双自增
+- **WA 修复**：`tryTile3DMatmul` 的 `midCore` 勿再含 `j++`（`buildTiled2D` 已追加）；`tryTile3DKOuter` 只分块 **mid×inner**（`buildTiled2D(mid,inner)`），**k 外层** 保留原 `while(k){…; k++}`，避免 `buildTiled2D(k,i)` 把 `k++` 放进内层 tile 导致 `h-10` 拷贝错 / `k` 乱跳
 | 本地验证 | 关键题 + 全 `performance/*.sy` **C/D vs O0 OK**；`make check` 通过 |
 | 风险 | 大题编译 **Killed/OOM**（CFG LICM）；可 `SYSY_CC_NO_CFG_LICM=1` 退回 C 行为 |
 

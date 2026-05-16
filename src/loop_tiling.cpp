@@ -640,11 +640,29 @@ static bool tryTile3DKOuter(vector<StmtPtr> &items, size_t k) {
   }
   const int nestId = gTileNestId++;
   int line = outerW->line;
+  // 只分块中层 i × 内层 j；k 外层保持原序，末尾保留 k++（勿用 buildTiled2D(k,i) 以免 k 在内层分块里多次自增）。
+  auto tiledIJ = buildTiled2D(line, nestId, midIv, innerIv, midLimit.get(),
+                              innerLimit.get(), std::move(midCore));
+  auto kBody = make_unique<BlockStmt>(line);
+  kBody->items.push_back(std::move(tiledIJ));
+  if (StmtPtr kInc = cloneStmt(outerInc)) {
+    kBody->items.push_back(std::move(kInc));
+  } else {
+    return false;
+  }
+  auto kWhile =
+      make_unique<WhileStmt>(line, cloneExpr(outerW->cond.get()), nullptr);
+  kWhile->body = std::move(kBody);
+
   vector<StmtPtr> rep;
-  rep.push_back(makeTileVarDecl(line, nestId, outerIv, midIv, declareMid));
-  rep.push_back(makeZeroAssign(line, tileVar(outerIv, nestId)));
-  rep.push_back(buildTiled2D(line, nestId, outerIv, midIv, outerLimit.get(),
-                             midLimit.get(), std::move(midCore)));
+  if (StmtPtr kInit = cloneStmt(outerInit)) {
+    rep.push_back(std::move(kInit));
+  } else {
+    return false;
+  }
+  rep.push_back(makeTileVarDecl(line, nestId, midIv, innerIv, declareMid));
+  rep.push_back(makeZeroAssign(line, tileVar(midIv, nestId)));
+  rep.push_back(std::move(kWhile));
   items.erase(items.begin() + static_cast<ptrdiff_t>(k),
               items.begin() + static_cast<ptrdiff_t>(k + 2));
   items.insert(items.begin() + static_cast<ptrdiff_t>(k),
@@ -792,7 +810,7 @@ static void processBlockTiling(BlockStmt *blk) {
   }
   for (size_t i = 0; i + 1 < blk->items.size();) {
     if (tryTile3DKOuter(blk->items, i)) {
-      i += 3;
+      i += 4;
       continue;
     }
     if (tryTile3DMatmul(blk->items, i)) {

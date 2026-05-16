@@ -32,8 +32,9 @@ check: compiler
 	./compiler -S -O1 -o examples/_loop_ix_tri_check.s examples/golden_transpose_ix/transpose_ix_tri_guard.sy
 	./compiler -S -O1 -o examples/_tile_kouter_check.s examples/golden_tile_kouter/kouter_assign.sy
 	./compiler -S -O1 -o examples/_mmc_mini_check.s examples/golden_many_mat_cal_mini/many_mat_cal_mini.sy
+	./compiler -S -O1 -o examples/_h10_check.s performance/h-10-01.sy
 	./compiler -S -o examples/_shift_check0.s examples/golden_shift/shift.sy
-	rm -f examples/_cmp_check.s examples/_magic_check.s examples/_shift_check.s examples/_shift_check0.s examples/_loop_ix_check.s examples/_loop_ix_tri_check.s examples/_tile_kouter_check.s examples/_mmc_mini_check.s
+	rm -f examples/_cmp_check.s examples/_magic_check.s examples/_shift_check.s examples/_shift_check0.s examples/_loop_ix_check.s examples/_loop_ix_tri_check.s examples/_tile_kouter_check.s examples/_mmc_mini_check.s examples/_h10_check.s
 
 # 递归编译所有 .sy → .s（无需 qemu；大测试树传 SY_DIRS）
 #   make compile-all SY_DIRS="examples path/to/functional path/to/performance"
