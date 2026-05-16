@@ -1,9 +1,15 @@
 int main() {
-  putint(1 << 3);
+  putint(1 + 2 * 3);
   putch(10);
-  putint(-9 >> 2);
+  putint(-(1 + 2));
   putch(10);
-  putint(7 << 0);
+  putint(0x10 + 5);
+  putch(10);
+  if (!0) {
+    putint(1);
+  } else {
+    putint(0);
+  }
   putch(10);
   return 0;
 }

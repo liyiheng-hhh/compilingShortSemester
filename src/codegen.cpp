@@ -2349,6 +2349,7 @@ void CodeGen::emitUnary(UnaryExpr *expr) {
     if (expr->op == "!") {
       emitBoolFromValue(expr->expr->type);
       emit("\tseqz\ta0, a0");
+      return;
     }
   }
 
@@ -2372,20 +2373,6 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
     bool compare = op == "==" || op == "!=" || op == "<" || op == ">" ||
                    op == "<=" || op == ">=";
     bool useFloat = expr->lhs->type.isFloatScalar() || expr->rhs->type.isFloatScalar();
-
-    if (!useFloat && (op == "<<" || op == ">>")) {
-      emitExpr(expr->lhs.get());
-      emit("\tmv\tt0, a0");
-      emitExpr(expr->rhs.get());
-      emit("\tandi\tt1, a0, 31");
-      emit("\tmv\ta0, t0");
-      if (op == "<<") {
-        emit("\tsllw\ta0, a0, t1");
-      } else {
-        emit("\tsraw\ta0, a0, t1");
-      }
-      return;
-    }
 
     if (!useFloat && compare && optO1_ && expr->lhs->type.isIntScalar() &&
         expr->rhs->type.isIntScalar()) {

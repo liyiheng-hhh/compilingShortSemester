@@ -24,8 +24,6 @@ enum class TokenKind {
   Star,
   Slash,
   Percent,
-  Shl,
-  Shr,
   Bang,
   AndAnd,
   OrOr,

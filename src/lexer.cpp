@@ -4,6 +4,7 @@ using namespace std;
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <sstream>
 #include <unordered_map>
 
 Lexer::Lexer(string source) : src_(std::move(source)) {}
@@ -274,13 +275,18 @@ Token Lexer::scanPunct(){
         tok.text.push_back(get());
         return one(TokenKind::AndAnd);
       }
-      break;
+      throw CompileError("line " + to_string(tok.line) + ":" + to_string(tok.col) +
+                         ": bitwise '&' is not in SysY 2022 (use '&&' for logical and)");
     case '|':
       if (peek() == '|') {
         tok.text.push_back(get());
         return one(TokenKind::OrOr);
       }
-      break;
+      throw CompileError("line " + to_string(tok.line) + ":" + to_string(tok.col) +
+                         ": bitwise '|' is not in SysY 2022 (use '||' for logical or)");
+    case '^':
+      throw CompileError("line " + to_string(tok.line) + ":" + to_string(tok.col) +
+                         ": '^' is not in SysY 2022");
     case '=':
       if (peek() == '=') {
         tok.text.push_back(get());
@@ -289,8 +295,8 @@ Token Lexer::scanPunct(){
       return one(TokenKind::Assign);
     case '<':
       if (peek() == '<') {
-        tok.text.push_back(get());
-        return one(TokenKind::Shl);
+        throw CompileError("line " + to_string(tok.line) + ":" + to_string(tok.col) +
+                             ": '<<' is not in SysY 2022");
       }
       if (peek() == '=') {
         tok.text.push_back(get());
@@ -299,8 +305,8 @@ Token Lexer::scanPunct(){
       return one(TokenKind::Lt);
     case '>':
       if (peek() == '>') {
-        tok.text.push_back(get());
-        return one(TokenKind::Shr);
+        throw CompileError("line " + to_string(tok.line) + ":" + to_string(tok.col) +
+                             ": '>>' is not in SysY 2022");
       }
       if (peek() == '=') {
         tok.text.push_back(get());

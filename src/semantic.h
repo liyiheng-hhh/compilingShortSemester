@@ -113,4 +113,5 @@ private:
 
   ConstValue evalBinaryConst(const string &op, ConstValue lhs, ConstValue rhs,
                              BaseType resultType);
+  void validateMain() const;
 };

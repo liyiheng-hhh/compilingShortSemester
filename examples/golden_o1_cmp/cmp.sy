@@ -1,11 +1,27 @@
 int main() {
   int a;
+  int x;
   a = 5;
-  putint(a > 0);
+  if (a > 0) {
+    x = 1;
+  } else {
+    x = 0;
+  }
+  putint(x);
   putch(10);
-  putint(0 < a);
+  if (0 < a) {
+    x = 1;
+  } else {
+    x = 0;
+  }
+  putint(x);
   putch(10);
-  putint(a == 5);
+  if (a == 5) {
+    x = 1;
+  } else {
+    x = 0;
+  }
+  putint(x);
   putch(10);
   return 0;
 }

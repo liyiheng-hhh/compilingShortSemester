@@ -17,6 +17,7 @@ void Semantic::run() {
         visitFunction(*item.func);
       }
     }
+    validateMain();
   }
 
 [[noreturn]] void Semantic::fail(int line, const string &message) const {
@@ -648,18 +649,6 @@ void Semantic::visitBinary(BinaryExpr *expr) {
     visitExpr(expr->lhs.get());
     visitExpr(expr->rhs.get());
     const string &op = expr->op;
-    if (op == "<<" || op == ">>") {
-      if (expr->lhs->type.isFloatScalar() || expr->rhs->type.isFloatScalar()) {
-        fail(expr->line, "shift operators require int operands");
-      }
-      expr->type = Type::scalar(BaseType::Int);
-      if (expr->lhs->isConst && expr->rhs->isConst) {
-        expr->isConst = true;
-        expr->constVal =
-            evalBinaryConst(op, expr->lhs->constVal, expr->rhs->constVal, BaseType::Int);
-      }
-      return;
-    }
     if (op == "&&" || op == "||" || op == "==" || op == "!=" || op == "<" ||
         op == ">" || op == "<=" || op == ">=") {
       expr->type = Type::scalar(BaseType::Int);
@@ -726,14 +715,30 @@ ConstValue Semantic::evalBinaryConst(const string &op, ConstValue lhs, ConstValu
     if (op == "*") out.i = l * r;
     if (op == "/") out.i = r == 0 ? 0 : l / r;
     if (op == "%") out.i = r == 0 ? 0 : l % r;
-    if (op == "<<") {
-      int sh = r & 31;
-      out.i = static_cast<int32_t>(static_cast<uint32_t>(l) << sh);
-      return out;
-    }
-    if (op == ">>") {
-      out.i = static_cast<int32_t>(l >> (r & 31));
-      return out;
-    }
     return out;
   }
+
+void Semantic::validateMain() const {
+  const FuncDef *mainDef = nullptr;
+  for (const auto &item : program_.items) {
+    if (!item.func) {
+      continue;
+    }
+    if (item.func->name != "main") {
+      continue;
+    }
+    if (mainDef) {
+      fail(item.func->line, "multiple definitions of main");
+    }
+    mainDef = item.func.get();
+  }
+  if (!mainDef) {
+    fail(1, "main function not defined");
+  }
+  if (!mainDef->params.empty()) {
+    fail(mainDef->line, "main function must take no parameters");
+  }
+  if (mainDef->ret != BaseType::Int) {
+    fail(mainDef->line, "main function must return int");
+  }
+}

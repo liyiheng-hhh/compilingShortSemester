@@ -196,7 +196,7 @@ StmtPtr Parser::parseStmt() {
     }
     if (match(TokenKind::KwIf)) {
       expect(TokenKind::LParen, "'('");
-      auto cond = parseExp();
+      auto cond = parseCond();
       expect(TokenKind::RParen, "')'");
       auto thenStmt = parseStmt();
       StmtPtr elseStmt;
@@ -208,7 +208,7 @@ StmtPtr Parser::parseStmt() {
     }
     if (match(TokenKind::KwWhile)) {
       expect(TokenKind::LParen, "'('");
-      auto cond = parseExp();
+      auto cond = parseCond();
       expect(TokenKind::RParen, "')'");
       auto body = parseStmt();
       return make_unique<WhileStmt>(line, std::move(cond), std::move(body));
@@ -248,7 +248,15 @@ StmtPtr Parser::parseStmt() {
     return make_unique<ExprStmt>(line, std::move(expr));
   }
 
-ExprPtr Parser::parseExp() { return parseLOr(); }
+ExprPtr Parser::parseExp() {
+  // SysY 2022: Exp → AddExp；语义：单目不出现 '!'
+  return parseAdd(false);
+}
+
+ExprPtr Parser::parseCond() {
+  // SysY 2022: Cond → LOrExp
+  return parseLOr();
+}
 
 unique_ptr<LValExpr> Parser::parseLVal() {
     const Token &name = expect(TokenKind::Ident, "identifier");
@@ -299,43 +307,33 @@ ExprPtr Parser::parsePrimary() {
     throw error("expected expression");
   }
 
-ExprPtr Parser::parseUnary() {
+ExprPtr Parser::parseUnary(bool allowBang) {
     if (check(TokenKind::Plus) || check(TokenKind::Minus) ||
-        check(TokenKind::Bang)) {
+        (allowBang && check(TokenKind::Bang))) {
       const Token &opTok = tokens_[pos_++];
-      return make_unique<UnaryExpr>(opTok.line, opTok.text, parseUnary());
+      return make_unique<UnaryExpr>(opTok.line, opTok.text,
+                                    parseUnary(allowBang));
     }
     return parsePrimary();
   }
 
-ExprPtr Parser::parseMul() {
-    auto lhs = parseUnary();
+ExprPtr Parser::parseMul(bool allowBang) {
+    auto lhs = parseUnary(allowBang);
     while (check(TokenKind::Star) || check(TokenKind::Slash) ||
            check(TokenKind::Percent)) {
       const Token &op = tokens_[pos_++];
-      auto rhs = parseUnary();
+      auto rhs = parseUnary(allowBang);
       lhs = make_unique<BinaryExpr>(op.line, op.text, std::move(lhs),
                                     std::move(rhs));
     }
     return lhs;
   }
 
-ExprPtr Parser::parseShift() {
-    auto lhs = parseMul();
-    while (check(TokenKind::Shl) || check(TokenKind::Shr)) {
-      const Token &op = tokens_[pos_++];
-      auto rhs = parseMul();
-      lhs = make_unique<BinaryExpr>(op.line, op.text, std::move(lhs),
-                                    std::move(rhs));
-    }
-    return lhs;
-  }
-
-ExprPtr Parser::parseAdd() {
-    auto lhs = parseShift();
+ExprPtr Parser::parseAdd(bool allowBang) {
+    auto lhs = parseMul(allowBang);
     while (check(TokenKind::Plus) || check(TokenKind::Minus)) {
       const Token &op = tokens_[pos_++];
-      auto rhs = parseShift();
+      auto rhs = parseMul(allowBang);
       lhs = make_unique<BinaryExpr>(op.line, op.text, std::move(lhs),
                                     std::move(rhs));
     }
@@ -343,11 +341,12 @@ ExprPtr Parser::parseAdd() {
   }
 
 ExprPtr Parser::parseRel() {
-    auto lhs = parseAdd();
+    // RelExp → AddExp | RelExp relop AddExp；AddExp 在条件中允许 UnaryOp '!'
+    auto lhs = parseAdd(true);
     while (check(TokenKind::Lt) || check(TokenKind::Gt) || check(TokenKind::Le) ||
            check(TokenKind::Ge)) {
       const Token &op = tokens_[pos_++];
-      auto rhs = parseAdd();
+      auto rhs = parseAdd(true);
       lhs = make_unique<BinaryExpr>(op.line, op.text, std::move(lhs),
                                     std::move(rhs));
     }

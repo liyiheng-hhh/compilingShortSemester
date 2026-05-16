@@ -58,19 +58,21 @@ private:
 
   StmtPtr parseStmt();
 
+  // SysY 2022: Exp → AddExp（单目仅 + −，无 !）
   ExprPtr parseExp();
+
+  // SysY 2022: Cond → LOrExp（单目可含 !）
+  ExprPtr parseCond();
 
   unique_ptr<LValExpr> parseLVal();
 
   ExprPtr parsePrimary();
 
-  ExprPtr parseUnary();
+  ExprPtr parseUnary(bool allowBang);
 
-  ExprPtr parseMul();
+  ExprPtr parseMul(bool allowBang);
 
-  ExprPtr parseShift();
-
-  ExprPtr parseAdd();
+  ExprPtr parseAdd(bool allowBang);
 
   ExprPtr parseRel();
 
