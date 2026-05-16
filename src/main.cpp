@@ -1,6 +1,7 @@
 #include "codegen.h"
 #include "common.h"
 #include "lexer.h"
+#include "loop_interchange.h"
 #include "parser.h"
 #include "semantic.h"
 
@@ -25,6 +26,9 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   Program program = parser.parseProgram();
   Semantic semantic(program);
   semantic.run();
+  if (optO1) {
+    loopInterchangePass(program);
+  }
   CodeGen codegen(program, semantic, optO1);
   writeFile(output, codegen.run());
   return 0;

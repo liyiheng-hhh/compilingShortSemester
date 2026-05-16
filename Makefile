@@ -6,7 +6,8 @@ SY_DIRS ?= examples
 
 SRCDIR := src
 SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/parser.cpp \
-	$(SRCDIR)/semantic.cpp $(SRCDIR)/codegen.cpp $(SRCDIR)/ir_build.cpp $(SRCDIR)/ir_opt.cpp
+	$(SRCDIR)/semantic.cpp $(SRCDIR)/codegen.cpp $(SRCDIR)/ir_build.cpp $(SRCDIR)/ir_opt.cpp \
+	$(SRCDIR)/loop_interchange.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 all: compiler
@@ -26,8 +27,9 @@ check: compiler
 	./compiler -S -O1 -o examples/_cmp_check.s examples/golden_o1_cmp/cmp.sy
 	./compiler -S -O1 -o examples/_magic_check.s examples/golden_magic_div/boundary.sy
 	./compiler -S -O1 -o examples/_shift_check.s examples/golden_shift/shift.sy
+	./compiler -S -O1 -o examples/_loop_ix_check.s examples/golden_transpose_ix/transpose_ix.sy
 	./compiler -S -o examples/_shift_check0.s examples/golden_shift/shift.sy
-	rm -f examples/_cmp_check.s examples/_magic_check.s examples/_shift_check.s examples/_shift_check0.s
+	rm -f examples/_cmp_check.s examples/_magic_check.s examples/_shift_check.s examples/_shift_check0.s examples/_loop_ix_check.s
 
 # 递归编译所有 .sy → .s（无需 qemu；大测试树传 SY_DIRS）
 #   make compile-all SY_DIRS="examples path/to/functional path/to/performance"
