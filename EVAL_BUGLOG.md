@@ -34,7 +34,9 @@
 | 生效方式 | `compiler … -O1` → **D**（`SYSY_O1_DEFAULT_TIER=4`） |
 | **B** | IR + 常量折叠/DCE；`StoreLocal` 同步 `irParamCache_` |
 | **C** | + 单块 While LICM + 算术 CSE（`ir_opt.cpp`） |
-| **D** | + CFG LICM + store→load + AST 转置交换（`loop_interchange.cpp`） |
+| **D** | + CFG LICM + store→load + AST 转置交换 / 16×16 分块（`loop_interchange.cpp` + `loop_tiling.cpp`） |
+
+**循环分块**（`-O1` D 档，`loop_tiling.cpp`）：矩形二重循环、`i-j-k` 矩阵乘内层；`SYSY_CC_NO_LOOP_TILING=1` 关闭。常数上界 `<16`、三角界（`j<i`）不分块。AST 变换在 **semantic 之前**（避免 `_ti_*` 未入符号表导致 codegen 崩溃）。
 | 本地验证 | 关键题 + 全 `performance/*.sy` **C/D vs O0 OK**；`make check` 通过 |
 | 风险 | 大题编译 **Killed/OOM**（CFG LICM）；可 `SYSY_CC_NO_CFG_LICM=1` 退回 C 行为 |
 

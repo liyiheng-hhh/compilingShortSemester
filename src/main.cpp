@@ -25,12 +25,12 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   Lexer lexer(source);
   Parser parser(lexer.run());
   Program program = parser.parseProgram();
-  Semantic semantic(program);
-  semantic.run();
   const O1Profile o1Prof = resolveO1Profile(optO1);
   if (o1AstLoopInterchangeEffective(o1Prof)) {
     loopInterchangePass(program);
   }
+  Semantic semantic(program);
+  semantic.run();
   CodeGen codegen(program, semantic, o1Prof);
   writeFile(output, codegen.run());
   return 0;

@@ -13,7 +13,7 @@
 // | A  | Codegen：除常 magic、2^k 除模、常量分支、下标 stride、leaf 参数缓存等 |
 // | B  | + IR 发射；中端仅 **常量折叠 + DCE**（无 LICM、无 store→load、无算术 CSE） |
 // | C  | + 单块 While LICM + 算术 CSE |
-// | D  | + CFG LICM + store→load 前瞻 + AST 转置交换 |
+// | D  | + CFG LICM + store→load 前瞻 + AST 转置交换 + 16×16 循环分块 |
 //
 // 默认（`SYSY_O1_FULL=0`、未设 `SYSY_O1_TIER`）：**D**（`SYSY_O1_DEFAULT_TIER`）。
 // 本地回退：`CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=2`（B）或 `=1`（A）。

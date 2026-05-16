@@ -395,4 +395,5 @@ void loopInterchangePass(Program &program) {
     }
     processBlock(item.func->body.get());
   }
+  loopTilingPass(program);
 }
