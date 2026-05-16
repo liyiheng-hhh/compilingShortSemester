@@ -887,12 +887,12 @@ static uint64_t irInstructionFingerprint(const IRFunction &fn) {
   return h;
 }
 
-static void irOptimizeBlockOneRound(IRFunction &fn, bool backendO1) {
-  if (o1IrSimpleWhileLicmEffective(backendO1)) {
+static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
+  if (prof.irSimpleLicm) {
     irHoistInvariantLoadGlobalSimpleWhile(fn);
     irHoistPureInvariantSimpleWhile(fn);
   }
-  if (o1IrCfgLicmEffective(backendO1)) {
+  if (prof.irCfgLicm) {
     irHoistLoopInvariantCFG(fn);
   }
   irRefreshCFG(fn);
@@ -1053,18 +1053,19 @@ static void irOptimizeBlockOneRound(IRFunction &fn, bool backendO1) {
       out.push_back(in);
       continue;
     case IROp::LoadLocal: {
-      auto it = fwdStore.find(in.sym);
-      if (it != fwdStore.end() && it->second >= 0 && in.dst >= 0) {
-        // Forward to Copy: reuse stored vreg
-        IRInst cp;
-        cp.op = IROp::Copy;
-        cp.dst = in.dst;
-        cp.u = remap(it->second);
-        out.push_back(cp);
-        if (in.dst >= 0 && in.dst < static_cast<int>(copyUF.size())) {
-          copyUF[in.dst] = findRoot(copyUF, remap(it->second));
+      if (prof.irStoreLoadForward) {
+        auto it = fwdStore.find(in.sym);
+        if (it != fwdStore.end() && it->second >= 0 && in.dst >= 0) {
+          IRInst cp;
+          cp.op = IROp::Copy;
+          cp.dst = in.dst;
+          cp.u = remap(it->second);
+          out.push_back(cp);
+          if (in.dst >= 0 && in.dst < static_cast<int>(copyUF.size())) {
+            copyUF[in.dst] = findRoot(copyUF, remap(it->second));
+          }
+          continue;
         }
-        continue;
       }
       fwdStore.erase(in.sym);
       in.u = remap(in.u);
@@ -1072,17 +1073,19 @@ static void irOptimizeBlockOneRound(IRFunction &fn, bool backendO1) {
       continue;
     }
     case IROp::LoadGlobal: {
-      auto it = fwdStore.find(in.sym);
-      if (it != fwdStore.end() && it->second >= 0 && in.dst >= 0) {
-        IRInst cp;
-        cp.op = IROp::Copy;
-        cp.dst = in.dst;
-        cp.u = remap(it->second);
-        out.push_back(cp);
-        if (in.dst >= 0 && in.dst < static_cast<int>(copyUF.size())) {
-          copyUF[in.dst] = findRoot(copyUF, remap(it->second));
+      if (prof.irStoreLoadForward) {
+        auto it = fwdStore.find(in.sym);
+        if (it != fwdStore.end() && it->second >= 0 && in.dst >= 0) {
+          IRInst cp;
+          cp.op = IROp::Copy;
+          cp.dst = in.dst;
+          cp.u = remap(it->second);
+          out.push_back(cp);
+          if (in.dst >= 0 && in.dst < static_cast<int>(copyUF.size())) {
+            copyUF[in.dst] = findRoot(copyUF, remap(it->second));
+          }
+          continue;
         }
-        continue;
       }
       fwdStore.erase(in.sym);
       in.u = remap(in.u);
@@ -1112,6 +1115,9 @@ static void irOptimizeBlockOneRound(IRFunction &fn, bool backendO1) {
     in.v = remap(in.v);
 
     auto tryCse = [&](const Key &k) -> bool {
+      if (!prof.irArithmeticCse) {
+        return false;
+      }
       auto it = cse.find(k);
       if (it == cse.end()) {
         return false;
@@ -1770,18 +1776,18 @@ static void irOptimizeBlockOneRound(IRFunction &fn, bool backendO1) {
   irRefreshCFG(fn);
 }
 
-void irOptimizeBlock(IRFunction &fn, bool backendO1) {
+void irOptimizeBlock(IRFunction &fn, const O1Profile &prof) {
   irRefreshCFG(fn);
-  if (!o1IrMidendPipelineEffective(backendO1)) {
+  if (envFlagTruthy("SYSY_CC_IR_EMIT_ONLY")) {
     return;
   }
-  // Too many outer rounds makes compile time / memory prohibitive on large IR
-  // (grader may SIGKILL on OOM or wall-clock).
-  // 多轮外层迭代：CSE/copy 传播在多块循环上常需 >1 轮才稳定；略增轮数以提性能（compile 时间略增）
-  const int maxOuter = 8;
+  if (!prof.irBackend || !prof.irMidend) {
+    return;
+  }
+  const int maxOuter = prof.irCfgLicm || prof.irSimpleLicm ? 8 : 4;
   for (int outer = 0; outer < maxOuter; ++outer) {
     const uint64_t before = irInstructionFingerprint(fn);
-    irOptimizeBlockOneRound(fn, backendO1);
+    irOptimizeBlockOneRound(fn, prof);
     if (irInstructionFingerprint(fn) == before) {
       break;
     }

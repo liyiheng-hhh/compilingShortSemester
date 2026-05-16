@@ -90,21 +90,10 @@ static bool emitSigned32DivByConstMagicPayload(CodeGen &cg, int32_t d) {
   }
   const uint8_t shift = more & kLd32ShiftMask;
   if (magic == 0) {
-    uint32_t mask =
-        shift >= 31 ? 0x7FFFFFFFu : (((uint32_t)1u << shift) - 1u);
-    cg.emit("\tsraiw\tt1, a0, 31");
-    if (mask <= 2047u) {
-      cg.emit("\tandi\tt1, t1, " + to_string(static_cast<int>(mask)));
-    } else {
-      cg.emit("\tli\tt2, " + to_string(static_cast<int>(mask)));
-      cg.emit("\tand\tt1, t1, t2");
-    }
-    cg.emit("\taddw\ta0, a0, t1");
-    cg.emit("\tsraiw\ta0, a0, " + to_string(static_cast<int>(shift)));
-    if (more & kLdNegDivisor) {
-      cg.emit("\tnegw\ta0, a0");
-    }
-    return true;
+    // 2^k 除数：此移位序列是 floor 风格，与 SysY 截断 div/rem 不一致（crc rotr8 的 /256、%2 等）。
+    (void)shift;
+    (void)more;
+    return false;
   }
   cg.emit("\tli\tt1, " + to_string(static_cast<int>(magic)));
   cg.emit("\tsext.w\tt1, t1");
@@ -527,8 +516,8 @@ static vector<ArgLoc> computeArgLocations(const vector<ParamType> &params,
   return locs;
 }
 
-CodeGen::CodeGen(Program &program, const Semantic &semantic, bool optO1)
-    : program_(program), semantic_(semantic), optO1_(optO1) {}
+CodeGen::CodeGen(Program &program, const Semantic &semantic, const O1Profile &o1)
+    : program_(program), semantic_(semantic), o1Profile_(o1), optO1_(o1.codegen) {}
 
 string CodeGen::run() {
     emitGlobals();
@@ -732,9 +721,9 @@ void CodeGen::emitFunction(FuncDef &def) {
     int frame = currentFunction_->frameSize;
     IRFunction irBuf;
     bool useIr = false;
-    if (kEnableIrBackend && optO1_ && irFunctionEligible(def)) {
+    if (kEnableIrBackend && o1Profile_.irBackend && irFunctionEligible(def)) {
       irBuildFunction(def, semantic_, irBuf);
-      irOptimizeBlock(irBuf, optO1_);
+      irOptimizeBlock(irBuf, o1Profile_);
       irAssignSlots(irBuf);
       irVregSlots_ = irBuf.vregSlots;
       useIr = true;
@@ -1461,6 +1450,17 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     } else {
       emit("\tsw\ta0, 0(t1)");
     }
+    // 形参缓存在 t4–t6：写回栈槽后同步寄存器，否则下一轮仍用旧 t4（crc1 的 _xor）。
+    if (in.sym) {
+      auto pit = irParamCache_.find(in.sym);
+      if (pit != irParamCache_.end()) {
+        if (in.isFloat) {
+          emit("\tfmv.s\t" + pit->second + ", fa0");
+        } else {
+          emit("\tmv\t" + pit->second + ", a0");
+        }
+      }
+    }
     return;
   case IROp::Add: {
     if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
@@ -1622,18 +1622,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         markInt(in.dst);
         return;
       }
-      int lg = intLog2Positive32(k);
-      if (k > 0 && lg >= 0) {
-        emitIrLoadVreg(in.u, false);
-        emit("\tli\ta2, " + to_string(static_cast<int>(k - 1)));
-        emit("\tsraiw\tt1, a0, 31");
-        emit("\tand\tt1, t1, a2");
-        emit("\taddw\tt3, a0, t1");
-        emit("\tsraiw\ta0, t3, " + to_string(lg));
-        emitIrStoreVreg(in.dst, false);
-        markInt(in.dst);
-        return;
-      }
+      // SysY 截断除法：IR 发射不用「移位+偏置」捷径（对 /256、负数 crc 会错）。
       emitIrLoadVreg(in.u, false);
       if (emitSDivByConst(*this, k)) {
         emitIrStoreVreg(in.dst, false);
@@ -1663,19 +1652,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         markInt(in.dst);
         return;
       }
-      int lg = intLog2Positive32(k);
-      if (lg >= 1) {
-        emitIrLoadVreg(in.u, false);
-        uint32_t mask = static_cast<uint32_t>(k) - 1;
-        emit("\tsraiw\tt1, a0, 31");
-        emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
-        emit("\taddw\ta0, a0, t1");
-        emitAndA0Const(*this, mask);
-        emit("\tsubw\ta0, a0, t1");
-        emitIrStoreVreg(in.dst, false);
-        markInt(in.dst);
-        return;
-      }
+      // SysY 截断取模：须 remw / emitSRemByConst，不用无符号掩码 % 2^k 捷径。
       emitIrLoadVreg(in.u, false);
       if (emitSRemByConst(*this, k)) {
         emitIrStoreVreg(in.dst, false);
@@ -2537,17 +2514,6 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         if (op == "%") {
           if (k == 1 || k == -1) {
             emit("\tli\ta0, 0");
-            return;
-          }
-          int lg = intLog2Positive32(k);
-          if (lg >= 1) {
-            emitExpr(expr->lhs.get());
-            uint32_t mask = static_cast<uint32_t>(k) - 1;
-            emit("\tsraiw\tt1, a0, 31");
-            emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
-            emit("\taddw\ta0, a0, t1");
-            emitAndA0Const(*this, mask);
-            emit("\tsubw\ta0, a0, t1");
             return;
           }
           emitExpr(expr->lhs.get());
