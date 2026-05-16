@@ -35,8 +35,9 @@ check: compiler
 	./compiler -S -O1 -o examples/_h10_check.s performance/h-10-01.sy
 	./compiler -S -O1 -o examples/_conv2d_check.s performance/conv2d-1.sy
 	./compiler -S -O1 -o examples/_land_split_check.s examples/golden_land_split/while_and.sy
+	./compiler -S -O1 -o examples/_huffman_check.s performance/huffman-01.sy
 	./compiler -S -o examples/_shift_check0.s examples/golden_shift/shift.sy
-	rm -f examples/_cmp_check.s examples/_magic_check.s examples/_shift_check.s examples/_shift_check0.s examples/_loop_ix_check.s examples/_loop_ix_tri_check.s examples/_tile_kouter_check.s examples/_mmc_mini_check.s examples/_h10_check.s examples/_conv2d_check.s examples/_land_split_check.s
+	rm -f examples/_cmp_check.s examples/_magic_check.s examples/_shift_check.s examples/_shift_check0.s examples/_loop_ix_check.s examples/_loop_ix_tri_check.s examples/_tile_kouter_check.s examples/_mmc_mini_check.s examples/_h10_check.s examples/_conv2d_check.s examples/_land_split_check.s examples/_huffman_check.s
 
 # 递归编译所有 .sy → .s（无需 qemu；大测试树传 SY_DIRS）
 #   make compile-all SY_DIRS="examples path/to/functional path/to/performance"

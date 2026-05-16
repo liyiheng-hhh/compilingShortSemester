@@ -1049,6 +1049,9 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
 void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
                   size_t instIdx) {
   (void)def;
+  if (tryEmitIrBuiltinCall(ir, in, instIdx)) {
+    return;
+  }
   auto vIsPtr = [&](int v) -> bool { return irVregIsPtr(v); };
   Function *fn = lookupFunctionAsm(semantic_, in.callee);
   if (!fn) {
@@ -3533,6 +3536,132 @@ int CodeGen::strideForIndex(Symbol *sym, size_t index) {
     return index + 1 < sym->dims.size() ? product(sym->dims, index + 1) : 1;
   }
 
+static bool isBinaryIntFn(const Function *fn, const char *name) {
+  return fn && !fn->runtime && fn->name == name && fn->ret == BaseType::Int &&
+         fn->params.size() == 2 && !fn->params[0].isArray && !fn->params[1].isArray &&
+         fn->params[0].base == BaseType::Int && fn->params[1].base == BaseType::Int;
+}
+
+bool CodeGen::tryEmitBuiltinBitwiseCall(CallExpr *expr) {
+  if (!optO1_ || !expr->function || expr->args.size() != 2) {
+    return false;
+  }
+  Function *fn = expr->function;
+  const char *opc = nullptr;
+  if (isBinaryIntFn(fn, "_and")) {
+    opc = "and";
+  } else if (isBinaryIntFn(fn, "_or")) {
+    opc = "or";
+  } else if (isBinaryIntFn(fn, "_xor")) {
+    opc = "xor";
+  } else {
+    return false;
+  }
+  for (const auto &arg : expr->args) {
+    if (!arg->type.isIntScalar() || !exprHasNoCall(arg.get())) {
+      return false;
+    }
+  }
+  emitExpr(expr->args[0].get());
+  emit("\tsext.w\tt4, a0");
+  emitExpr(expr->args[1].get());
+  emit("\tsext.w\ta0, a0");
+  emit("\t" + string(opc) + "\ta0, t4, a0");
+  emit("\tsext.w\ta0, a0");
+  return true;
+}
+
+bool CodeGen::tryEmitBuiltinRotCall(CallExpr *expr) {
+  if (!optO1_ || !expr->function || expr->args.size() != 2) {
+    return false;
+  }
+  Function *fn = expr->function;
+  if (!isBinaryIntFn(fn, "rotlN") && !isBinaryIntFn(fn, "rotrN")) {
+    return false;
+  }
+  const bool isLeft = fn->name == "rotlN";
+  for (const auto &arg : expr->args) {
+    if (!arg->type.isIntScalar() || !exprHasNoCall(arg.get())) {
+      return false;
+    }
+  }
+  const string end = newLabel("rot_done");
+  emitExpr(expr->args[0].get());
+  emit("\tsext.w\tt4, a0");
+  emitExpr(expr->args[1].get());
+  emit("\tsext.w\tt2, a0");
+  emit("\tli\tt1, 8");
+  emit("\tbgt\tt2, t1, " + end);
+  if (isLeft) {
+    emit("\tsllw\ta0, t4, t2");
+  } else {
+    emit("\tsrlw\ta0, t4, t2");
+  }
+  emit("\tj\t" + end);
+  emit(end + ":");
+  emit("\tmv\ta0, t4");
+  return true;
+}
+
+bool CodeGen::tryEmitIrBuiltinCall(const IRFunction &ir, const IRInst &in,
+                                   size_t instIdx) {
+  if (!optO1_ || in.dst < 0 || in.args.size() != 2) {
+    return false;
+  }
+  const string &c = in.callee;
+  const char *opc = nullptr;
+  if (c == "_and") {
+    opc = "and";
+  } else if (c == "_or") {
+    opc = "or";
+  } else if (c == "_xor") {
+    opc = "xor";
+  }
+  const bool isLeft = c == "rotlN";
+  const bool isRight = c == "rotrN";
+  if (!opc && !isLeft && !isRight) {
+    return false;
+  }
+
+  auto loadArg = [&](int av) {
+  if (optional<int32_t> ic = irTraceConstI(ir, av, instIdx)) {
+      emit("\tli\ta0, " + to_string(*ic));
+    } else {
+      emitIrLoadVreg(av, false);
+      emit("\tsext.w\ta0, a0");
+    }
+  };
+
+  loadArg(in.args[0]);
+  emit("\tmv\tt4, a0");
+  loadArg(in.args[1]);
+  emit("\tsext.w\ta0, a0");
+
+  if (opc) {
+    emit("\t" + string(opc) + "\ta0, t4, a0");
+    emit("\tsext.w\ta0, a0");
+  } else {
+    const string end = newLabel("ir_rot_done");
+    emit("\tmv\tt2, a0");
+    emit("\tli\tt1, 8");
+    emit("\tbgt\tt2, t1, " + end);
+    if (isLeft) {
+      emit("\tsllw\ta0, t4, t2");
+    } else {
+      emit("\tsrlw\ta0, t4, t2");
+    }
+    emit("\tj\t" + end);
+    emit(end + ":");
+    emit("\tmv\ta0, t4");
+  }
+
+  irVFloat_[static_cast<size_t>(in.dst)] = 0;
+  irVPtr_[static_cast<size_t>(in.dst)] = 0;
+  emitIrStoreVreg(in.dst, false);
+  irLastVregInA0_ = in.dst;
+  return true;
+}
+
 bool CodeGen::tryEmitInlineCall(CallExpr *expr) {
     if (!optO1_ || !inlineArgMap_.empty()) {
       return false;
@@ -3580,6 +3709,12 @@ bool CodeGen::tryEmitInlineCall(CallExpr *expr) {
   }
 
 void CodeGen::emitCall(CallExpr *expr) {
+    if (tryEmitBuiltinBitwiseCall(expr)) {
+      return;
+    }
+    if (tryEmitBuiltinRotCall(expr)) {
+      return;
+    }
     if (tryEmitInlineCall(expr)) {
       return;
     }

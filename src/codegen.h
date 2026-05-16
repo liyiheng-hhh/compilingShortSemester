@@ -175,6 +175,12 @@ private:
 
   void emitCall(CallExpr *expr);
 
+  bool tryEmitBuiltinBitwiseCall(CallExpr *expr);
+
+  bool tryEmitBuiltinRotCall(CallExpr *expr);
+
+  bool tryEmitIrBuiltinCall(const IRFunction &ir, const IRInst &in, size_t instIdx);
+
   bool tryEmitInlineCall(CallExpr *expr);
 
   bool tryEmitTailCallReturn(ReturnStmt &stmt);
