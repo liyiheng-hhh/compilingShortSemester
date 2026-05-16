@@ -809,6 +809,19 @@ static bool tryTile3DMatmul(vector<StmtPtr> &items, size_t k) {
       !isIncByOne(dynamic_cast<AssignStmt *>(kBody->items[1].get()), kIv)) {
     return false;
   }
+  // many_mat_cal 点积：sum=sum+C[i][k]*A[k][j] 由 tryInterchangeGemmIjk 改为 i-k-j，勿再 i-j 分块
+  {
+    auto *kas = dynamic_cast<const AssignStmt *>(kBody->items[0].get());
+    if (kas && kas->lhs && kas->lhs->indices.empty()) {
+      auto *add = dynamic_cast<const BinaryExpr *>(kas->rhs.get());
+      if (add && add->op == "+") {
+        auto *sl = dynamic_cast<const LValExpr *>(add->lhs.get());
+        if (sl && sl->name == kas->lhs->name && sl->indices.empty()) {
+          return false;
+        }
+      }
+    }
+  }
   if (kWhileIdx + 2 >= midBody->items.size()) {
     return false;
   }
