@@ -3542,6 +3542,49 @@ static bool isBinaryIntFn(const Function *fn, const char *name) {
          fn->params[0].base == BaseType::Int && fn->params[1].base == BaseType::Int;
 }
 
+static bool stmtTreeContainsWhile(const Stmt *s) {
+  if (!s) {
+    return false;
+  }
+  if (s->kind == StmtKind::While) {
+    return true;
+  }
+  if (auto *b = dynamic_cast<const BlockStmt *>(s)) {
+    for (const auto &st : b->items) {
+      if (stmtTreeContainsWhile(st.get())) {
+        return true;
+      }
+    }
+  }
+  if (auto *ifs = dynamic_cast<const IfStmt *>(s)) {
+    return stmtTreeContainsWhile(ifs->thenStmt.get()) ||
+           (ifs->elseStmt && stmtTreeContainsWhile(ifs->elseStmt.get()));
+  }
+  return false;
+}
+
+// Huffman：32 次 while 模拟位运算；crypto 等同名函数为 return a+b 等，不可按名字降级。
+static bool funcIsBitwiseSimulator(const Function *fn) {
+  if (!fn || !fn->def || !fn->def->body) {
+    return false;
+  }
+  if (!isBinaryIntFn(fn, "_and") && !isBinaryIntFn(fn, "_or") &&
+      !isBinaryIntFn(fn, "_xor")) {
+    return false;
+  }
+  return stmtTreeContainsWhile(fn->def->body.get());
+}
+
+static bool funcIsRotIfChain(const Function *fn) {
+  if (!fn || !fn->def || !fn->def->body || fn->def->body->items.empty()) {
+    return false;
+  }
+  if (!isBinaryIntFn(fn, "rotlN") && !isBinaryIntFn(fn, "rotrN")) {
+    return false;
+  }
+  return fn->def->body->items[0]->kind == StmtKind::If;
+}
+
 bool CodeGen::tryEmitBuiltinBitwiseCall(CallExpr *expr) {
   if (!optO1_ || !expr->function || expr->args.size() != 2) {
     return false;
@@ -3555,6 +3598,9 @@ bool CodeGen::tryEmitBuiltinBitwiseCall(CallExpr *expr) {
   } else if (isBinaryIntFn(fn, "_xor")) {
     opc = "xor";
   } else {
+    return false;
+  }
+  if (!funcIsBitwiseSimulator(fn)) {
     return false;
   }
   for (const auto &arg : expr->args) {
@@ -3576,7 +3622,7 @@ bool CodeGen::tryEmitBuiltinRotCall(CallExpr *expr) {
     return false;
   }
   Function *fn = expr->function;
-  if (!isBinaryIntFn(fn, "rotlN") && !isBinaryIntFn(fn, "rotrN")) {
+  if (!funcIsRotIfChain(fn)) {
     return false;
   }
   const bool isLeft = fn->name == "rotlN";
@@ -3585,21 +3631,23 @@ bool CodeGen::tryEmitBuiltinRotCall(CallExpr *expr) {
       return false;
     }
   }
-  const string end = newLabel("rot_done");
+  const string identity = newLabel("rot_id");
+  const string done = newLabel("rot_done");
   emitExpr(expr->args[0].get());
   emit("\tsext.w\tt4, a0");
   emitExpr(expr->args[1].get());
   emit("\tsext.w\tt2, a0");
   emit("\tli\tt1, 8");
-  emit("\tbgt\tt2, t1, " + end);
+  emit("\tbgt\tt2, t1, " + identity);
   if (isLeft) {
     emit("\tsllw\ta0, t4, t2");
   } else {
     emit("\tsrlw\ta0, t4, t2");
   }
-  emit("\tj\t" + end);
-  emit(end + ":");
+  emit("\tj\t" + done);
+  emit(identity + ":");
   emit("\tmv\ta0, t4");
+  emit(done + ":");
   return true;
 }
 
@@ -3609,6 +3657,7 @@ bool CodeGen::tryEmitIrBuiltinCall(const IRFunction &ir, const IRInst &in,
     return false;
   }
   const string &c = in.callee;
+  Function *fn = lookupFunctionAsm(semantic_, c);
   const char *opc = nullptr;
   if (c == "_and") {
     opc = "and";
@@ -3620,6 +3669,12 @@ bool CodeGen::tryEmitIrBuiltinCall(const IRFunction &ir, const IRInst &in,
   const bool isLeft = c == "rotlN";
   const bool isRight = c == "rotrN";
   if (!opc && !isLeft && !isRight) {
+    return false;
+  }
+  if (opc && !funcIsBitwiseSimulator(fn)) {
+    return false;
+  }
+  if ((isLeft || isRight) && !funcIsRotIfChain(fn)) {
     return false;
   }
 
@@ -3641,18 +3696,20 @@ bool CodeGen::tryEmitIrBuiltinCall(const IRFunction &ir, const IRInst &in,
     emit("\t" + string(opc) + "\ta0, t4, a0");
     emit("\tsext.w\ta0, a0");
   } else {
-    const string end = newLabel("ir_rot_done");
+    const string identity = newLabel("ir_rot_id");
+    const string done = newLabel("ir_rot_done");
     emit("\tmv\tt2, a0");
     emit("\tli\tt1, 8");
-    emit("\tbgt\tt2, t1, " + end);
+    emit("\tbgt\tt2, t1, " + identity);
     if (isLeft) {
       emit("\tsllw\ta0, t4, t2");
     } else {
       emit("\tsrlw\ta0, t4, t2");
     }
-    emit("\tj\t" + end);
-    emit(end + ":");
+    emit("\tj\t" + done);
+    emit(identity + ":");
     emit("\tmv\ta0, t4");
+    emit(done + ":");
   }
 
   irVFloat_[static_cast<size_t>(in.dst)] = 0;

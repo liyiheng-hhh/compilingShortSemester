@@ -713,6 +713,8 @@ static bool tryTile3DKOuter(vector<StmtPtr> &items, size_t k) {
                               innerLimit.get(), std::move(midCore),
                               std::move(iBodyPrefix));
   auto kBody = make_unique<BlockStmt>(line);
+  // 每个 k 迭代须从 ii=0 重扫 i×j 分块（否则第二次 k 起 ii 仍为 n）。
+  kBody->items.push_back(makeZeroAssign(line, tileVar(midIv, nestId)));
   kBody->items.push_back(std::move(tiledIJ));
   if (StmtPtr kInc = cloneStmt(outerInc)) {
     kBody->items.push_back(std::move(kInc));
