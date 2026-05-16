@@ -204,15 +204,6 @@ static bool emitMulByConst(CodeGen &cg, int32_t k) {
   return tryEmit(-k, true);
 }
 
-static void emitAndA0Const(CodeGen &cg, uint32_t mask) {
-  if (mask <= 2047u) {
-    cg.emit("\tandi\ta0, a0, " + to_string(static_cast<int>(mask)));
-  } else {
-    cg.emit("\tli\tt6, " + to_string(mask));
-    cg.emit("\tand\ta0, a0, t6");
-  }
-}
-
 static bool exprIsLeaf(Expr *e) {
   if (!e) {
     return true;
