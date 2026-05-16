@@ -1,4 +1,5 @@
-// AST 层循环分块：矩形二重循环、以及「j 中 k 内」矩阵乘三重循环（tile=16）。
+// AST 层循环分块：矩形二重循环（可含首部 continue-skip if）、
+// i-j-k 与 k-i-j 三重循环（tile=16）。
 // 在 loopInterchangePass 之后运行；SYSY_CC_NO_LOOP_TILING=1 可关闭。
 
 #include "loop_interchange.h"
@@ -124,6 +125,24 @@ static StmtPtr cloneStmt(const Stmt *s) {
       nd->defs.push_back(std::move(vd));
     }
     return nd;
+  }
+  if (auto *ifs = dynamic_cast<const IfStmt *>(s)) {
+    StmtPtr thenS = ifs->thenStmt ? cloneStmt(ifs->thenStmt.get()) : nullptr;
+    StmtPtr elseS = ifs->elseStmt ? cloneStmt(ifs->elseStmt.get()) : nullptr;
+    return make_unique<IfStmt>(ifs->line, cloneExpr(ifs->cond.get()), std::move(thenS),
+                               std::move(elseS));
+  }
+  if (auto *blk = dynamic_cast<const BlockStmt *>(s)) {
+    auto nb = make_unique<BlockStmt>(blk->line);
+    for (const auto &it : blk->items) {
+      if (StmtPtr c = cloneStmt(it.get())) {
+        nb->items.push_back(std::move(c));
+      }
+    }
+    return nb;
+  }
+  if (auto *cont = dynamic_cast<const ContinueStmt *>(s)) {
+    return make_unique<ContinueStmt>(cont->line);
   }
   return nullptr;
 }
@@ -269,28 +288,82 @@ static bool parseZeroInit(const Stmt *s, string *name) {
   return false;
 }
 
-static bool blockHasUnsafeForTiling(const BlockStmt *blk) {
-  if (!blk) {
+static bool stmtIsContinue(const Stmt *s) {
+  return s && s->kind == StmtKind::Continue;
+}
+
+// then 分支为 iv++ 后 continue（或仅 continue，由外层再统一 iv++）。
+static bool thenBranchIsSkipContinue(const Stmt *thenStmt, const string &iv) {
+  if (!thenStmt) {
+    return false;
+  }
+  if (stmtIsContinue(thenStmt)) {
     return true;
   }
-  for (const auto &it : blk->items) {
-    switch (it->kind) {
-    case StmtKind::Break:
-    case StmtKind::Continue:
+  auto *blk = dynamic_cast<const BlockStmt *>(thenStmt);
+  if (!blk) {
+    return isIncByOne(dynamic_cast<const AssignStmt *>(thenStmt), iv);
+  }
+  if (blk->items.size() == 1) {
+    return stmtIsContinue(blk->items[0].get());
+  }
+  if (blk->items.size() == 2) {
+    return isIncByOne(dynamic_cast<const AssignStmt *>(blk->items[0].get()), iv) &&
+           stmtIsContinue(blk->items[1].get());
+  }
+  return false;
+}
+
+static bool isContinueSkipIf(const Stmt *s, const string &iv) {
+  auto *ifs = dynamic_cast<const IfStmt *>(s);
+  return ifs && !ifs->elseStmt && thenBranchIsSkipContinue(ifs->thenStmt.get(), iv);
+}
+
+static bool isSimpleInnerLoopBody(const BlockStmt *innerBody, const string &innerIv) {
+  if (!innerBody || innerBody->items.size() != 2) {
+    return false;
+  }
+  return innerBody->items[0]->kind == StmtKind::Assign &&
+         isIncByOne(dynamic_cast<const AssignStmt *>(innerBody->items[1].get()), innerIv);
+}
+
+// 内层体：可选首部 continue-skip if，若干 decl/assign，末尾 iv++。
+static bool collectInnerLoopCore(const BlockStmt *innerBody, const string &innerIv,
+                                 vector<StmtPtr> *out) {
+  if (!innerBody || innerBody->items.size() < 2) {
+    return false;
+  }
+  if (!isIncByOne(dynamic_cast<const AssignStmt *>(innerBody->items.back().get()), innerIv)) {
+    return false;
+  }
+  out->clear();
+  size_t pos = 0;
+  if (pos + 1 < innerBody->items.size() &&
+      isContinueSkipIf(innerBody->items[pos].get(), innerIv)) {
+    if (StmtPtr c = cloneStmt(innerBody->items[pos].get())) {
+      out->push_back(std::move(c));
+    } else {
+      return false;
+    }
+    ++pos;
+  }
+  for (; pos + 1 < innerBody->items.size(); ++pos) {
+    const Stmt *st = innerBody->items[pos].get();
+    switch (st->kind) {
+    case StmtKind::Assign:
     case StmtKind::Decl:
-    case StmtKind::While:
-    case StmtKind::If:
-      return true;
-    case StmtKind::Block:
-      if (blockHasUnsafeForTiling(static_cast<const BlockStmt *>(it.get()))) {
-        return true;
+    case StmtKind::Expr:
+      if (StmtPtr c = cloneStmt(st)) {
+        out->push_back(std::move(c));
+      } else {
+        return false;
       }
       break;
     default:
-      break;
+      return false;
     }
   }
-  return false;
+  return !out->empty();
 }
 
 static int gTileNestId = 0;
@@ -415,20 +488,8 @@ static bool tryTile2DNest(vector<StmtPtr> &items, size_t k) {
     return false;
   }
   auto *innerBody = dynamic_cast<BlockStmt *>(innerW->body.get());
-  if (!innerBody || innerBody->items.size() < 2) {
-    return false;
-  }
-  auto *innerInc = dynamic_cast<AssignStmt *>(innerBody->items.back().get());
-  if (!isIncByOne(innerInc, innerIv) || blockHasUnsafeForTiling(innerBody)) {
-    return false;
-  }
   vector<StmtPtr> core;
-  for (size_t i = 0; i + 1 < innerBody->items.size(); ++i) {
-    if (StmtPtr c = cloneStmt(innerBody->items[i].get())) {
-      core.push_back(std::move(c));
-    }
-  }
-  if (core.empty()) {
+  if (!collectInnerLoopCore(innerBody, innerIv, &core)) {
     return false;
   }
   if (boundsTooSmallForTiling(outerLimit.get(), innerLimit.get())) {
@@ -452,6 +513,138 @@ static bool tryTile2DNest(vector<StmtPtr> &items, size_t k) {
   rep.push_back(makeZeroAssign(line, tileVar(outerIv, nestId)));
   rep.push_back(buildTiled2D(line, nestId, outerIv, innerIv, outerLimit.get(),
                              innerLimit.get(), std::move(core)));
+  items.erase(items.begin() + static_cast<ptrdiff_t>(k),
+              items.begin() + static_cast<ptrdiff_t>(k + 2));
+  items.insert(items.begin() + static_cast<ptrdiff_t>(k),
+               std::make_move_iterator(rep.begin()),
+               std::make_move_iterator(rep.end()));
+  return true;
+}
+
+// k 外层：while(k){ i=0; while(i){ [skip?] j=0; while(j){…} i++ } k++ }（01_mm2 风格）
+static bool tryTile3DKOuter(vector<StmtPtr> &items, size_t k) {
+  if (k + 1 >= items.size()) {
+    return false;
+  }
+  auto *outerInit = dynamic_cast<AssignStmt *>(items[k].get());
+  auto *outerW = dynamic_cast<WhileStmt *>(items[k + 1].get());
+  if (!outerInit || !outerW) {
+    return false;
+  }
+  string outerIv;
+  ExprPtr outerLimit;
+  if (!extractLtBound(outerW->cond.get(), &outerIv, &outerLimit) ||
+      !isZeroScalarAssign(outerInit, outerIv)) {
+    return false;
+  }
+  auto *outerBody = dynamic_cast<BlockStmt *>(outerW->body.get());
+  if (!outerBody || outerBody->items.size() < 3) {
+    return false;
+  }
+  size_t pos = 0;
+  string midIv;
+  if (!parseZeroInit(outerBody->items[pos].get(), &midIv)) {
+    return false;
+  }
+  ++pos;
+  auto *midW = dynamic_cast<WhileStmt *>(outerBody->items[pos].get());
+  if (!midW) {
+    return false;
+  }
+  ++pos;
+  auto *outerInc = dynamic_cast<AssignStmt *>(outerBody->items[pos].get());
+  if (!isIncByOne(outerInc, outerIv) || pos + 1 != outerBody->items.size()) {
+    return false;
+  }
+  string midIv2;
+  ExprPtr midLimit;
+  if (!extractLtBound(midW->cond.get(), &midIv2, &midLimit) || midIv2 != midIv) {
+    return false;
+  }
+  auto *midBody = dynamic_cast<BlockStmt *>(midW->body.get());
+  if (!midBody || midBody->items.size() < 3) {
+    return false;
+  }
+  pos = 0;
+  if (pos < midBody->items.size() && isContinueSkipIf(midBody->items[pos].get(), midIv)) {
+    ++pos;
+  }
+  string innerIv;
+  if (!parseZeroInit(midBody->items[pos].get(), &innerIv)) {
+    return false;
+  }
+  ++pos;
+  auto *innerW = dynamic_cast<WhileStmt *>(midBody->items[pos].get());
+  if (!innerW) {
+    return false;
+  }
+  ++pos;
+  auto *midInc = dynamic_cast<AssignStmt *>(midBody->items[pos].get());
+  if (!isIncByOne(midInc, midIv) || pos + 1 != midBody->items.size()) {
+    return false;
+  }
+  string innerIv2;
+  ExprPtr innerLimit;
+  if (!extractLtBound(innerW->cond.get(), &innerIv2, &innerLimit) || innerIv2 != innerIv) {
+    return false;
+  }
+  auto *innerBody = dynamic_cast<BlockStmt *>(innerW->body.get());
+  if (!isSimpleInnerLoopBody(innerBody, innerIv)) {
+    return false;
+  }
+
+  if (boundsTooSmallForTiling(outerLimit.get(), midLimit.get())) {
+    return false;
+  }
+  if (exprUsesVarName(midLimit.get(), outerIv) ||
+      exprUsesVarName(innerLimit.get(), outerIv) ||
+      exprUsesVarName(innerLimit.get(), midIv) ||
+      exprUsesVarName(outerLimit.get(), midIv)) {
+    return false;
+  }
+
+  vector<StmtPtr> midCore;
+  pos = 0;
+  if (pos < midBody->items.size() && isContinueSkipIf(midBody->items[pos].get(), midIv)) {
+    if (StmtPtr c = cloneStmt(midBody->items[pos].get())) {
+      midCore.push_back(std::move(c));
+    } else {
+      return false;
+    }
+    ++pos;
+  }
+  if (StmtPtr jInit = cloneStmt(midBody->items[pos].get())) {
+    midCore.push_back(std::move(jInit));
+  } else {
+    return false;
+  }
+  ++pos;
+  if (StmtPtr jAssign = cloneStmt(innerBody->items[0].get())) {
+    auto jLoopBody = make_unique<BlockStmt>(midW->line);
+    jLoopBody->items.push_back(std::move(jAssign));
+    jLoopBody->items.push_back(makeIncByOne(midW->line, innerIv));
+    auto jLoop =
+        make_unique<WhileStmt>(midW->line, cloneExpr(innerW->cond.get()), nullptr);
+    jLoop->body = std::move(jLoopBody);
+    midCore.push_back(std::move(jLoop));
+  } else {
+    return false;
+  }
+  // midIv++ 由 buildTiled2D 统一追加，勿重复
+
+  const bool midWasDecl =
+      dynamic_cast<const DeclStmt *>(outerBody->items[0].get()) != nullptr;
+  bool declareMid = midWasDecl;
+  if (declareMid && !gHoistedLoopIvs.insert(midIv).second) {
+    declareMid = false;
+  }
+  const int nestId = gTileNestId++;
+  int line = outerW->line;
+  vector<StmtPtr> rep;
+  rep.push_back(makeTileVarDecl(line, nestId, outerIv, midIv, declareMid));
+  rep.push_back(makeZeroAssign(line, tileVar(outerIv, nestId)));
+  rep.push_back(buildTiled2D(line, nestId, outerIv, midIv, outerLimit.get(),
+                             midLimit.get(), std::move(midCore)));
   items.erase(items.begin() + static_cast<ptrdiff_t>(k),
               items.begin() + static_cast<ptrdiff_t>(k + 2));
   items.insert(items.begin() + static_cast<ptrdiff_t>(k),
@@ -561,7 +754,7 @@ static bool tryTile3DMatmul(vector<StmtPtr> &items, size_t k) {
       midCore.push_back(std::move(c));
     }
   }
-  midCore.push_back(makeIncByOne(midW->line, midIv));
+  // innerIv(j)++ 由 buildTiled2D 统一追加，勿重复
 
   if (boundsTooSmallForTiling(limit.get(), midLimit.get())) {
     return false;
@@ -598,6 +791,10 @@ static void processBlockTiling(BlockStmt *blk) {
     return;
   }
   for (size_t i = 0; i + 1 < blk->items.size();) {
+    if (tryTile3DKOuter(blk->items, i)) {
+      i += 3;
+      continue;
+    }
     if (tryTile3DMatmul(blk->items, i)) {
       i += 3;
       continue;
