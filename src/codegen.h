@@ -62,6 +62,25 @@ private:
   std::unordered_map<Symbol *, std::string> irParamCache_;
   std::unordered_map<Symbol *, Expr *> inlineArgMap_;
 
+  /// 内层循环行指针：sym + outerIv → 持有行基址的寄存器名
+  struct RowBaseCache {
+    Symbol *sym = nullptr;
+    string outerIv;
+    string innerIv;
+    string reg;
+  };
+  vector<string> loopIvStack_;
+  vector<RowBaseCache> rowBaseCache_;
+
+  bool extractWhileLtIv(const Expr *cond, string *iv) const;
+
+  void collectRowBaseSyms(Stmt *body, const string &outerIv, const string &innerIv,
+                          vector<Symbol *> &out) const;
+
+  void emitRowBaseSetups(const vector<Symbol *> &syms, const string &outerIv);
+
+  bool tryEmitRowBaseLValAddress(LValExpr *expr);
+
   int irVregSlotOffset(int vid) const;
 
   bool irVregIsPtr(int vid) const;

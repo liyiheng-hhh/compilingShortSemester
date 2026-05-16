@@ -166,6 +166,45 @@ static bool isZeroAssignTo(const AssignStmt *as, const string &v) {
   return num && !num->isFloat && num->intVal == 0;
 }
 
+static bool parseZeroInit(const Stmt *s, string *name) {
+  if (auto *as = dynamic_cast<const AssignStmt *>(s)) {
+    if (as->lhs && as->lhs->indices.empty() &&
+        isZeroAssignTo(as, as->lhs->name)) {
+      *name = as->lhs->name;
+      return true;
+    }
+  }
+  if (auto *d = dynamic_cast<const DeclStmt *>(s)) {
+    if (d->defs.size() == 1 && d->defs[0].init && d->defs[0].init->expr) {
+      auto *n = dynamic_cast<const NumberExpr *>(d->defs[0].init->expr.get());
+      if (n && !n->isFloat && n->intVal == 0) {
+        *name = d->defs[0].name;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static unique_ptr<AssignStmt> makeZeroAssign(int line, const string &v) {
+  auto lhs = make_unique<LValExpr>(line, v);
+  return make_unique<AssignStmt>(line, std::move(lhs),
+                                 make_unique<NumberExpr>(line, 0));
+}
+
+static unique_ptr<AssignStmt> cloneZeroInitAsAssign(const Stmt *s) {
+  if (auto *as = dynamic_cast<const AssignStmt *>(s)) {
+    return cloneAssign(as);
+  }
+  string name;
+  if (auto *d = dynamic_cast<const DeclStmt *>(s)) {
+    if (parseZeroInit(d, &name)) {
+      return makeZeroAssign(d->line, name);
+    }
+  }
+  return nullptr;
+}
+
 static bool isIncByOne(const AssignStmt *as, const string &v) {
   if (!as || !as->lhs || as->lhs->name != v || !as->lhs->indices.empty()) {
     return false;
@@ -250,52 +289,39 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
   if (k + 1 >= items.size()) {
     return false;
   }
-  auto *init = dynamic_cast<AssignStmt *>(items[k].get());
   auto *outer = dynamic_cast<WhileStmt *>(items[k + 1].get());
-  if (!init || !outer) {
+  if (!outer) {
     return false;
   }
   string outerIv;
-  if (!extractLoopIv(outer, &outerIv)) {
-    return false;
-  }
-  if (!isZeroAssignTo(init, outerIv)) {
+  string outerInitIv;
+  if (!extractLoopIv(outer, &outerIv) || !parseZeroInit(items[k].get(), &outerInitIv) ||
+      outerInitIv != outerIv) {
     return false;
   }
   auto *outerBody = dynamic_cast<BlockStmt *>(outer->body.get());
-  if (!outerBody) {
+  if (!outerBody || outerBody->items.size() != 3) {
     return false;
   }
-  // 不支持外层体含局部声明（避免错误搬移）
-  for (const auto &it : outerBody->items) {
-    if (it->kind == StmtKind::Decl) {
+  for (size_t idx = 0; idx < outerBody->items.size(); ++idx) {
+    if (outerBody->items[idx]->kind == StmtKind::Decl && idx != 0) {
       return false;
     }
   }
-  if (outerBody->items.size() != 3) {
+  string innerIv;
+  if (!parseZeroInit(outerBody->items[0].get(), &innerIv)) {
     return false;
   }
-  auto *innerInit = dynamic_cast<AssignStmt *>(outerBody->items[0].get());
   auto *inner = dynamic_cast<WhileStmt *>(outerBody->items[1].get());
   auto *outerInc = dynamic_cast<AssignStmt *>(outerBody->items[2].get());
-  if (!innerInit || !inner || !outerInc) {
+  if (!inner || !outerInc || !isIncByOne(outerInc, outerIv)) {
     return false;
   }
-  if (!isZeroAssignTo(innerInit, innerInit->lhs->name)) {
-    return false;
-  }
-  if (!isIncByOne(outerInc, outerIv)) {
-    return false;
-  }
-
-  string innerIv;
-  if (!extractLoopIv(inner, &innerIv)) {
+  string innerIvLoop;
+  if (!extractLoopIv(inner, &innerIvLoop) || innerIvLoop != innerIv) {
     return false;
   }
   if (innerIv == outerIv) {
-    return false;
-  }
-  if (innerInit->lhs->name != innerIv) {
     return false;
   }
 
@@ -335,8 +361,8 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
   }
 
   int line = outer->line;
-  unique_ptr<AssignStmt> newParentInit = cloneAssign(innerInit);
-  unique_ptr<AssignStmt> innerOuterZero = cloneAssign(init);
+  unique_ptr<AssignStmt> newParentInit = cloneZeroInitAsAssign(outerBody->items[0].get());
+  unique_ptr<AssignStmt> innerOuterZero = cloneZeroInitAsAssign(items[k].get());
   unique_ptr<AssignStmt> incOuterIv = cloneAssign(outerInc);
   unique_ptr<AssignStmt> incInnerIv = cloneAssign(innerInc);
   if (!newParentInit || !innerOuterZero || !incOuterIv || !incInnerIv) {

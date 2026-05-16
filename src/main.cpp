@@ -1,6 +1,7 @@
 #include "codegen.h"
 #include "common.h"
 #include "lexer.h"
+#include "land_lor_split.h"
 #include "loop_interchange.h"
 #include "opt_config.h"
 #include "parser.h"
@@ -28,6 +29,9 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   const O1Profile o1Prof = resolveO1Profile(optO1);
   if (o1AstLoopInterchangeEffective(o1Prof)) {
     loopInterchangePass(program);
+  }
+  if (o1Prof.irBackend) {
+    splitLogicalAndPass(program);
   }
   Semantic semantic(program);
   semantic.run();

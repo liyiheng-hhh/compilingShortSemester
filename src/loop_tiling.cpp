@@ -1,5 +1,5 @@
 // AST 层循环分块：矩形二重循环（可含首部 continue-skip if）、
-// i-j-k 与 k-i-j 三重循环（tile=16）。
+// i-j-k 与 k-i-j 三重循环（默认 tile=32，可用 SYSY_TILE_SIZE 覆盖）。
 // 在 loopInterchangePass 之后运行；SYSY_CC_NO_LOOP_TILING=1 可关闭。
 
 #include "loop_interchange.h"
@@ -7,6 +7,7 @@
 #include "common.h"
 
 #include <cstddef>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -21,7 +22,22 @@ using std::vector;
 
 namespace {
 
-constexpr int kTile = 16;
+static int loopTileSize() {
+  static const int k = [] {
+    const char *v = std::getenv("SYSY_TILE_SIZE");
+    if (!v || v[0] == '\0') {
+      return 32;
+    }
+    char *end = nullptr;
+    const long n = std::strtol(v, &end, 10);
+    if (end == v || n < 4 || n > 128) {
+      return 32;
+    }
+    const int z = static_cast<int>(n);
+    return (z & (z - 1)) == 0 ? z : 32;
+  }();
+  return k;
+}
 
 static void copyExprMeta(Expr *dst, const Expr *src) {
   if (!dst || !src) {
@@ -180,18 +196,29 @@ static ExprPtr makeLt(int line, const string &lhs, ExprPtr rhs) {
                                  std::move(rhs));
 }
 
-static ExprPtr makeAnd(int line, ExprPtr a, ExprPtr b) {
-  return make_unique<BinaryExpr>(line, "&&", std::move(a), std::move(b));
+static StmtPtr makeBreakUnless(int line, ExprPtr cond) {
+  auto neg = make_unique<UnaryExpr>(line, "!", std::move(cond));
+  return make_unique<IfStmt>(line, std::move(neg), make_unique<BreakStmt>(line),
+                             nullptr);
 }
 
-static ExprPtr makeTiledWhileCond(int line, const string &iv,
-                                  const string &tileIv, const Expr *limit) {
-  ExprPtr c0 = makeLt(line, iv, cloneExpr(limit));
+// 分块内层 while：用 while(1)+break 代替 iv<lim && iv<tileEnd，避免 IR 与行指针失效。
+static unique_ptr<WhileStmt> makeTiledWhileShell(int line, const string &iv,
+                                                 const string &tileIv,
+                                                 const Expr *limit,
+                                                 unique_ptr<BlockStmt> body) {
+  auto shell = make_unique<BlockStmt>(line);
+  shell->items.push_back(
+      makeBreakUnless(line, makeLt(line, iv, cloneExpr(limit))));
   auto tileEnd = make_unique<BinaryExpr>(
-      line, "+", makeScalarLVal(line, tileIv), makeInt(line, kTile));
-  ExprPtr c1 = make_unique<BinaryExpr>(line, "<", makeScalarLVal(line, iv),
-                                       std::move(tileEnd));
-  return makeAnd(line, std::move(c0), std::move(c1));
+      line, "+", makeScalarLVal(line, tileIv), makeInt(line, loopTileSize()));
+  shell->items.push_back(makeBreakUnless(
+      line, make_unique<BinaryExpr>(line, "<", makeScalarLVal(line, iv),
+                                    std::move(tileEnd))));
+  for (auto &st : body->items) {
+    shell->items.push_back(std::move(st));
+  }
+  return make_unique<WhileStmt>(line, makeInt(line, 1), std::move(shell));
 }
 
 static bool exprUsesVarName(const Expr *e, const string &name) {
@@ -286,6 +313,64 @@ static bool parseZeroInit(const Stmt *s, string *name) {
     }
   }
   return false;
+}
+
+struct OuterLoopHead {
+  string iv;
+  ExprPtr limit;
+  bool ivFromDecl = false;
+};
+
+static bool matchOuterLoopHead(const Stmt *initStmt, const WhileStmt *outerW,
+                               OuterLoopHead *out) {
+  if (!initStmt || !outerW || !out) {
+    return false;
+  }
+  if (!extractLtBound(outerW->cond.get(), &out->iv, &out->limit)) {
+    return false;
+  }
+  out->ivFromDecl = false;
+  if (auto *as = dynamic_cast<const AssignStmt *>(initStmt)) {
+    return isZeroScalarAssign(as, out->iv);
+  }
+  if (auto *d = dynamic_cast<const DeclStmt *>(initStmt)) {
+    if (d->defs.size() != 1 || d->base != BaseType::Int) {
+      return false;
+    }
+    string name;
+    if (!parseZeroInit(d, &name) || name != out->iv) {
+      return false;
+    }
+    out->ivFromDecl = true;
+    return true;
+  }
+  return false;
+}
+
+static void stripDeclZeroInit(Stmt *s) {
+  if (auto *d = dynamic_cast<DeclStmt *>(s)) {
+    if (d->defs.size() == 1) {
+      d->defs[0].init.reset();
+    }
+  }
+}
+
+static void insertTiledLoopReplace(vector<StmtPtr> &items, size_t k,
+                                   bool keepOuterDecl, vector<StmtPtr> rep) {
+  if (keepOuterDecl) {
+    stripDeclZeroInit(items[k].get());
+    items.erase(items.begin() + static_cast<ptrdiff_t>(k + 1),
+                items.begin() + static_cast<ptrdiff_t>(k + 2));
+    items.insert(items.begin() + static_cast<ptrdiff_t>(k + 1),
+                 std::make_move_iterator(rep.begin()),
+                 std::make_move_iterator(rep.end()));
+  } else {
+    items.erase(items.begin() + static_cast<ptrdiff_t>(k),
+                items.begin() + static_cast<ptrdiff_t>(k + 2));
+    items.insert(items.begin() + static_cast<ptrdiff_t>(k),
+                 std::make_move_iterator(rep.begin()),
+                 std::make_move_iterator(rep.end()));
+  }
 }
 
 static bool stmtIsContinue(const Stmt *s) {
@@ -398,15 +483,15 @@ static bool boundsTooSmallForTiling(const Expr *outerLimit,
                                     const Expr *innerLimit) {
   auto small = [](const Expr *e) {
     auto *n = dynamic_cast<const NumberExpr *>(e);
-    return n && !n->isFloat && n->intVal < kTile;
+    return n && !n->isFloat && n->intVal < loopTileSize();
   };
   return small(outerLimit) && small(innerLimit);
 }
 
 static unique_ptr<WhileStmt>
 buildTiled2D(int line, int nestId, const string &outerIv, const string &innerIv,
-             const Expr *outerLimit, const Expr *innerLimit,
-             vector<StmtPtr> core) {
+             const Expr *outerLimit, const Expr *innerLimit, vector<StmtPtr> core,
+             vector<StmtPtr> iBodyPrefix = {}) {
   const string ii = tileVar(outerIv, nestId);
   const string jj = tileVar(innerIv, nestId);
 
@@ -417,20 +502,19 @@ buildTiled2D(int line, int nestId, const string &outerIv, const string &innerIv,
   innerCore->items.push_back(makeIncByOne(line, innerIv));
 
   auto iBody = make_unique<BlockStmt>(line);
+  for (auto &st : iBodyPrefix) {
+    iBody->items.push_back(std::move(st));
+  }
   iBody->items.push_back(makeAssign(line, innerIv, makeScalarLVal(line, jj)));
-  auto iWhile = make_unique<WhileStmt>(
-      line, makeTiledWhileCond(line, innerIv, jj, innerLimit), nullptr);
-  iWhile->body = std::move(innerCore);
-  iBody->items.push_back(std::move(iWhile));
+  iBody->items.push_back(
+      makeTiledWhileShell(line, innerIv, jj, innerLimit, std::move(innerCore)));
   iBody->items.push_back(makeIncByOne(line, outerIv));
 
   auto jTileBody = make_unique<BlockStmt>(line);
   jTileBody->items.push_back(makeAssign(line, outerIv, makeScalarLVal(line, ii)));
-  auto jTileWhile = make_unique<WhileStmt>(
-      line, makeTiledWhileCond(line, outerIv, ii, outerLimit), nullptr);
-  jTileWhile->body = std::move(iBody);
-  jTileBody->items.push_back(std::move(jTileWhile));
-  jTileBody->items.push_back(makeIncBy(line, jj, kTile));
+  jTileBody->items.push_back(
+      makeTiledWhileShell(line, outerIv, ii, outerLimit, std::move(iBody)));
+  jTileBody->items.push_back(makeIncBy(line, jj, loopTileSize()));
 
   auto jjWhile =
       make_unique<WhileStmt>(line, makeLt(line, jj, cloneExpr(innerLimit)), nullptr);
@@ -439,7 +523,7 @@ buildTiled2D(int line, int nestId, const string &outerIv, const string &innerIv,
   auto iiBody = make_unique<BlockStmt>(line);
   iiBody->items.push_back(makeZeroAssign(line, jj));
   iiBody->items.push_back(std::move(jjWhile));
-  iiBody->items.push_back(makeIncBy(line, ii, kTile));
+  iiBody->items.push_back(makeIncBy(line, ii, loopTileSize()));
 
   auto iiWhile =
       make_unique<WhileStmt>(line, makeLt(line, ii, cloneExpr(outerLimit)), nullptr);
@@ -451,17 +535,13 @@ static bool tryTile2DNest(vector<StmtPtr> &items, size_t k) {
   if (k + 1 >= items.size()) {
     return false;
   }
-  auto *outerInit = dynamic_cast<AssignStmt *>(items[k].get());
   auto *outerW = dynamic_cast<WhileStmt *>(items[k + 1].get());
-  if (!outerInit || !outerW) {
+  OuterLoopHead head;
+  if (!matchOuterLoopHead(items[k].get(), outerW, &head)) {
     return false;
   }
-  string outerIv;
-  ExprPtr outerLimit;
-  if (!extractLtBound(outerW->cond.get(), &outerIv, &outerLimit) ||
-      !isZeroScalarAssign(outerInit, outerIv)) {
-    return false;
-  }
+  const string &outerIv = head.iv;
+  const ExprPtr &outerLimit = head.limit;
   auto *outerBody = dynamic_cast<BlockStmt *>(outerW->body.get());
   if (!outerBody || outerBody->items.size() < 3) {
     return false;
@@ -513,11 +593,7 @@ static bool tryTile2DNest(vector<StmtPtr> &items, size_t k) {
   rep.push_back(makeZeroAssign(line, tileVar(outerIv, nestId)));
   rep.push_back(buildTiled2D(line, nestId, outerIv, innerIv, outerLimit.get(),
                              innerLimit.get(), std::move(core)));
-  items.erase(items.begin() + static_cast<ptrdiff_t>(k),
-              items.begin() + static_cast<ptrdiff_t>(k + 2));
-  items.insert(items.begin() + static_cast<ptrdiff_t>(k),
-               std::make_move_iterator(rep.begin()),
-               std::make_move_iterator(rep.end()));
+  insertTiledLoopReplace(items, k, head.ivFromDecl, std::move(rep));
   return true;
 }
 
@@ -604,29 +680,21 @@ static bool tryTile3DKOuter(vector<StmtPtr> &items, size_t k) {
   }
 
   vector<StmtPtr> midCore;
+  vector<StmtPtr> iBodyPrefix;
   pos = 0;
   if (pos < midBody->items.size() && isContinueSkipIf(midBody->items[pos].get(), midIv)) {
     if (StmtPtr c = cloneStmt(midBody->items[pos].get())) {
-      midCore.push_back(std::move(c));
+      iBodyPrefix.push_back(std::move(c));
     } else {
       return false;
     }
     ++pos;
   }
-  if (StmtPtr jInit = cloneStmt(midBody->items[pos].get())) {
-    midCore.push_back(std::move(jInit));
-  } else {
-    return false;
-  }
+  // 跳过 j=0 初始化：buildTiled2D 在每个 tile 内会执行 j=jj。
+  // 只保留内层循环体赋值；勿再包一层 while(j)（buildTiled2D 已生成 j 循环并追加 j++）。
   ++pos;
   if (StmtPtr jAssign = cloneStmt(innerBody->items[0].get())) {
-    auto jLoopBody = make_unique<BlockStmt>(midW->line);
-    jLoopBody->items.push_back(std::move(jAssign));
-    jLoopBody->items.push_back(makeIncByOne(midW->line, innerIv));
-    auto jLoop =
-        make_unique<WhileStmt>(midW->line, cloneExpr(innerW->cond.get()), nullptr);
-    jLoop->body = std::move(jLoopBody);
-    midCore.push_back(std::move(jLoop));
+    midCore.push_back(std::move(jAssign));
   } else {
     return false;
   }
@@ -642,7 +710,8 @@ static bool tryTile3DKOuter(vector<StmtPtr> &items, size_t k) {
   int line = outerW->line;
   // 只分块中层 i × 内层 j；k 外层保持原序，末尾保留 k++（勿用 buildTiled2D(k,i) 以免 k 在内层分块里多次自增）。
   auto tiledIJ = buildTiled2D(line, nestId, midIv, innerIv, midLimit.get(),
-                              innerLimit.get(), std::move(midCore));
+                              innerLimit.get(), std::move(midCore),
+                              std::move(iBodyPrefix));
   auto kBody = make_unique<BlockStmt>(line);
   kBody->items.push_back(std::move(tiledIJ));
   if (StmtPtr kInc = cloneStmt(outerInc)) {
@@ -676,17 +745,13 @@ static bool tryTile3DMatmul(vector<StmtPtr> &items, size_t k) {
   if (k + 1 >= items.size()) {
     return false;
   }
-  auto *outerInit = dynamic_cast<AssignStmt *>(items[k].get());
   auto *outerW = dynamic_cast<WhileStmt *>(items[k + 1].get());
-  if (!outerInit || !outerW) {
+  OuterLoopHead head;
+  if (!matchOuterLoopHead(items[k].get(), outerW, &head)) {
     return false;
   }
-  string outerIv;
-  ExprPtr limit;
-  if (!extractLtBound(outerW->cond.get(), &outerIv, &limit) ||
-      !isZeroScalarAssign(outerInit, outerIv)) {
-    return false;
-  }
+  const string &outerIv = head.iv;
+  const ExprPtr &limit = head.limit;
   auto *outerBody = dynamic_cast<BlockStmt *>(outerW->body.get());
   if (!outerBody || outerBody->items.size() < 3) {
     return false;
@@ -796,11 +861,7 @@ static bool tryTile3DMatmul(vector<StmtPtr> &items, size_t k) {
   rep.push_back(makeZeroAssign(line, tileVar(outerIv, nestId)));
   rep.push_back(buildTiled2D(line, nestId, outerIv, midIv, limit.get(),
                              midLimit.get(), std::move(midCore)));
-  items.erase(items.begin() + static_cast<ptrdiff_t>(k),
-              items.begin() + static_cast<ptrdiff_t>(k + 2));
-  items.insert(items.begin() + static_cast<ptrdiff_t>(k),
-               std::make_move_iterator(rep.begin()),
-               std::make_move_iterator(rep.end()));
+  insertTiledLoopReplace(items, k, head.ivFromDecl, std::move(rep));
   return true;
 }
 
@@ -814,11 +875,15 @@ static void processBlockTiling(BlockStmt *blk) {
       continue;
     }
     if (tryTile3DMatmul(blk->items, i)) {
-      i += 3;
+      const bool outerDecl =
+          dynamic_cast<const DeclStmt *>(blk->items[i].get()) != nullptr;
+      i += outerDecl ? 4 : 3;
       continue;
     }
     if (tryTile2DNest(blk->items, i)) {
-      i += 3;
+      const bool outerDecl =
+          dynamic_cast<const DeclStmt *>(blk->items[i].get()) != nullptr;
+      i += outerDecl ? 4 : 3;
       continue;
     }
     ++i;

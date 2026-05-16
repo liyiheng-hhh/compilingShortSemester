@@ -2158,6 +2158,216 @@ void CodeGen::emitIf(IfStmt &stmt) {
     emit(endLabel + ":");
   }
 
+static bool indexIsScalarIv(const Expr *e, const string &name) {
+  auto *lv = dynamic_cast<const LValExpr *>(e);
+  return lv && lv->indices.empty() && lv->name == name;
+}
+
+static void scanExprForRowBase(Expr *e, const string &outerIv, const string &innerIv,
+                               vector<Symbol *> &out) {
+  if (!e) {
+    return;
+  }
+  if (e->kind == ExprKind::LVal) {
+    auto *lv = static_cast<LValExpr *>(e);
+    if (lv->symbol && lv->symbol->isArray && lv->indices.size() == 2 &&
+        indexIsScalarIv(lv->indices[0].get(), outerIv) &&
+        indexIsScalarIv(lv->indices[1].get(), innerIv)) {
+      Symbol *sym = lv->symbol;
+      for (Symbol *s : out) {
+        if (s == sym) {
+          return;
+        }
+      }
+      out.push_back(sym);
+    }
+    for (auto &ix : lv->indices) {
+      scanExprForRowBase(ix.get(), outerIv, innerIv, out);
+    }
+    return;
+  }
+  if (e->kind == ExprKind::Unary) {
+    scanExprForRowBase(static_cast<UnaryExpr *>(e)->expr.get(), outerIv, innerIv,
+                       out);
+    return;
+  }
+  if (e->kind == ExprKind::Binary) {
+    auto *b = static_cast<BinaryExpr *>(e);
+    scanExprForRowBase(b->lhs.get(), outerIv, innerIv, out);
+    scanExprForRowBase(b->rhs.get(), outerIv, innerIv, out);
+    return;
+  }
+  if (e->kind == ExprKind::Call) {
+    auto *c = static_cast<CallExpr *>(e);
+    for (auto &a : c->args) {
+      scanExprForRowBase(a.get(), outerIv, innerIv, out);
+    }
+  }
+}
+
+static void scanStmtForRowBase(Stmt *s, const string &outerIv, const string &innerIv,
+                               vector<Symbol *> &out) {
+  if (!s) {
+    return;
+  }
+  switch (s->kind) {
+  case StmtKind::Assign:
+    scanExprForRowBase(static_cast<AssignStmt *>(s)->lhs.get(), outerIv, innerIv, out);
+    scanExprForRowBase(static_cast<AssignStmt *>(s)->rhs.get(), outerIv, innerIv, out);
+    return;
+  case StmtKind::Expr:
+    scanExprForRowBase(static_cast<ExprStmt *>(s)->expr.get(), outerIv, innerIv, out);
+    return;
+  case StmtKind::Block:
+    for (auto &it : static_cast<BlockStmt *>(s)->items) {
+      scanStmtForRowBase(it.get(), outerIv, innerIv, out);
+    }
+    return;
+  case StmtKind::If: {
+    auto *ifs = static_cast<IfStmt *>(s);
+    scanStmtForRowBase(ifs->thenStmt.get(), outerIv, innerIv, out);
+    if (ifs->elseStmt) {
+      scanStmtForRowBase(ifs->elseStmt.get(), outerIv, innerIv, out);
+    }
+    return;
+  }
+  case StmtKind::While:
+    scanStmtForRowBase(static_cast<WhileStmt *>(s)->body.get(), outerIv, innerIv, out);
+    return;
+  default:
+    return;
+  }
+}
+
+bool CodeGen::extractWhileLtIv(const Expr *cond, string *iv) const {
+  auto *b = dynamic_cast<const BinaryExpr *>(cond);
+  if (!b || b->op != "<") {
+    return false;
+  }
+  if (auto *lv = dynamic_cast<const LValExpr *>(b->lhs.get())) {
+    if (lv->indices.empty()) {
+      *iv = lv->name;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool extractIvFromSplitWhile(const WhileStmt *w, string *iv) {
+  auto *one = dynamic_cast<const NumberExpr *>(w->cond.get());
+  if (!one || one->isFloat || one->intVal != 1) {
+    return false;
+  }
+  auto *blk = dynamic_cast<const BlockStmt *>(w->body.get());
+  if (!blk) {
+    return false;
+  }
+  for (const auto &st : blk->items) {
+    auto *ifs = dynamic_cast<const IfStmt *>(st.get());
+    if (!ifs || ifs->elseStmt || ifs->thenStmt->kind != StmtKind::Break) {
+      break;
+    }
+    auto *u = dynamic_cast<const UnaryExpr *>(ifs->cond.get());
+    if (!u || u->op != "!") {
+      break;
+    }
+    auto *cmp = dynamic_cast<const BinaryExpr *>(u->expr.get());
+    if (!cmp || cmp->op != "<") {
+      break;
+    }
+    if (auto *lv = dynamic_cast<const LValExpr *>(cmp->lhs.get())) {
+      if (lv->indices.empty()) {
+        *iv = lv->name;
+        return true;
+      }
+    }
+    break;
+  }
+  return false;
+}
+
+void CodeGen::collectRowBaseSyms(Stmt *body, const string &outerIv,
+                                 const string &innerIv,
+                                 vector<Symbol *> &out) const {
+  scanStmtForRowBase(body, outerIv, innerIv, out);
+}
+
+void CodeGen::emitRowBaseSetups(const vector<Symbol *> &syms,
+                                const string &outerIv) {
+  static const char *kRowRegs[] = {"t3", "t4", "t5", "t6"};
+  Symbol *outerSym = nullptr;
+  for (const auto &up : semantic_.symbols()) {
+    if (up->name == outerIv && !up->isGlobal) {
+      outerSym = up.get();
+      break;
+    }
+  }
+  const string innerIv =
+      loopIvStack_.empty() ? string() : loopIvStack_.back();
+  for (size_t i = 0; i < syms.size() && i < 4; ++i) {
+    Symbol *sym = syms[i];
+    const string reg(kRowRegs[i]);
+    if (sym->isGlobal) {
+      emit("\tlla\t" + reg + ", " + sym->label);
+    } else if (sym->isParamArray) {
+      emitLoadMem("ld", reg, "s0", sym->offset);
+    } else {
+      emitAddOffset(reg, "s0", sym->offset);
+    }
+    if (!outerSym) {
+      continue;
+    }
+    if (fitsImm12(outerSym->offset)) {
+      emit("\tlw\ta0, " + to_string(outerSym->offset) + "(s0)");
+    } else {
+      emitAddOffset("a0", "s0", outerSym->offset);
+      emit("\tlw\ta0, 0(a0)");
+    }
+    const int rowStrideBytes = strideForIndex(sym, 0) * 4;
+    const int lg = intLog2Positive32(static_cast<int32_t>(rowStrideBytes));
+    if (lg >= 0) {
+      emit("\tslliw\tt2, a0, " + to_string(lg));
+    } else if (emitMulByConst(*this, static_cast<int32_t>(rowStrideBytes))) {
+      emit("\tmv\tt2, a0");
+    } else {
+      emit("\tli\tt1, " + to_string(rowStrideBytes));
+      emit("\tmulw\tt2, a0, t1");
+    }
+    emit("\tadd\t" + reg + ", " + reg + ", t2");
+    rowBaseCache_.push_back(RowBaseCache{sym, outerIv, innerIv, reg});
+  }
+}
+
+bool CodeGen::tryEmitRowBaseLValAddress(LValExpr *expr) {
+  if (!optO1_ || rowBaseCache_.empty() || expr->indices.size() != 2) {
+    return false;
+  }
+  for (const RowBaseCache &rb : rowBaseCache_) {
+    if (rb.sym != expr->symbol) {
+      continue;
+    }
+    if (!indexIsScalarIv(expr->indices[0].get(), rb.outerIv) ||
+        !indexIsScalarIv(expr->indices[1].get(), rb.innerIv)) {
+      continue;
+    }
+    emitExpr(expr->indices[1].get());
+    emitConvert(expr->indices[1]->type, Type::scalar(BaseType::Int));
+    const int colStrideBytes = strideForIndex(expr->symbol, 1) * 4;
+    const int lg = intLog2Positive32(static_cast<int32_t>(colStrideBytes));
+    if (lg >= 0) {
+      emit("\tslliw\tt2, a0, " + to_string(lg));
+    } else if (emitMulByConst(*this, static_cast<int32_t>(colStrideBytes))) {
+      emit("\tmv\tt2, a0");
+    } else {
+      emit("\tli\tt1, " + to_string(colStrideBytes));
+      emit("\tmulw\tt2, a0, t1");
+    }
+    emit("\tadd\ta0, " + rb.reg + ", t2");
+    return true;
+  }
+  return false;
+}
+
 void CodeGen::emitWhile(WhileStmt &stmt) {
     if (optO1_ && stmt.cond->isConst) {
       bool never = false;
@@ -2175,16 +2385,37 @@ void CodeGen::emitWhile(WhileStmt &stmt) {
     string endLabel = newLabel("while_end");
     continueLabels_.push_back(condLabel);
     breakLabels_.push_back(endLabel);
+    string loopIv;
+    bool trackIv = optO1_ && extractWhileLtIv(stmt.cond.get(), &loopIv);
+    if (!trackIv && optO1_) {
+      trackIv = extractIvFromSplitWhile(&stmt, &loopIv);
+    }
+    if (trackIv) {
+      loopIvStack_.push_back(loopIv);
+    }
     emit(condLabel + ":");
     if (!tryEmitCondBranchFalse(stmt.cond.get(), endLabel)) {
       emitCond(stmt.cond.get(), bodyLabel, endLabel);
     }
     emit(bodyLabel + ":");
+    if (optO1_ && loopIvStack_.size() >= 2) {
+      const string &outer = loopIvStack_[loopIvStack_.size() - 2];
+      const string &inner = loopIvStack_.back();
+      vector<Symbol *> rowSyms;
+      collectRowBaseSyms(stmt.body.get(), outer, inner, rowSyms);
+      if (!rowSyms.empty()) {
+        emitRowBaseSetups(rowSyms, outer);
+      }
+    }
     emitStmt(stmt.body.get());
+    rowBaseCache_.clear();
     emit("\tj\t" + condLabel);
     emit(endLabel + ":");
     breakLabels_.pop_back();
     continueLabels_.pop_back();
+    if (trackIv) {
+      loopIvStack_.pop_back();
+    }
   }
 
 bool CodeGen::tryEmitTailCallReturn(ReturnStmt &stmt) {
@@ -3179,6 +3410,9 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
       emitAddOffset("a0", "s0", sym->offset);
     }
     if (expr->indices.empty()) {
+      return;
+    }
+    if (tryEmitRowBaseLValAddress(expr)) {
       return;
     }
     if (optO1_ && expr->indices.size() == 1 &&

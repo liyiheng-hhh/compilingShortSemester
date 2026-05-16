@@ -1784,7 +1784,7 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof) {
   if (!prof.irBackend || !prof.irMidend) {
     return;
   }
-  const int maxOuter = prof.irCfgLicm || prof.irSimpleLicm ? 8 : 4;
+  const int maxOuter = prof.irCfgLicm || prof.irSimpleLicm ? 12 : 4;
   for (int outer = 0; outer < maxOuter; ++outer) {
     const uint64_t before = irInstructionFingerprint(fn);
     irOptimizeBlockOneRound(fn, prof);
