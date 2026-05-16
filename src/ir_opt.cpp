@@ -1777,7 +1777,8 @@ void irOptimizeBlock(IRFunction &fn, bool backendO1) {
   }
   // Too many outer rounds makes compile time / memory prohibitive on large IR
   // (grader may SIGKILL on OOM or wall-clock).
-  const int maxOuter = 6;
+  // 多轮外层迭代：CSE/copy 传播在多块循环上常需 >1 轮才稳定；略增轮数以提性能（compile 时间略增）
+  const int maxOuter = 8;
   for (int outer = 0; outer < maxOuter; ++outer) {
     const uint64_t before = irInstructionFingerprint(fn);
     irOptimizeBlockOneRound(fn, backendO1);

@@ -3,20 +3,21 @@
 #include "common.h"
 
 // =============================================================================
-// 「-O1」总开关：默认 **AC 优先**（隐藏 crc/排序 等不可测时）
+// 「-O1」总开关：默认 **性能向**（希冀用 clang++ 递归编编译器时**不会**带 Makefile 的 EXTRA，故默认须在此打开）
 //
-// 编译器命令行仍接收 `-O1`，但 **默认不会** 打开任何激进路径，效果与 **不加 -O1**
-// 基本一致（IR 中端、Codegen O1 特技、AST 循环交换 均不启用）。
+// 传 `-S -O1` 时：`IR 后端 + irOptimizeBlock（LICM/CSE/DCE）+ CodeGen 原 O1 特技 + AST 交换` 全部按子开关生效。
 //
-// 恢复历史「性能向 -O1」任选其一：
-//   • 编译编译器时：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1 make`
-//   • 运行时环境：`SYSY_CC_FORCE_AGGRESSIVE_O1=1`（本地/自管机；官方希冀未设则保持安全默认）
+// 若需临时 **AC 优先、与不加 -O1 同路径**：二选一
+//   • 编编译器：`clang++ ... -DSYSY_O1_FULL=0 ...`
+//   • 或运行评测时（若平台允许）：`SYSY_CC_DISABLE_ALL_OPTIMIZATIONS=1`
+//
+// 在未 `SYSY_O1_FULL` 的构建上强行开优化（极少用）：`SYSY_CC_FORCE_AGGRESSIVE_O1=1`
 //
 // 在「已开启激进」的前提下，仍可用 `SYSY_CC_NO_*` 细粒度关掉某一类（二分用）。
 // =============================================================================
 
 #ifndef SYSY_O1_FULL
-#define SYSY_O1_FULL 0
+#define SYSY_O1_FULL 1
 #endif
 
 // 为 true 时才启用：IR 后端 + irOptimizeBlock（LICM/CSE/DCE…）+ CodeGen 内所有原 `optO1_` 分支 + AST 交换
@@ -27,6 +28,7 @@ inline bool compilerUsesAggressiveO1(bool cliPassedO1) {
 #if SYSY_O1_FULL
   return !envFlagTruthy("SYSY_CC_DISABLE_ALL_OPTIMIZATIONS");
 #else
+  // 仅在用 -DSYSY_O1_FULL=0 编成「安全版」编译器时，可用环境变量再打回全开
   return envFlagTruthy("SYSY_CC_FORCE_AGGRESSIVE_O1");
 #endif
 }

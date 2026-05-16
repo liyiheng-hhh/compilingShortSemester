@@ -42,24 +42,18 @@
 
 拿到其中一种后，可以按下面顺序查（也可交给 Cursor 按文件跑）：
 
-### O1 与安全默认：`SYSY_CC_*`（逻辑在 `src/opt_config.h`）
+### O1 与性能默认：`SYSY_CC_*`（逻辑在 `src/opt_config.h`）
 
-**默认提交（AC 优先）**：官方只传 `-S -O1`、评测机**不设**环境变量且编译编译器时**不使用** `-DSYSY_O1_FULL=1` 时，`compilerUsesAggressiveO1` 为 **假**，等价于 **`optO1_` 全关**——与 **不加 `-O1`** 同一路径。这样整类易出 WA 的优化都**不参加** codegen：
+**默认提交（性能榜）**：`opt_config.h` 里 **`SYSY_O1_FULL` 默认为 1**（官方递归 `clang++` 不参与 Makefile EXTRA 亦然）。传入 `-S -O1` 且未设 **`SYSY_CC_DISABLE_ALL_OPTIMIZATIONS`** 时，启用 **IR 中端 + Codegen `-O1` + AST 交换**。
 
-- **`irOptimizeBlock`**：`ir_opt` 里 **LICM**（含单块/Global 前瞻）、**跨指令 CSE**、**常量折叠**（如对 `Mul`/`Sll`/`Add` 的代数变形）、**DCE** 等；
-- **`codegen`**：原 **`optO1_`** 下除常 magic、比较与下标捷径、内联等小径；
-- **`loopInterchangePass`**。
+**若需 AC 优先、压低 WA 猜疑**：编成 **`SYSY_O1_FULL=0`**，`compilerUsesAggressiveO1(-O1)` 为假直至设 **`SYSY_CC_FORCE_AGGRESSIVE_O1=1`**；或保留 `FULL=1` 但每次评测前设 **`SYSY_CC_DISABLE_ALL_OPTIMIZATIONS=1`**（取决于平台是否传环境）。
 
-**crc / sort** 等题若 WA 出在「移位语义已正确但被中端/Codegen O1 改坏」，默认即规避；若仍 WA，则疑点在前端 **lexer/parser/语义/默认 emit**（与是否 `-O1` 无关）。
-
-**要打性能榜**：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1 make`，或运行时 `SYSY_CC_FORCE_AGGRESSIVE_O1=1`。
-
-激进打开后，`SYSY_CC_NO_*` 仍可单独关掉某一子 pass 做二分：
+`SYSY_CC_NO_*` 用于在激进已开时二分某一类 pass：
 
 | 变量 | 为真时 |
 |------|--------|
-| `SYSY_CC_DISABLE_ALL_OPTIMIZATIONS` | 仅用 **`-DSYSY_O1_FULL=1` 编的编译器**时：再关掉整块激进 |
-| `SYSY_CC_FORCE_AGGRESSIVE_O1` | **未** `SYSY_O1_FULL` 时强制打开整块激进 `-O1` |
+| `SYSY_CC_DISABLE_ALL_OPTIMIZATIONS` | **`SYSY_O1_FULL!=0`** 编的编译器上关掉整块激进（应急） |
+| `SYSY_CC_FORCE_AGGRESSIVE_O1` | **`SYSY_O1_FULL=0`** 编成安全版时再强行打开整块激进 `-O1` |
 | `SYSY_CC_NO_AST_LOOP_INTERCHANGE` | 关掉 AST **转置循环交换** |
 | `SYSY_CC_NO_SIMPLE_WHILE_LICM` | 关掉 **两个单块 While LICM** |
 | `SYSY_CC_NO_CFG_LICM` | 关掉 **CFG LICM** |

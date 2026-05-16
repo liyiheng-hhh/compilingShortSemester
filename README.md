@@ -12,7 +12,7 @@
   - 推荐仅通过本仓库根目录 **`Makefile`** 所列 **`SRCS`** 参与构建；Docker 内编译请使用 **`BUILD_DIR=/tmp/compiler-build`**（或任意**未跟踪**目录），勿把构建副本提交进 Git。
 - **功能测试命令**：`compiler -S -o testcase.s testcase.sy`（路径在评测机上为绝对路径）。
 - **性能测试命令**：`compiler -S -o testcase.s testcase.sy -O1`
-- **`-O1` 与安全默认**：见 `src/opt_config.h`。默认（未定义 `SYSY_O1_FULL`、未设 `SYSY_CC_FORCE_AGGRESSIVE_O1`）下**接受 `-O1` 但不启用** IR 中端/Codegen 特技/AST 交换，与 **不加 `-O1` 同一路径**，优先保证隐藏点 **AC**；冲榜可在 `Makefile` 使用 `CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1` 或对运行环境设 `SYSY_CC_FORCE_AGGRESSIVE_O1=1`。
+- **`-O1` 默认行为**：见 `src/opt_config.h`。默认 **`SYSY_O1_FULL=1`**：`compiler … -O1` **启用** IR 中端 + Codegen O1 特技 + AST 交换；若需近似 O0 的安全性，编编译器时加 **`-DSYSY_O1_FULL=0`**，或（平台若支持）运行时设 **`SYSY_CC_DISABLE_ALL_OPTIMIZATIONS=1`**。
 
 生成汇编为 **64 位 RISC-V**，需能与官方 SysY 运行时一并汇编、链接并在指定 RISC-V Linux 环境运行；地址空间上需满足 **`-mcmodel=medany`**（或等价）的大地址模型约定。
 
