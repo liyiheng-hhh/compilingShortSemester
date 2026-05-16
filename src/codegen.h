@@ -2,6 +2,7 @@
 
 #include "ast.h"
 #include "ir.h"
+#include "opt_config.h"
 #include "semantic.h"
 
 #include <sstream>
@@ -17,18 +18,21 @@ using std::vector;
 
 class CodeGen {
 public:
-  CodeGen(Program &program, const Semantic &semantic, bool optO1 = false);
+  CodeGen(Program &program, const Semantic &semantic, const O1Profile &o1 = O1Profile{});
 
   string run();
 
-  /// True when compiling with -O1 (used by codegen helper fast paths).
-  bool optO1() const { return optO1_; }
+  /// Tier A+：Codegen 层 -O1 捷径（除常 magic、stride 等）
+  bool optO1() const { return o1Profile_.codegen; }
+
+  const O1Profile &o1Profile() const { return o1Profile_; }
 
   void emit(const string &line = "");
 
 private:
   Program &program_;
   const Semantic &semantic_;
+  O1Profile o1Profile_{};
   bool optO1_ = false;
   std::ostringstream out_;
   int labelId_ = 0;

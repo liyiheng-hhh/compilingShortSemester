@@ -1,6 +1,6 @@
 CXX ?= clang++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra
-# 可选：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=0 make` → 编成「-O1≈O0」保守版（默认见 src/opt_config.h，一般为性能全开）
+# 可选：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1 make` → 默认档 D；未设时 `-O1` 为档 A（Codegen）见 src/opt_config.h
 
 # 供 compile-all / size-report 递归扫描（空格分隔多个根目录）
 SY_DIRS ?= examples

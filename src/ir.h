@@ -5,6 +5,7 @@
 // 供活跃变量与槽位分配；发射仍遍历 insts。
 
 #include "ast.h"
+#include "opt_config.h"
 
 #include <cstdint>
 #include <string>
@@ -107,8 +108,7 @@ void irBuildFunction(FuncDef &def, const Semantic &semantic, IRFunction &out);
 // 由 insts 划分 leaders、填充 blocks[].begin/end/succ；insts 为空则 blocks 清空
 void irRefreshCFG(IRFunction &fn);
 
-// backendO1：已由 `compilerUsesAggressiveO1` 等规整后的「是否跑 IR 中端」标志
-void irOptimizeBlock(IRFunction &fn, bool backendO1);
+void irOptimizeBlock(IRFunction &fn, const O1Profile &profile);
 
 void irAssignSlots(IRFunction &fn);
 
