@@ -6,7 +6,7 @@
 #include <cstdlib>
 
 // =============================================================================
-// 分层 -O1（平台默认 **B**；A/C/D 见 EVAL_BUGLOG.md「升档计划」）
+// 分层 -O1（平台默认 **D**；回退见 EVAL_BUGLOG.md「升档计划」）
 //
 // | 档 | 内容 |
 // |----|------|
@@ -15,8 +15,8 @@
 // | C  | + 单块 While LICM + 算术 CSE |
 // | D  | + CFG LICM + store→load 前瞻 + AST 转置交换 |
 //
-// 默认（`SYSY_O1_FULL=0`、未设 `SYSY_O1_TIER`）：**B**（`SYSY_O1_DEFAULT_TIER`）。
-// 本地回退 A：`CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=1 make`。
+// 默认（`SYSY_O1_FULL=0`、未设 `SYSY_O1_TIER`）：**D**（`SYSY_O1_DEFAULT_TIER`）。
+// 本地回退：`CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=2`（B）或 `=1`（A）。
 // 全开 D：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1` 或 `SYSY_O1_TIER=D`。
 // =============================================================================
 
@@ -25,7 +25,7 @@
 #endif
 
 #ifndef SYSY_O1_DEFAULT_TIER
-#define SYSY_O1_DEFAULT_TIER 2
+#define SYSY_O1_DEFAULT_TIER 4
 #endif
 #if SYSY_O1_DEFAULT_TIER < 1 || SYSY_O1_DEFAULT_TIER > 4
 #error SYSY_O1_DEFAULT_TIER must be 1..4 (A..D)

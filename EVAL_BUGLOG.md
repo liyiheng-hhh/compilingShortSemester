@@ -20,45 +20,34 @@
 | 2026-05-15 | `irHoistLoopInvariantCFG` / `irHoistPureInvariantSimpleWhile` / `irHoistInvariantLoadGlobalSimpleWhile` | fixed | `-O1` 编译小段循环时栈溢出 / SIGSEGV | 外提后曾尾递归自调，可无限递归；改为有限轮迭代 +「一轮无外提则返回」 |
 | 2026-05-15 | `crc*` / `03_sort*` 等（含 `<<`/`>>` 的 SysY） | fixed（常见 WA） | 移位被误编译为加法 | `lexer`/`parser`/`semantic`/`ir_build`/`ir_opt`/`codegen` 补全 `<<`/`>>`；`ir_build` 对未知二元运算符改为报错 |
 | 2026-05-16 | `crc1` 等，**B 档** `-O1` | fixed | 输出 `0`，O0 为 `175` | IR 叶函数形参缓存在 `t4`–`t6`，`StoreLocal` 写栈未同步寄存器（`_xor` 循环一直用入口形参）；`codegen.cpp` `emitIr` `StoreLocal` 后 `mv t4,a0` 等 |
-| 2026-05-16 | 平台提交 | **提交 B 档** | — | `opt_config.h`：`SYSY_O1_DEFAULT_TIER=2`；希冀 `-O1` 即 B，无需环境变量 |
+| 2026-05-16 | 平台提交 B 档 | fixed | 全 AC | 形参缓存同步；`SYSY_O1_DEFAULT_TIER=2` |
+| 2026-05-16 | 平台提交 | **提交 D 档** | — | B 全 AC 后升档；`SYSY_O1_DEFAULT_TIER=4`；含 C（LICM+CSE）+ CFG LICM + store→load + 转置交换 |
 
 ---
 
 ## 提交与升档计划（2026-05-16）
 
-### 当前提交：**档 B**
+### 当前提交：**档 D**（含 B、C）
 
 | 项 | 说明 |
 |----|------|
-| 生效方式 | `compiler … -O1` 且未设 `SYSY_O1_TIER` → **B**（`SYSY_O1_DEFAULT_TIER=2`） |
-| 包含 | 档 **A** 全部 Codegen `-O1` + **IR 后端** + 中端 **常量折叠 + DCE** |
-| 不包含 | 单块/CFG LICM、store→load 前瞻、算术 CSE、AST 循环转置 |
-| 关键修复 | `codegen.cpp`：IR `StoreLocal` 同步 `irParamCache_`（`t4`–`t6`） |
-| 本地验证 | `performance/*.sy` 60 题 **B vs O0 全 OK**；`make check` 通过 |
+| 生效方式 | `compiler … -O1` → **D**（`SYSY_O1_DEFAULT_TIER=4`） |
+| **B** | IR + 常量折叠/DCE；`StoreLocal` 同步 `irParamCache_` |
+| **C** | + 单块 While LICM + 算术 CSE（`ir_opt.cpp`） |
+| **D** | + CFG LICM + store→load + AST 转置交换（`loop_interchange.cpp`） |
+| 本地验证 | 关键题 + 全 `performance/*.sy` **C/D vs O0 OK**；`make check` 通过 |
+| 风险 | 大题编译 **Killed/OOM**（CFG LICM）；可 `SYSY_CC_NO_CFG_LICM=1` 退回 C 行为 |
 
-回退仅 Codegen（不上 IR）：`CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=1 make clean all`。
+回退：**B** `CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=2 make`；**A** `=1`；仅 Codegen 无 IR。
 
-### 待升档：**C**（B 平台功能 AC 且性能有提升后再合）
+### 档 C / D 子开关（线上 WA 时远程二分）
 
-| 项 | 说明 |
-|----|------|
-| 相对 B 新增 | `irSimpleLicm` + `irArithmeticCse`（`fillO1ProfileFromTier` tier≥3） |
-| 实现位置 | `src/ir_opt.cpp`：`irHoistInvariantLoadGlobalSimpleWhile`、`irHoistPureInvariantSimpleWhile`、块内算术 CSE |
-| 本地开关 | `SYSY_O1_TIER=C` 或 `SYSY_O1_DEFAULT_TIER=3` 编编译器 |
-| 子开关 | `SYSY_CC_NO_SIMPLE_WHILE_LICM=1` 关 LICM，保留 C 档其余 |
-| 风险 | 历史曾对 crc/sort 敏感；修 B 的形参缓存后本地 **C vs O0 在 crc/sort 已通过**，但 LICM 仍可能在大循环/边界上 WA，需平台再验 |
-| 升档步骤 | 1）`SYSY_O1_DEFAULT_TIER=3`；2）`cmp_o1_tiers.sh performance/*.sy`；3）`make docker-test-performance` |
-
-### 待升档：**D**（C 稳定后再开）
-
-| 项 | 说明 |
-|----|------|
-| 相对 C 新增 | `irCfgLicm` + `irStoreLoadForward` + `astLoopInterchange` |
-| 实现位置 | `ir_opt.cpp` CFG LICM / store-load；`loop_interchange.cpp` + `main.cpp` 门控 |
-| 本地开关 | `SYSY_O1_TIER=D` 或 `SYSY_O1_FULL=1` / `SYSY_CC_FORCE_AGGRESSIVE_O1=1` |
-| 子开关 | `SYSY_CC_NO_CFG_LICM=1`（关 CFG LICM+store→load）；`SYSY_CC_NO_AST_LOOP_INTERCHANGE=1` |
-| 风险 | CFG LICM 支配矩阵 **OOM/Killed**（见上表 mitigated）；转置类题收益大但易语义边界 |
-| 升档步骤 | 同 C，最后跑 transpose / matmul / conv2d 子集 + 全 performance |
+| 环境变量 | 效果 |
+|----------|------|
+| `SYSY_CC_NO_SIMPLE_WHILE_LICM=1` | 关 C 的 LICM，其余保留 |
+| `SYSY_CC_NO_CFG_LICM=1` | 关 D 的 CFG LICM + store→load |
+| `SYSY_CC_NO_AST_LOOP_INTERCHANGE=1` | 关 D 的 AST 转置交换 |
+| `SYSY_CC_NO_IR_OPT=1` | 压回仅 A（Codegen） |
 
 ### 本地对拍命令
 
@@ -98,11 +87,11 @@ SYSY_O1_TIER=B ./compiler -S -O1 -o /tmp/x.s performance/crc1.sy
 | 档 | 开启内容 |
 |----|----------|
 | **A** | 仅 **Codegen** `-O1` 捷径 |
-| **B**（**平台默认**，`SYSY_O1_DEFAULT_TIER=2`） | + IR 发射；中端 **常量折叠 + DCE** |
+| **B** | + IR 发射；中端 **常量折叠 + DCE** |
 | **C** | + **单块 While LICM** + 算术 CSE |
-| **D** | + **CFG LICM** + store→load + **AST 转置交换** |
+| **D**（**平台默认**，`SYSY_O1_DEFAULT_TIER=4`） | + **CFG LICM** + store→load + **AST 转置交换** |
 
-本地试档：`SYSY_O1_TIER=A|C|D`。全开 D：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1`。
+本地回退：`SYSY_O1_TIER=B` 或 `CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=2`。
 
 `SYSY_CC_NO_*` 在对应档之上再关掉子 pass；`SYSY_CC_NO_IR_OPT` 压回 **仅 A**。
 

@@ -2492,16 +2492,6 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             emit("\tnegw\ta0, a0");
             return;
           }
-          int lg = intLog2Positive32(k);
-          if (k > 0 && lg >= 0) {
-            emitExpr(expr->lhs.get());
-            emit("\tli\ta2, " + to_string(k - 1));
-            emit("\tsraiw\tt1, a0, 31");
-            emit("\tand\tt1, t1, a2");
-            emit("\taddw\tt3, a0, t1");
-            emit("\tsraiw\ta0, t3, " + to_string(lg));
-            return;
-          }
           emitExpr(expr->lhs.get());
           if (optO1_ && emitSDivByConst(*this, k)) {
             return;
@@ -2624,21 +2614,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
               /* a0 = lhs */
             } else if (k == -1) {
               emit("\tnegw\ta0, a0");
-            } else if (k != 0 && k > 0) {
-              int lg = intLog2Positive32(k);
-              if (lg >= 0) {
-                emit("\tli\ta2, " + to_string(static_cast<int>(k - 1)));
-                emit("\tsraiw\tt1, a0, 31");
-                emit("\tand\tt1, t1, a2");
-                emit("\taddw\tt3, a0, t1");
-                emit("\tsraiw\ta0, t3, " + to_string(lg));
-              } else if (optO1_ && emitSDivByConst(*this, k)) {
-              } else {
-                emit("\tmv\tt2, a0");
-                emit("\tli\ta0, " + to_string(static_cast<int>(k)));
-                emit("\tdivw\ta0, t2, a0");
-              }
-            } else {
+            } else if (k != 0) {
               if (optO1_ && emitSDivByConst(*this, k)) {
               } else {
                 emit("\tmv\tt2, a0");
@@ -2656,15 +2632,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             if (k == 1 || k == -1) {
               emit("\tli\ta0, 0");
             } else if (k != 0) {
-              int lg = intLog2Positive32(k);
-              if (lg >= 1) {
-                uint32_t mask = static_cast<uint32_t>(k) - 1;
-                emit("\tsraiw\tt1, a0, 31");
-                emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
-                emit("\taddw\ta0, a0, t1");
-                emitAndA0Const(*this, mask);
-                emit("\tsubw\ta0, a0, t1");
-              } else if (optO1_ && emitSRemByConst(*this, k)) {
+              if (optO1_ && emitSRemByConst(*this, k)) {
               } else {
                 emit("\tmv\tt2, a0");
                 emit("\tli\ta0, " + to_string(static_cast<int>(k)));
@@ -2714,19 +2682,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
               /* a0 = lhs */
             } else if (k == -1) {
               emit("\tnegw\ta0, a0");
-            } else if (k != 0 && k > 0) {
-              int lg = intLog2Positive32(k);
-              if (lg >= 0) {
-                emit("\tli\ta2, " + to_string(static_cast<int>(k - 1)));
-                emit("\tsraiw\tt1, a0, 31");
-                emit("\tand\tt1, t1, a2");
-                emit("\taddw\tt3, a0, t1");
-                emit("\tsraiw\ta0, t3, " + to_string(lg));
-              } else if (optO1_ && emitSDivByConst(*this, k)) {
-              } else {
-                emit("\tdivw\ta0, a0, t4");
-              }
-            } else {
+            } else if (k != 0) {
               if (optO1_ && emitSDivByConst(*this, k)) {
               } else {
                 emit("\tdivw\ta0, a0, t4");
@@ -2741,15 +2697,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             if (k == 1 || k == -1) {
               emit("\tli\ta0, 0");
             } else if (k != 0) {
-              int lg = intLog2Positive32(k);
-              if (lg >= 1) {
-                uint32_t mask = static_cast<uint32_t>(k) - 1;
-                emit("\tsraiw\tt1, a0, 31");
-                emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
-                emit("\taddw\ta0, a0, t1");
-                emitAndA0Const(*this, mask);
-                emit("\tsubw\ta0, a0, t1");
-              } else if (optO1_ && emitSRemByConst(*this, k)) {
+              if (optO1_ && emitSRemByConst(*this, k)) {
               } else {
                 emit("\tremw\ta0, a0, t4");
               }
@@ -2927,14 +2875,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
                expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
                op == "/") {
       int32_t k = constAsInt(expr->rhs->constVal);
-      int lg = intLog2Positive32(k);
-      if (k > 0 && lg >= 0) {
-        emit("\tli\ta2, " + to_string(k - 1));
-        emit("\tsraiw\tt1, a0, 31");
-        emit("\tand\tt1, t1, a2");
-        emit("\taddw\tt3, a0, t1");
-        emit("\tsraiw\ta0, t3, " + to_string(lg));
-      } else if (emitSDivByConst(*this, k)) {
+      if (emitSDivByConst(*this, k)) {
         /* optimized by magic multiply */
       } else {
         emit("\tdivw\ta0, a0, a1");
@@ -2962,15 +2903,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
                expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
                op == "%") {
       int32_t k = constAsInt(expr->rhs->constVal);
-      int lg = intLog2Positive32(k);
-      if (lg >= 1) {
-        uint32_t mask = static_cast<uint32_t>(k) - 1;
-        emit("\tsraiw\tt1, a0, 31");
-        emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
-        emit("\taddw\ta0, a0, t1");
-        emitAndA0Const(*this, mask);
-        emit("\tsubw\ta0, a0, t1");
-      } else if (emitSRemByConst(*this, k)) {
+      if (emitSRemByConst(*this, k)) {
         /* optimized by magic multiply */
       } else {
         emit("\tremw\ta0, a0, a1");

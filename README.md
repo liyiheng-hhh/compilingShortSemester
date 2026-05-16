@@ -12,7 +12,7 @@
   - 推荐仅通过本仓库根目录 **`Makefile`** 所列 **`SRCS`** 参与构建；Docker 内编译请使用 **`BUILD_DIR=/tmp/compiler-build`**（或任意**未跟踪**目录），勿把构建副本提交进 Git。
 - **功能测试命令**：`compiler -S -o testcase.s testcase.sy`（路径在评测机上为绝对路径）。
 - **性能测试命令**：`compiler -S -o testcase.s testcase.sy -O1`
-- **`-O1` 分层（`src/opt_config.h`）**：平台提交默认 **档 B**（`SYSY_O1_DEFAULT_TIER=2`：IR + 常量折叠/DCE）。本地试档：`SYSY_O1_TIER=A|C|D`；回退仅 Codegen：`CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=1 make`。全开 D：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1`。升档记录见 **`EVAL_BUGLOG.md`**。
+- **`-O1` 分层（`src/opt_config.h`）**：平台提交默认 **档 D**（`SYSY_O1_DEFAULT_TIER=4`：含 C 的 LICM/CSE + CFG LICM + store→load + 转置交换）。本地回退：`SYSY_O1_TIER=B` 或 `CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=2 make`。记录见 **`EVAL_BUGLOG.md`**。
 
 生成汇编为 **64 位 RISC-V**，需能与官方 SysY 运行时一并汇编、链接并在指定 RISC-V Linux 环境运行；地址空间上需满足 **`-mcmodel=medany`**（或等价）的大地址模型约定。
 

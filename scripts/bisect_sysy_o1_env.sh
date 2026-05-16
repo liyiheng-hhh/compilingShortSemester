@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 对同一 .sy 在不同分层 -O1 下编译，打印汇编 MD5（需已 make）。
 #
-# 默认提交：未设 SYSY_O1_TIER 时为 **B**（见 opt_config.h SYSY_O1_DEFAULT_TIER）。
+# 默认提交：未设 SYSY_O1_TIER 时为 **D**（见 opt_config.h SYSY_O1_DEFAULT_TIER）。
 # 本地试档：SYSY_O1_TIER=B|C|D 或 SYSY_O1_FULL=1 编的 compiler。
 #
 #   ./scripts/bisect_sysy_o1_env.sh performance/matmul1.sy
