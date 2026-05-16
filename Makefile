@@ -1,6 +1,6 @@
 CXX ?= clang++
 CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra
-# 可选：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1 make` → AST 交换 + CFG LICM 全开（默认保守见 src/opt_config.h）
+# 可选：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1 make` → 评测参数 `-S -O1` 当真·全开（默认 AC 优先见 src/opt_config.h）
 
 # 供 compile-all / size-report 递归扫描（空格分隔多个根目录）
 SY_DIRS ?= examples

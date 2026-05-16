@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# 对同一 .sy 用不同 SYSY_CC_* 环境变量跑 -O1，打印是否编过 + 汇编 MD5，便于二分 WA 是否来自
-# AST 循环交换 / 单块 While LICM / CFG LICM / 整块 IR 中端优化。
+# 对同一 .sy 在不同 `SYSY_CC_*` 下跑 `-S -O1`，打印 CE/汇编 MD5。
 #
-# 用法（在仓库根，已 make 出 ./compiler）:
+# **当前默认提交**：未设 `SYSY_CC_FORCE_AGGRESSIVE_O1` / 未编译 `-DSYSY_O1_FULL=1` 时，
+# `-O1` ≈ 不换 IR、不开 Codegen 特技，与 **不加 -O1** 行为一致；本脚本第 0 行即该模式。
+#
+# 要打满性能再试子 pass，先加一行 `01_aggressive`（`FORCE=1`），再对 `NO_*` 二分。
+#
+# 用法（仓库根、`make` 后）:
 #   ./scripts/bisect_sysy_o1_env.sh path/to/fail.sy
-#
-# 若需对拍运行结果，自行对每种模式生成的 /tmp/sysy_bisect_*.s 链接运行（本脚本只比编译产物）。
 
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -37,16 +39,27 @@ run_mode() {
 
 echo "SY=$SY"
 echo "mode	status	..."
-run_mode "00_baseline"
+run_mode "00_safe_default_O1"
 
-run_mode "01_no_ast_loop_ix" SYSY_CC_NO_AST_LOOP_INTERCHANGE=1
+run_mode "01_force_aggressive_full" SYSY_CC_FORCE_AGGRESSIVE_O1=1
 
-run_mode "02_no_cfg_licm" SYSY_CC_NO_CFG_LICM=1
+run_mode "02_aggressive_no_ast_ix" \
+  SYSY_CC_FORCE_AGGRESSIVE_O1=1 \
+  SYSY_CC_NO_AST_LOOP_INTERCHANGE=1
 
-run_mode "03_no_simple_while_licm" SYSY_CC_NO_SIMPLE_WHILE_LICM=1
+run_mode "03_aggressive_no_cfg_licm" \
+  SYSY_CC_FORCE_AGGRESSIVE_O1=1 \
+  SYSY_CC_NO_CFG_LICM=1
 
-run_mode "04_no_all_licm" \
+run_mode "04_aggressive_no_simple_licm" \
+  SYSY_CC_FORCE_AGGRESSIVE_O1=1 \
+  SYSY_CC_NO_SIMPLE_WHILE_LICM=1
+
+run_mode "05_aggressive_no_licm_pair" \
+  SYSY_CC_FORCE_AGGRESSIVE_O1=1 \
   SYSY_CC_NO_SIMPLE_WHILE_LICM=1 \
   SYSY_CC_NO_CFG_LICM=1
 
-run_mode "05_no_ir_opt" SYSY_CC_NO_IR_OPT=1
+run_mode "06_aggressive_no_ir_mid" \
+  SYSY_CC_FORCE_AGGRESSIVE_O1=1 \
+  SYSY_CC_NO_IR_OPT=1

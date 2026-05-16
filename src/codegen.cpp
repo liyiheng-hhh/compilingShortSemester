@@ -734,7 +734,7 @@ void CodeGen::emitFunction(FuncDef &def) {
     bool useIr = false;
     if (kEnableIrBackend && optO1_ && irFunctionEligible(def)) {
       irBuildFunction(def, semantic_, irBuf);
-      irOptimizeBlock(irBuf);
+      irOptimizeBlock(irBuf, optO1_);
       irAssignSlots(irBuf);
       irVregSlots_ = irBuf.vregSlots;
       useIr = true;

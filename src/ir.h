@@ -107,7 +107,8 @@ void irBuildFunction(FuncDef &def, const Semantic &semantic, IRFunction &out);
 // 由 insts 划分 leaders、填充 blocks[].begin/end/succ；insts 为空则 blocks 清空
 void irRefreshCFG(IRFunction &fn);
 
-void irOptimizeBlock(IRFunction &fn);
+// backendO1：已由 `compilerUsesAggressiveO1` 等规整后的「是否跑 IR 中端」标志
+void irOptimizeBlock(IRFunction &fn, bool backendO1);
 
 void irAssignSlots(IRFunction &fn);
 

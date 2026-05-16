@@ -887,14 +887,12 @@ static uint64_t irInstructionFingerprint(const IRFunction &fn) {
   return h;
 }
 
-static void irOptimizeBlockOneRound(IRFunction &fn) {
-  // 本地/远程二分：`SYSY_CC_NO_SIMPLE_WHILE_LICM` / `SYSY_CC_NO_CFG_LICM`；
-  // 整块 IR 中端优化见 `irOptimizeBlock` 的 `SYSY_CC_NO_IR_OPT`。
-  if (!envFlagTruthy("SYSY_CC_NO_SIMPLE_WHILE_LICM")) {
+static void irOptimizeBlockOneRound(IRFunction &fn, bool backendO1) {
+  if (o1IrSimpleWhileLicmEffective(backendO1)) {
     irHoistInvariantLoadGlobalSimpleWhile(fn);
     irHoistPureInvariantSimpleWhile(fn);
   }
-  if (o1IrCfgLicmEnabled()) {
+  if (o1IrCfgLicmEffective(backendO1)) {
     irHoistLoopInvariantCFG(fn);
   }
   irRefreshCFG(fn);
@@ -1772,9 +1770,9 @@ static void irOptimizeBlockOneRound(IRFunction &fn) {
   irRefreshCFG(fn);
 }
 
-void irOptimizeBlock(IRFunction &fn) {
-  if (envFlagTruthy("SYSY_CC_NO_IR_OPT")) {
-    irRefreshCFG(fn);
+void irOptimizeBlock(IRFunction &fn, bool backendO1) {
+  irRefreshCFG(fn);
+  if (!o1IrMidendPipelineEffective(backendO1)) {
     return;
   }
   // Too many outer rounds makes compile time / memory prohibitive on large IR
@@ -1782,7 +1780,7 @@ void irOptimizeBlock(IRFunction &fn) {
   const int maxOuter = 6;
   for (int outer = 0; outer < maxOuter; ++outer) {
     const uint64_t before = irInstructionFingerprint(fn);
-    irOptimizeBlockOneRound(fn);
+    irOptimizeBlockOneRound(fn, backendO1);
     if (irInstructionFingerprint(fn) == before) {
       break;
     }

@@ -27,10 +27,11 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   Program program = parser.parseProgram();
   Semantic semantic(program);
   semantic.run();
-  if (o1AstLoopInterchangeEnabled(optO1)) {
+  const bool aggO1 = compilerUsesAggressiveO1(optO1);
+  if (o1AstLoopInterchangeEffective(aggO1)) {
     loopInterchangePass(program);
   }
-  CodeGen codegen(program, semantic, optO1);
+  CodeGen codegen(program, semantic, aggO1);
   writeFile(output, codegen.run());
   return 0;
 }
