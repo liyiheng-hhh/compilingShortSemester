@@ -190,10 +190,63 @@ static bool exprIsAndChain(Expr *e) {
     return false;
   }
   auto *b = static_cast<BinaryExpr *>(e);
-  if (b->op == "&&") {
-    return true;
+  return b->op == "&&";
+}
+
+static bool exprIsOrChain(Expr *e) {
+  if (!e || e->kind != ExprKind::Binary) {
+    return false;
   }
-  return false;
+  auto *b = static_cast<BinaryExpr *>(e);
+  return b->op == "||";
+}
+
+static void collectOrFactors(Expr *e, vector<ExprPtr> &out) {
+  if (!e) {
+    return;
+  }
+  if (e->kind == ExprKind::Binary) {
+    auto *b = static_cast<BinaryExpr *>(e);
+    if (b->op == "||") {
+      collectOrFactors(b->lhs.get(), out);
+      collectOrFactors(b->rhs.get(), out);
+      return;
+    }
+  }
+  if (ExprPtr c = cloneExpr(e)) {
+    out.push_back(std::move(c));
+  }
+}
+
+static StmtPtr nestIfFromOr(int line, vector<ExprPtr> &parts, StmtPtr thenStmt,
+                            StmtPtr elseStmt) {
+  StmtPtr cur = std::move(elseStmt);
+  StmtPtr thenCopy = cloneStmt(thenStmt.get());
+  for (int i = static_cast<int>(parts.size()) - 1; i >= 0; --i) {
+    StmtPtr thenBranch = thenCopy ? cloneStmt(thenCopy.get()) : nullptr;
+    auto ifs =
+        make_unique<IfStmt>(line, std::move(parts[static_cast<size_t>(i)]), std::move(thenBranch),
+                            std::move(cur));
+    cur = std::move(ifs);
+  }
+  return cur;
+}
+
+static StmtPtr rewriteWhileOr(WhileStmt *w, vector<ExprPtr> &parts) {
+  auto blk = make_unique<BlockStmt>(w->line);
+  StmtPtr bodyCopy = cloneStmt(w->body.get());
+  for (ExprPtr &p : parts) {
+    auto inner = make_unique<BlockStmt>(w->line);
+    if (bodyCopy) {
+      inner->items.push_back(cloneStmt(bodyCopy.get()));
+    }
+    inner->items.push_back(make_unique<ContinueStmt>(w->line));
+    blk->items.push_back(
+        make_unique<IfStmt>(w->line, std::move(p), std::move(inner), nullptr));
+  }
+  blk->items.push_back(make_unique<BreakStmt>(w->line));
+  auto one = make_unique<NumberExpr>(w->line, 1);
+  return make_unique<WhileStmt>(w->line, std::move(one), std::move(blk));
 }
 
 static StmtPtr nestIfFromAnd(int line, vector<ExprPtr> &parts, StmtPtr thenStmt,
@@ -253,6 +306,18 @@ static StmtPtr rewriteStmtTree(Stmt *s) {
   }
   case StmtKind::If: {
     auto *ifs = static_cast<IfStmt *>(s);
+    if (exprIsOrChain(ifs->cond.get())) {
+      vector<ExprPtr> parts;
+      collectOrFactors(ifs->cond.get(), parts);
+      if (parts.size() >= 2) {
+        StmtPtr thenS = cloneStmt(ifs->thenStmt.get());
+        StmtPtr elseS = cloneStmt(ifs->elseStmt.get());
+        StmtPtr nested = nestIfFromOr(ifs->line, parts, std::move(thenS), std::move(elseS));
+        if (nested) {
+          return nested;
+        }
+      }
+    }
     if (exprIsAndChain(ifs->cond.get())) {
       vector<ExprPtr> parts;
       collectAndFactors(ifs->cond.get(), parts);
@@ -278,6 +343,15 @@ static StmtPtr rewriteStmtTree(Stmt *s) {
   }
   case StmtKind::While: {
     auto *w = static_cast<WhileStmt *>(s);
+    if (exprIsOrChain(w->cond.get())) {
+      vector<ExprPtr> parts;
+      collectOrFactors(w->cond.get(), parts);
+      if (parts.size() >= 2) {
+        if (StmtPtr nw = rewriteWhileOr(w, parts)) {
+          return nw;
+        }
+      }
+    }
     if (exprIsAndChain(w->cond.get())) {
       vector<ExprPtr> parts;
       collectAndFactors(w->cond.get(), parts);

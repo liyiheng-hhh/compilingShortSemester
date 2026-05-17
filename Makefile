@@ -8,6 +8,7 @@ SY_DIRS ?= examples
 SRCDIR := src
 SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/parser.cpp \
 	$(SRCDIR)/semantic.cpp $(SRCDIR)/codegen.cpp $(SRCDIR)/ir_build.cpp $(SRCDIR)/ir_opt.cpp \
+	$(SRCDIR)/ir_loop_opt.cpp $(SRCDIR)/ir_regalloc.cpp \
 	$(SRCDIR)/loop_interchange.cpp $(SRCDIR)/loop_tiling.cpp $(SRCDIR)/land_lor_split.cpp \
 	$(SRCDIR)/knapsack_dp.cpp $(SRCDIR)/mm_hoist.cpp
 OBJS := $(SRCS:.cpp=.o)
@@ -82,6 +83,54 @@ PERF_SY ?= examples/smoke.sy
 perf-profile: compiler
 	@bash ./scripts/profile_sy.sh "$(PERF_SY)"
 
+# ---- 运行时性能评测（eval-runtime 工作流，对齐 Sisyphus 本地习惯）----
+#   make libsysy.a
+#   make runtime-eval SUITE=performance OPT=O1
+#   make runtime-summary
+#   make runtime-compare SUITE=performance
+#   make runtime-gate PERF_TIMEOUT=20
+#   make docker-runtime-perf
+#   make docker-runtime-gate
+libsysy.a: runtime/sysy_runtime.c
+	riscv64-linux-gnu-gcc -Wall -O3 -c -o runtime/sysy_runtime.o runtime/sysy_runtime.c
+	riscv64-linux-gnu-ar rcs $@ runtime/sysy_runtime.o
+	riscv64-linux-gnu-ranlib $@
+
+SUITE ?= performance
+OPT ?= O1
+RUNTIME_ROOT_DIR ?= tests/.out/runtime
+PERF_TIMEOUT ?= 20
+RUNTIME_CSV ?=
+
+runtime-eval: compiler libsysy.a
+	@chmod +x scripts/eval-runtime.sh scripts/eval_perf.sh scripts/runtime-summary.sh 2>/dev/null || true
+	@LIBSYSY="$(CURDIR)/libsysy.a" \
+	  RUNTIME_CSV="$(RUNTIME_CSV)" RUNTIME_ROOT="$(RUNTIME_ROOT_DIR)" \
+	  ./scripts/eval-runtime.sh "$(SUITE)" "$(OPT)"
+
+runtime-summary:
+	@chmod +x scripts/runtime-summary.sh 2>/dev/null || true
+	@./scripts/runtime-summary.sh "$(if $(RUNTIME_CSV),$(RUNTIME_CSV),$(RUNTIME_ROOT_DIR))"
+
+runtime-compare: compiler libsysy.a
+	@chmod +x scripts/eval-compare-opt.sh 2>/dev/null || true
+	@LIBSYSY="$(CURDIR)/libsysy.a" ./scripts/eval-compare-opt.sh "$(SUITE)" "$(PERF_TIMEOUT)"
+
+runtime-hotspots: compiler libsysy.a
+	@chmod +x scripts/eval-hotspots.sh 2>/dev/null || true
+	@LIBSYSY="$(CURDIR)/libsysy.a" ./scripts/eval-hotspots.sh "$(OPT)" "$(PERF_TIMEOUT)"
+
+runtime-gate: compiler libsysy.a
+	@chmod +x scripts/eval-gate.sh 2>/dev/null || true
+	@LIBSYSY="$(CURDIR)/libsysy.a" ./scripts/eval-gate.sh "$(PERF_TIMEOUT)"
+
+# 兼容旧名
+perf-eval: runtime-eval
+perf-summary: runtime-summary
+
+PERF_DIR ?= performance
+PERF_CSV ?=
+
 # O0 vs O1 汇编行数对比（需大测试树时设置 SY_DIRS）
 size-report: compiler
 	@./scripts/size_report_sy.sh "$(SY_DIRS)"
@@ -106,6 +155,12 @@ docker-test-functional:
 docker-test-performance:
 	@USE_O1=$${USE_O1:-1} ./scripts/docker-test-container.sh test "$(DOCKER_PERF)"
 
+docker-runtime-perf:
+	@./scripts/docker-test-container.sh perf performance O1
+
+docker-runtime-gate:
+	@./scripts/docker-test-container.sh gate $(PERF_TIMEOUT)
+
 # 多目录批量（空格分隔，传给 e2e-docker.sh 的 SY_TEST_DIRS）
 #   make docker-test-dirs SY_TEST_DIRS="/work/examples /work/2026初赛RISCV赛道功能用例/functional"
 docker-test-dirs:
@@ -113,4 +168,7 @@ docker-test-dirs:
 	@SY_TEST_DIRS="$(SY_TEST_DIRS)" ./scripts/docker-test-container.sh test ""
 
 .PHONY: all clean check sytest sytest-o0 sytest-o1 compile-all compile-all-o1 size-report perf-profile \
-	local-eval docker-local-eval docker-init docker-test-functional docker-test-performance docker-test-dirs
+	libsysy.a runtime-eval runtime-summary runtime-compare runtime-hotspots runtime-gate \
+	perf-eval perf-summary \
+	local-eval docker-local-eval docker-init docker-test-functional docker-test-performance \
+	docker-runtime-perf docker-runtime-gate docker-test-dirs

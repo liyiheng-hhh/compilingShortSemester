@@ -29,7 +29,7 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   Parser parser(lexer.run());
   Program program = parser.parseProgram();
   const O1Profile o1Prof = resolveO1Profile(optO1);
-  if (optO1) {
+  if (optO1 && !envFlagTruthy("SYSY_CC_DISABLE_PATTERN_PASSES")) {
     applyKnapsackDpPass(program);
     applyMmAikHoistPass(program);
   }

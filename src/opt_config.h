@@ -13,7 +13,9 @@
 // | A  | Codegen：除常 magic、2^k 除模、常量分支、下标 stride、leaf 参数缓存等 |
 // | B  | + IR 发射；中端仅 **常量折叠 + DCE**（无 LICM、无 store→load、无算术 CSE） |
 // | C  | + 单块 While LICM + 算术 CSE |
-// | D  | + CFG LICM + store→load 前瞻 + AST 转置交换 + 16×16 循环分块 |
+// | D  | + CFG LICM + store→load/GVN + AST 转置交换 + 16×16 循环分块 |
+//      |   + IR 图着色 regalloc（仅 leaf 函数；s1-s11 / fs0-fs11） |
+//      |   （允许有界局部数组走 IR；`land_lor_split` 拆 &&/||） |
 //
 // 默认（`SYSY_O1_FULL=0`、未设 `SYSY_O1_TIER`）：**D**（`SYSY_O1_DEFAULT_TIER`）。
 // 本地回退：`CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=2`（B）或 `=1`（A）。
@@ -40,6 +42,8 @@ struct O1Profile {
   bool irStoreLoadForward = false;
   bool irArithmeticCse = false;
   bool astLoopInterchange = false;
+  bool irLoopOpt = false;
+  bool irRegalloc = false;
 };
 
 inline int parseO1TierFromEnv() {
@@ -90,6 +94,8 @@ inline void fillO1ProfileFromTier(int tier, O1Profile &p) {
     p.irCfgLicm = true;
     p.irStoreLoadForward = true;
     p.astLoopInterchange = true;
+    p.irLoopOpt = true;
+    p.irRegalloc = true;
   }
 }
 
@@ -130,6 +136,13 @@ inline O1Profile resolveO1Profile(bool cliPassedO1) {
   if (envFlagTruthy("SYSY_CC_NO_CFG_LICM")) {
     p.irCfgLicm = false;
     p.irStoreLoadForward = false;
+    p.irLoopOpt = false;
+  }
+  if (envFlagTruthy("SYSY_CC_NO_IR_LOOP_OPT")) {
+    p.irLoopOpt = false;
+  }
+  if (envFlagTruthy("SYSY_CC_NO_IR_REGALLOC")) {
+    p.irRegalloc = false;
   }
   if (envFlagTruthy("SYSY_CC_NO_AST_LOOP_INTERCHANGE")) {
     p.astLoopInterchange = false;

@@ -2,6 +2,7 @@
 
 #include "ast.h"
 #include "ir.h"
+#include "ir_regalloc.h"
 #include "opt_config.h"
 #include "semantic.h"
 
@@ -61,6 +62,14 @@ private:
   int irSkippedVreg_ = -1;
   std::unordered_map<Symbol *, std::string> irParamCache_;
   std::unordered_map<Symbol *, Expr *> inlineArgMap_;
+  IRRegallocSummary irRegalloc_{};
+  bool irRegallocLeaf_ = false;
+
+  std::string irVregIntPhysReg(int vid) const;
+  std::string irVregFloatPhysReg(int vid) const;
+  void emitIrSaveCalleeSavedRegs(uint32_t mask);
+  void emitIrRestoreCalleeSavedRegs(uint32_t mask);
+  void emitIrSyncVregStackSlot(int vid, const std::string &valReg, bool asFloat);
 
   /// 内层循环行指针：sym + outerIv → 持有行基址的寄存器名
   struct RowBaseCache {

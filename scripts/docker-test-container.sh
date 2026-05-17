@@ -4,6 +4,8 @@
 #   SYSY_DOCKER_IMAGE=ubuntu:22.04 scripts/docker-test-container.sh init   # 默认已是 22.04；可改为 24.04 等
 #   scripts/docker-test-container.sh test /work/performance
 #   USE_O1=1 scripts/docker-test-container.sh test /work/performance
+#   scripts/docker-test-container.sh perf performance O1
+#   scripts/docker-test-container.sh gate 20
 #   SY_TEST_DIRS="/work/a /work/b" scripts/docker-test-container.sh test ""
 #   scripts/docker-test-container.sh shell
 #   scripts/docker-test-container.sh exec bash -lc 'riscv64-linux-gnu-gcc --version'
@@ -94,6 +96,22 @@ run_test() {
   docker exec "${exec_env[@]}" "$NAME" bash /work/scripts/e2e-docker.sh "$@"
 }
 
+run_perf() {
+  local suite="${1:-performance}"
+  local opt="${2:-O1}"
+  shift 2 || true
+  ensure
+  docker exec -w /work "$NAME" bash -lc \
+    "make -s compiler libsysy.a && chmod +x scripts/*.sh && ./scripts/eval-runtime.sh '$suite' '$opt' $*"
+}
+
+run_gate() {
+  local perf_timeout="${1:-20}"
+  ensure
+  docker exec -w /work "$NAME" bash -lc \
+    "make -s compiler libsysy.a && chmod +x scripts/*.sh && ./scripts/eval-gate.sh '$perf_timeout'"
+}
+
 case "${1:-init}" in
   init|ensure)
     ensure
@@ -101,6 +119,14 @@ case "${1:-init}" in
   test)
     shift
     run_test "${1:-}"
+    ;;
+  perf)
+    shift
+    run_perf "${1:-performance}" "${2:-O1}" "${@:3}"
+    ;;
+  gate)
+    shift
+    run_gate "${1:-20}"
     ;;
   exec)
     shift
@@ -126,7 +152,7 @@ case "${1:-init}" in
     fi
     ;;
   *)
-    echo "usage: $0 {init|test [dir]|exec cmd...|shell|start|stop|status}" >&2
+    echo "usage: $0 {init|test [dir]|perf [suite] [O0|O1]|gate [perf_sec]|exec cmd...|shell|start|stop|status}" >&2
     exit 2
     ;;
 esac

@@ -1,5 +1,7 @@
 #include "codegen.h"
 
+#include "ir_regalloc.h"
+
 #include "common.h"
 
 #include <algorithm>
@@ -752,17 +754,27 @@ void CodeGen::emitFunction(FuncDef &def) {
       irBuildFunction(def, semantic_, irBuf);
       irOptimizeBlock(irBuf, o1Profile_);
       irAssignSlots(irBuf);
+      irRegalloc_ = irRegallocGraphColor(irBuf, o1Profile_.irRegalloc);
+      irRegallocLeaf_ = !irFunctionContainsCall(irBuf);
       irVregSlots_ = irBuf.vregSlots;
       useIr = true;
       irVregCount_ = irBuf.nextVreg;
       irSpillBase_ = alignTo(currentFunction_->frameUsed, 16);
       int slotCount = irSlotCount(irBuf);
-      int need = irSpillBase_ + 8 * std::max(slotCount, 0);
+      int calleeExtra = 0;
+      for (int s = 1; s <= 11; ++s) {
+        if (irRegalloc_.usedCalleeSavedInt & (1u << static_cast<unsigned>(s - 1))) {
+          calleeExtra += 8;
+        }
+      }
+      int need = irSpillBase_ + 8 * std::max(slotCount, 0) + calleeExtra;
       irTotalFrame_ = max(frame, alignTo(need, 16));
       frame = irTotalFrame_;
       irVFloat_.assign(static_cast<size_t>(max(irVregCount_, 0)), 0);
       irInferPtrRegs(irBuf);
     } else {
+      irRegalloc_ = {};
+      irRegallocLeaf_ = false;
       irVregCount_ = 0;
       irSpillBase_ = 0;
       irTotalFrame_ = frame;
@@ -776,6 +788,9 @@ void CodeGen::emitFunction(FuncDef &def) {
     }
     emit("\tsd\ts0, -16(t0)");
     emit("\tmv\ts0, t0");
+    if (useIr && irRegalloc_.enabled && irRegalloc_.usedCalleeSavedInt != 0) {
+      emitIrSaveCalleeSavedRegs(irRegalloc_.usedCalleeSavedInt);
+    }
     emitStoreParams(def);
 
     // IR leaf functions: cache int params in t4-t6, float params in ft0-ft7
@@ -815,6 +830,9 @@ void CodeGen::emitFunction(FuncDef &def) {
       emit("\tfmv.w.x\tfa0, zero");
     }
     emit(currentFunction_->returnLabel + ":");
+    if (useIr && irRegalloc_.enabled && irRegalloc_.usedCalleeSavedInt != 0) {
+      emitIrRestoreCalleeSavedRegs(irRegalloc_.usedCalleeSavedInt);
+    }
     if (!leaf) {
       emit("\tld\tra, -8(s0)");
     }
@@ -825,6 +843,70 @@ void CodeGen::emitFunction(FuncDef &def) {
     emit("\t.size\t" + def.name + ", .-" + def.name);
     currentFunction_ = nullptr;
   }
+
+string CodeGen::irVregIntPhysReg(int vid) const {
+  if (!irRegalloc_.enabled || vid < 0 ||
+      static_cast<size_t>(vid) >= irRegalloc_.vreg.size()) {
+    return "";
+  }
+  const IRRegallocInfo &a = irRegalloc_.vreg[static_cast<size_t>(vid)];
+  if (a.intPhys < 0) {
+    return "";
+  }
+  return irRegallocIntRegName(irRegalloc_, a.intPhys, irRegallocLeaf_);
+}
+
+string CodeGen::irVregFloatPhysReg(int vid) const {
+  if (!irRegalloc_.enabled || vid < 0 ||
+      static_cast<size_t>(vid) >= irRegalloc_.vreg.size()) {
+    return "";
+  }
+  const IRRegallocInfo &a = irRegalloc_.vreg[static_cast<size_t>(vid)];
+  if (a.floatPhys < 0) {
+    return "";
+  }
+  return irRegallocFloatRegName(irRegalloc_, a.floatPhys);
+}
+
+void CodeGen::emitIrSyncVregStackSlot(int vid, const string &valReg, bool asFloat) {
+  if (!irRegalloc_.enabled || vid < 0 ||
+      vid >= static_cast<int>(irVregSlots_.size()) ||
+      irVregSlots_[static_cast<size_t>(vid)] < 0) {
+    return;
+  }
+  int off = irVregSlotOffset(vid);
+  if (asFloat) {
+    emitStoreMem("fsw", valReg, "s0", off);
+    return;
+  }
+  bool isPtr =
+      vid < static_cast<int>(irVPtr_.size()) && irVPtr_[static_cast<size_t>(vid)];
+  emitStoreMem(isPtr ? "sd" : "sw", valReg, "s0", off);
+}
+
+void CodeGen::emitIrSaveCalleeSavedRegs(uint32_t mask) {
+  int off = -24;
+  for (int s = 1; s <= 11; ++s) {
+    if (mask & (1u << static_cast<unsigned>(s - 1))) {
+      emit("\tsd\ts" + to_string(s) + ", " + to_string(off) + "(s0)");
+      off -= 8;
+    }
+  }
+}
+
+void CodeGen::emitIrRestoreCalleeSavedRegs(uint32_t mask) {
+  vector<pair<int, int>> slots;
+  int off = -24;
+  for (int s = 1; s <= 11; ++s) {
+    if (mask & (1u << static_cast<unsigned>(s - 1))) {
+      slots.push_back({s, off});
+      off -= 8;
+    }
+  }
+  for (auto it = slots.rbegin(); it != slots.rend(); ++it) {
+    emit("\tld\ts" + to_string(it->first) + ", " + to_string(it->second) + "(s0)");
+  }
+}
 
 int CodeGen::irVregSlotOffset(int vid) const {
   if (vid < 0) return -(irSpillBase_ + 8);
@@ -842,25 +924,49 @@ bool CodeGen::irVregIsPtr(int vid) const {
 
 void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
   if (vid < 0) return;
+  const bool ra = irRegalloc_.enabled;
   if (asFloat) {
-    if (irLastVregInFa0_ == vid) return;
+    if (!ra && irLastVregInFa0_ == vid) return;
+    string home = irVregFloatPhysReg(vid);
+    if (!home.empty()) {
+      if (home != "fa0") {
+        emit("\tfmv.s\tfa0, " + home);
+      }
+      irLastVregInFa0_ = ra ? -1 : vid;
+      return;
+    }
     int off = irVregSlotOffset(vid);
     emitLoadMem("flw", "fa0", "s0", off);
-    irLastVregInFa0_ = vid;
+    irLastVregInFa0_ = ra ? -1 : vid;
   } else {
-    if (irLastVregInA0_ == vid) return;
+    if (!ra && irLastVregInA0_ == vid) return;
+    string home = irVregIntPhysReg(vid);
+    if (!home.empty()) {
+      if (home != "a0") {
+        emit("\tmv\ta0, " + home);
+      }
+      irLastVregInA0_ = ra ? -1 : vid;
+      return;
+    }
     int off = irVregSlotOffset(vid);
     bool isPtr =
         vid < static_cast<int>(irVPtr_.size()) && irVPtr_[static_cast<size_t>(vid)];
     emitLoadMem(isPtr ? "ld" : "lw", "a0", "s0", off);
-    irLastVregInA0_ = vid;
+    irLastVregInA0_ = ra ? -1 : vid;
   }
 }
 
 // Load vreg into specified integer register (not a0), without tracking update
 void CodeGen::emitIrLoadVregTo(int vid, const string &reg) {
   if (vid < 0) return;
-  if (irLastVregInA0_ == vid) {
+  string home = irVregIntPhysReg(vid);
+  if (!home.empty()) {
+    if (home != reg) {
+      emit("\tmv\t" + reg + ", " + home);
+    }
+    return;
+  }
+  if (!irRegalloc_.enabled && irLastVregInA0_ == vid) {
     emit("\tmv\t" + reg + ", a0");
     return;
   }
@@ -889,25 +995,62 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
   // Normal spill: rotate register cache
   irSkippedLast_ = false;
   irSkippedVreg_ = -1;
+  string homeF = irVregFloatPhysReg(vid);
+  string homeI = irVregIntPhysReg(vid);
+  const bool ra = irRegalloc_.enabled;
+  if (asFloat && !homeF.empty()) {
+    if (homeF != "fa0") {
+      emit("\tfmv.s\t" + homeF + ", fa0");
+    }
+    emitIrSyncVregStackSlot(vid, homeF, true);
+    irLastVregInFa0_ = (ra || homeF != "fa0") ? -1 : vid;
+    return;
+  }
+  if (!asFloat && !homeI.empty()) {
+    if (homeI != "a0") {
+      emit("\tmv\t" + homeI + ", a0");
+    }
+    emitIrSyncVregStackSlot(vid, homeI, false);
+    irLastVregInA0_ = (ra || homeI != "a0") ? -1 : vid;
+    return;
+  }
   int off = irVregSlotOffset(vid);
   if (asFloat) {
     emitStoreMem("fsw", "fa0", "s0", off);
-    irLastVregInFa0_ = vid;
+    irLastVregInFa0_ = ra ? -1 : vid;
   } else {
     bool isPtr =
         vid < static_cast<int>(irVPtr_.size()) && irVPtr_[static_cast<size_t>(vid)];
     emitStoreMem(isPtr ? "sd" : "sw", "a0", "s0", off);
-    irLastVregInA0_ = vid;
+    irLastVregInA0_ = ra ? -1 : vid;
   }
 }
 
 // Spill previously skipped vreg if not yet stored (called before a0 is overwritten)
 void CodeGen::emitIrFlushSkipped() {
   if (irSkippedLast_ && irSkippedVreg_ >= 0) {
-    int off = irVregSlotOffset(irSkippedVreg_);
-    bool isPtr = irSkippedVreg_ < static_cast<int>(irVPtr_.size()) &&
-                 irVPtr_[static_cast<size_t>(irSkippedVreg_)];
-    emitStoreMem(isPtr ? "sd" : "sw", "a0", "s0", off);
+    const bool fl =
+        irSkippedVreg_ < static_cast<int>(irVFloat_.size()) &&
+        irVFloat_[static_cast<size_t>(irSkippedVreg_)] != 0;
+    string home = fl ? irVregFloatPhysReg(irSkippedVreg_) : irVregIntPhysReg(irSkippedVreg_);
+    if (!home.empty()) {
+      if (fl) {
+        if (home != "fa0") {
+          emit("\tfmv.s\t" + home + ", fa0");
+        }
+        emitIrSyncVregStackSlot(irSkippedVreg_, home, true);
+      } else {
+        if (home != "a0") {
+          emit("\tmv\t" + home + ", a0");
+        }
+        emitIrSyncVregStackSlot(irSkippedVreg_, home, false);
+      }
+    } else {
+      int off = irVregSlotOffset(irSkippedVreg_);
+      bool isPtr = irSkippedVreg_ < static_cast<int>(irVPtr_.size()) &&
+                   irVPtr_[static_cast<size_t>(irSkippedVreg_)];
+      emitStoreMem(isPtr ? "sd" : "sw", "a0", "s0", off);
+    }
     irSkippedLast_ = false;
     irSkippedVreg_ = -1;
   }
@@ -1375,13 +1518,36 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     emitIrStoreVreg(in.dst, true);
     markFl(in.dst);
     return;
-  case IROp::Copy:
-    emitIrLoadVreg(in.u, irVFloat_[static_cast<size_t>(in.u)] != 0);
-    emitIrStoreVreg(in.dst, irVFloat_[static_cast<size_t>(in.u)] != 0);
+  case IROp::Copy: {
+    const bool fl = in.u >= 0 && static_cast<size_t>(in.u) < irVFloat_.size() &&
+                    irVFloat_[static_cast<size_t>(in.u)];
+    string dstHome = fl ? irVregFloatPhysReg(in.dst) : irVregIntPhysReg(in.dst);
+    string srcHome = fl ? irVregFloatPhysReg(in.u) : irVregIntPhysReg(in.u);
+    if (!dstHome.empty() && !srcHome.empty()) {
+      if (fl) {
+        if (dstHome != srcHome) {
+          emit("\tfmv.s\t" + dstHome + ", " + srcHome);
+        }
+        emitIrSyncVregStackSlot(in.dst, dstHome, true);
+        irLastVregInFa0_ =
+            (irRegalloc_.enabled || dstHome != "fa0") ? -1 : in.dst;
+      } else {
+        if (dstHome != srcHome) {
+          emit("\tmv\t" + dstHome + ", " + srcHome);
+        }
+        emitIrSyncVregStackSlot(in.dst, dstHome, false);
+        irLastVregInA0_ =
+            (irRegalloc_.enabled || dstHome != "a0") ? -1 : in.dst;
+      }
+    } else {
+      emitIrLoadVreg(in.u, fl);
+      emitIrStoreVreg(in.dst, fl);
+    }
     if (in.dst >= 0 && in.u >= 0 && static_cast<size_t>(in.dst) < irVFloat_.size()) {
       irVFloat_[static_cast<size_t>(in.dst)] = irVFloat_[static_cast<size_t>(in.u)];
     }
     return;
+  }
   case IROp::LeaStr: {
     string label;
     for (const auto &lit : stringLiterals_) {

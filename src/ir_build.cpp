@@ -4,6 +4,8 @@
 #include "semantic.h"
 
 #include <algorithm>
+#include <climits>
+#include <cstdlib>
 #include <string>
 
 using namespace std;
@@ -11,7 +13,6 @@ using namespace std;
 static bool exprHasLandLor(Expr *e);
 static bool stmtIrShapeOk(Stmt *s);
 static bool blockIrShapeOk(const BlockStmt &block);
-static bool blockHasLocalArrayDecl(const BlockStmt &block);
 
 bool irExprHasLogicalShortCircuit(Expr *e) { return exprHasLandLor(e); }
 
@@ -50,23 +51,64 @@ static bool exprHasLandLor(Expr *e) {
   return false;
 }
 
-static bool blockHasLocalArrayDecl(const BlockStmt &block) {
+static int irMaxLocalArrayElems() {
+  const char *v = getenv("SYSY_IR_MAX_LOCAL_ARRAY_ELEMS");
+  if (!v || v[0] == '\0') {
+    return 2048;
+  }
+  char *end = nullptr;
+  long n = std::strtol(v, &end, 10);
+  if (end == v || n < 0) {
+    return 2048;
+  }
+  if (n == 0) {
+    return 0;
+  }
+  return static_cast<int>(n);
+}
+
+static int localArrayElemCount(Symbol *sym) {
+  if (!sym || !sym->isArray || sym->isParam || !sym->needsStorage) {
+    return 0;
+  }
+  if (sym->dims.empty()) {
+    return 1;
+  }
+  long long prod = 1;
+  for (int d : sym->dims) {
+    if (d <= 0) {
+      return INT_MAX;
+    }
+    prod *= d;
+    if (prod > INT_MAX) {
+      return INT_MAX;
+    }
+  }
+  return static_cast<int>(prod);
+}
+
+// 统计局部数组元素总数；超过预算则不宜走 IR（栈帧/LICM 压力）。
+static bool blockLocalArraysWithinBudget(const BlockStmt &block, int &totalElems, int budget) {
   for (const auto &sp : block.items) {
     Stmt *s = sp.get();
     if (s->kind == StmtKind::Decl) {
       for (VarDef &vd : static_cast<DeclStmt *>(s)->defs) {
-        Symbol *sym = vd.symbol;
-        if (sym->isArray && !sym->isParam && sym->needsStorage) {
-          return true;
+        const int n = localArrayElemCount(vd.symbol);
+        if (n <= 0) {
+          continue;
+        }
+        totalElems += n;
+        if (totalElems > budget) {
+          return false;
         }
       }
     } else if (s->kind == StmtKind::Block) {
-      if (blockHasLocalArrayDecl(*static_cast<BlockStmt *>(s))) {
-        return true;
+      if (!blockLocalArraysWithinBudget(*static_cast<BlockStmt *>(s), totalElems, budget)) {
+        return false;
       }
     }
   }
-  return false;
+  return true;
 }
 
 static bool stmtIrShapeOk(Stmt *s);
@@ -156,7 +198,18 @@ static bool stmtIrShapeOk(Stmt *s) {
 }
 
 bool irFunctionEligible(const FuncDef &def) {
-  return !blockHasLocalArrayDecl(*def.body) && blockIrShapeOk(*def.body);
+  if (envFlagTruthy("SYSY_CC_NO_IR_LOCAL_ARRAY")) {
+    int dummy = 0;
+    if (!blockLocalArraysWithinBudget(*def.body, dummy, 0)) {
+      return false;
+    }
+  } else {
+    int total = 0;
+    if (!blockLocalArraysWithinBudget(*def.body, total, irMaxLocalArrayElems())) {
+      return false;
+    }
+  }
+  return blockIrShapeOk(*def.body);
 }
 
 static int strideFor(Symbol *sym, size_t index) {

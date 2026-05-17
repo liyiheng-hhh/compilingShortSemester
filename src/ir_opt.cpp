@@ -1,6 +1,7 @@
 #include "ir.h"
 
 #include "common.h"
+#include "ir_loop_opt.h"
 #include "opt_config.h"
 
 #include <algorithm>
@@ -939,6 +940,28 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
   unordered_map<Key, int, KeyHash> cse;
   cse.reserve(256);
 
+  vector<IRInst> out;
+  out.reserve(fn.insts.size());
+
+  auto tryCseEarly = [&](const Key &k, int dst) -> bool {
+    if (!prof.irArithmeticCse || dst < 0) {
+      return false;
+    }
+    auto it = cse.find(k);
+    if (it == cse.end()) {
+      return false;
+    }
+    IRInst cp;
+    cp.op = IROp::Copy;
+    cp.dst = dst;
+    cp.u = it->second;
+    out.push_back(cp);
+    if (dst < static_cast<int>(copyUF.size())) {
+      copyUF[dst] = findRoot(copyUF, it->second);
+    }
+    return true;
+  };
+
   auto makeKeyComm = [&](const IRInst &in) -> Key {
     Key k{in.op, 0, 0, in.immI, in.isFloat};
     int ru = remap(in.u);
@@ -987,12 +1010,13 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
 
   // Store-to-load forwarding state (integrated into main loop)
   unordered_map<Symbol *, int> fwdStore;   // symbol → last stored vreg
-
-  vector<IRInst> out;
-  out.reserve(fn.insts.size());
+  unordered_map<int, int> fwdMem;          // address vreg → last stored value vreg
 
   for (IRInst in : fn.insts) {
     // Memory-clobbering operations invalidate forwarding
+    if (in.op == IROp::StoreMem || in.op == IROp::Call) {
+      fwdMem.clear();
+    }
     if (in.op == IROp::StoreMem || in.op == IROp::Call) {
       fwdStore.clear();
     }
@@ -1007,6 +1031,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     case IROp::Label:
       cse.clear();
       fwdStore.clear();
+      fwdMem.clear();
       for (int t = 0; t < n; ++t) {
         copyUF[static_cast<size_t>(t)] = t;
       }
@@ -1017,6 +1042,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     case IROp::J:
       cse.clear();
       fwdStore.clear();
+      fwdMem.clear();
       for (int t = 0; t < n; ++t) {
         copyUF[static_cast<size_t>(t)] = t;
       }
@@ -1027,6 +1053,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     case IROp::Beqz:
       cse.clear();
       fwdStore.clear();
+      fwdMem.clear();
       in.u = remap(in.u);
       out.push_back(in);
       continue;
@@ -1088,15 +1115,59 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
         }
       }
       fwdStore.erase(in.sym);
-      in.u = remap(in.u);
+      if (in.sym && in.dst >= 0) {
+        Key k{IROp::LoadGlobal, reinterpret_cast<uint64_t>(in.sym), 0, 0, in.isFloat};
+        if (tryCseEarly(k, in.dst)) {
+          continue;
+        }
+        cse[k] = in.dst;
+      }
+      out.push_back(in);
+      continue;
+    }
+    case IROp::LeaGlobal: {
+      if (in.sym && in.dst >= 0) {
+        Key k{IROp::LeaGlobal, reinterpret_cast<uint64_t>(in.sym), 0, 0, false};
+        if (tryCseEarly(k, in.dst)) {
+          continue;
+        }
+        cse[k] = in.dst;
+      }
+      out.push_back(in);
+      continue;
+    }
+    case IROp::LeaLocal: {
+      if (in.sym && in.dst >= 0) {
+        Key k{IROp::LeaLocal, reinterpret_cast<uint64_t>(in.sym), 0, 0, false};
+        if (tryCseEarly(k, in.dst)) {
+          continue;
+        }
+        cse[k] = in.dst;
+      }
+      out.push_back(in);
+      continue;
+    }
+    case IROp::LoadParamAddr: {
+      if (in.sym && in.dst >= 0) {
+        Key k{IROp::LoadParamAddr, reinterpret_cast<uint64_t>(in.sym), 0, 0, false};
+        if (tryCseEarly(k, in.dst)) {
+          continue;
+        }
+        cse[k] = in.dst;
+      }
       out.push_back(in);
       continue;
     }
     case IROp::LeaStr:
-    case IROp::LeaGlobal:
-    case IROp::LeaLocal:
-    case IROp::LoadParamAddr:
-    case IROp::StoreMem:
+    case IROp::StoreMem: {
+      in.u = remap(in.u);
+      in.v = remap(in.v);
+      if (prof.irStoreLoadForward && in.u >= 0) {
+        fwdMem[in.u] = in.v;
+      }
+      out.push_back(in);
+      continue;
+    }
     case IROp::Call:
     case IROp::Ret:
     case IROp::Nop:
@@ -1724,13 +1795,32 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
       if (!folded) cse[k] = in.dst;
       break;
     }
-    case IROp::LoadMem:
-      k = Key{in.op, static_cast<uint64_t>(static_cast<uint32_t>(in.u)), 0, 0, in.isFloat};
+    case IROp::LoadMem: {
+      int addr = remap(in.u);
+      if (prof.irStoreLoadForward) {
+        auto mf = fwdMem.find(addr);
+        if (mf != fwdMem.end() && mf->second >= 0 && in.dst >= 0) {
+          IRInst cp;
+          cp.op = IROp::Copy;
+          cp.dst = in.dst;
+          cp.u = remap(mf->second);
+          cp.isFloat = in.isFloat;
+          out.push_back(cp);
+          if (in.dst < static_cast<int>(copyUF.size())) {
+            copyUF[in.dst] = findRoot(copyUF, remap(mf->second));
+          }
+          folded = true;
+          break;
+        }
+      }
+      k = Key{in.op, static_cast<uint64_t>(static_cast<uint32_t>(addr)), 0, 0, in.isFloat};
       folded = tryCse(k);
       if (!folded) {
         cse[k] = in.dst;
       }
+      fwdMem.erase(addr);
       break;
+    }
     default:
       break;
     }
@@ -1784,13 +1874,25 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof) {
   if (!prof.irBackend || !prof.irMidend) {
     return;
   }
-  const int maxOuter = prof.irCfgLicm || prof.irSimpleLicm ? 12 : 4;
+  size_t complexity = fn.insts.size() + static_cast<size_t>(fn.blocks.size()) * 4u;
+  if (envFlagTruthy("SYSY_CC_IR_ECONOMY_MODE")) {
+    complexity *= 2;
+  }
+  int maxOuter = prof.irCfgLicm || prof.irSimpleLicm ? 12 : 4;
+  if (complexity > 12000) {
+    maxOuter = min(maxOuter, 4);
+  } else if (complexity > 6000) {
+    maxOuter = min(maxOuter, 8);
+  }
   for (int outer = 0; outer < maxOuter; ++outer) {
     const uint64_t before = irInstructionFingerprint(fn);
     irOptimizeBlockOneRound(fn, prof);
     if (irInstructionFingerprint(fn) == before) {
       break;
     }
+  }
+  if (prof.irLoopOpt) {
+    irOptimizeLoopsAndScalars(fn, prof);
   }
 }
 
