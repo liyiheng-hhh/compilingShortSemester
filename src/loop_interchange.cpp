@@ -542,6 +542,11 @@ static bool matchGemmSumAccum(const AssignStmt *as, const string &sumIv,
 
 // i-j-k 点积 → i-k-j：每行先清零 A[i][*]，再对 k 扫 j 累加（A[k][j] 行优先）
 static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
+  (void)items;
+  (void)k;
+  // i-k-j 交换在 k==i 项上须保留原 A[i][j]；当前实现仍 WA（many_mat_cal），先关闭保正确性。
+  return false;
+#if 0
   if (k + 1 >= items.size()) {
     return false;
   }
@@ -624,18 +629,21 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
   }
 
   const int line = outerW->line;
-  // 清零行：A[i][j] = 0
-  auto zeroBody = make_unique<BlockStmt>(line);
+  // k==i 项须用改写前的 A[i][j]：A[i][j] = C[i][i] * A[i][j]（不能先清零再累加）
+  auto diagBody = make_unique<BlockStmt>(line);
   {
-    auto zlhs = makeArray2DLVal(line, aSym, iIv, jIv);
-    zeroBody->items.push_back(make_unique<AssignStmt>(
-        line, std::move(zlhs), make_unique<NumberExpr>(line, 0)));
-    zeroBody->items.push_back(cloneAssign(midInc));
+    auto alhs = makeArray2DLVal(line, aSym, iIv, jIv);
+    auto cii = makeArray2DLVal(line, cSym, iIv, iIv);
+    auto arhs = makeArray2DLVal(line, aSym, iIv, jIv);
+    auto mul = make_unique<BinaryExpr>(line, "*", std::move(cii), std::move(arhs));
+    diagBody->items.push_back(
+        make_unique<AssignStmt>(line, std::move(alhs), std::move(mul)));
+    diagBody->items.push_back(cloneAssign(midInc));
   }
-  auto zeroWhile = make_unique<WhileStmt>(line, cloneExpr(midW->cond.get()), nullptr);
-  zeroWhile->body = std::move(zeroBody);
+  auto diagWhile = make_unique<WhileStmt>(line, cloneExpr(midW->cond.get()), nullptr);
+  diagWhile->body = std::move(diagBody);
 
-  // 累加：A[i][j] = A[i][j] + C[i][k] * A[k][j]
+  // k!=i：A[i][j] = A[i][j] + C[i][k] * A[k][j]
   auto accBody = make_unique<BlockStmt>(line);
   {
     auto alhs = makeArray2DLVal(line, aSym, iIv, jIv);
@@ -651,13 +659,20 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
   auto accWhile = make_unique<WhileStmt>(line, cloneExpr(midW->cond.get()), nullptr);
   accWhile->body = std::move(accBody);
 
-  auto kBody = make_unique<BlockStmt>(line);
+  auto kNeiBody = make_unique<BlockStmt>(line);
   if (StmtPtr jInit = cloneZeroInitAsAssign(outerBody->items[0].get())) {
-    kBody->items.push_back(std::move(jInit));
+    kNeiBody->items.push_back(std::move(jInit));
   } else {
     return false;
   }
-  kBody->items.push_back(std::move(accWhile));
+  kNeiBody->items.push_back(std::move(accWhile));
+  auto kNe = make_unique<BinaryExpr>(line, "!=",
+                                     make_unique<LValExpr>(line, kIv),
+                                     make_unique<LValExpr>(line, iIv));
+  auto kSkipI = make_unique<IfStmt>(line, std::move(kNe), std::move(kNeiBody), nullptr);
+
+  auto kBody = make_unique<BlockStmt>(line);
+  kBody->items.push_back(std::move(kSkipI));
   if (unique_ptr<AssignStmt> kInc = cloneAssign(
           dynamic_cast<const AssignStmt *>(innerBody->items[1].get()))) {
     kBody->items.push_back(std::move(kInc));
@@ -680,7 +695,7 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
   } else {
     return false;
   }
-  newOuterBody->items.push_back(std::move(zeroWhile));
+  newOuterBody->items.push_back(std::move(diagWhile));
   if (dynamic_cast<const DeclStmt *>(midBody->items[0].get()) != nullptr) {
     auto kd = make_unique<DeclStmt>(line, false, BaseType::Int);
     VarDef vd;
@@ -714,6 +729,7 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
                  std::move(newOuterWhile));
   }
   return true;
+#endif
 }
 
 static void processBlock(BlockStmt *blk) {

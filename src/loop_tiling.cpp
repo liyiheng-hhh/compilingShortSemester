@@ -412,6 +412,31 @@ static bool isSimpleInnerLoopBody(const BlockStmt *innerBody, const string &inne
          isIncByOne(dynamic_cast<const AssignStmt *>(innerBody->items[1].get()), innerIv);
 }
 
+static bool lvalIndexIsIv(const Expr *e, const string &iv) {
+  auto *lv = dynamic_cast<const LValExpr *>(e);
+  return lv && lv->name == iv && lv->indices.empty();
+}
+
+// B[i][j]=C[i][j] 等同索引拷贝：k-i-j 分块曾导致 h-10 类用例 WA，勿 tile。
+static bool isSameIndices2DArrayCopy(const AssignStmt *as, const string &rowIv,
+                                   const string &colIv) {
+  if (!as) {
+    return false;
+  }
+  auto *lhs = dynamic_cast<const LValExpr *>(as->lhs.get());
+  auto *rhs = dynamic_cast<const LValExpr *>(as->rhs.get());
+  if (!lhs || !rhs || lhs->indices.size() != 2 || rhs->indices.size() != 2) {
+    return false;
+  }
+  if (lhs->name == rhs->name) {
+    return false;
+  }
+  return lvalIndexIsIv(lhs->indices[0].get(), rowIv) &&
+         lvalIndexIsIv(lhs->indices[1].get(), colIv) &&
+         lvalIndexIsIv(rhs->indices[0].get(), rowIv) &&
+         lvalIndexIsIv(rhs->indices[1].get(), colIv);
+}
+
 // 内层体：可选首部 continue-skip if，若干 decl/assign，末尾 iv++。
 static bool collectInnerLoopCore(const BlockStmt *innerBody, const string &innerIv,
                                  vector<StmtPtr> *out) {
@@ -666,6 +691,10 @@ static bool tryTile3DKOuter(vector<StmtPtr> &items, size_t k) {
   }
   auto *innerBody = dynamic_cast<BlockStmt *>(innerW->body.get());
   if (!isSimpleInnerLoopBody(innerBody, innerIv)) {
+    return false;
+  }
+  if (auto *copyAs = dynamic_cast<const AssignStmt *>(innerBody->items[0].get());
+      isSameIndices2DArrayCopy(copyAs, midIv, innerIv)) {
     return false;
   }
 
