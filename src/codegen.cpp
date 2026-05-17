@@ -115,12 +115,36 @@ static bool emitSigned32DivByConstMagicPayload(CodeGen &cg, int32_t d) {
   return true;
 }
 
+// SysY 截断除法：n / 2^lg（lg>=0，除数为正 2 的幂）。
+static bool emitSDivByConstPow2Trunc(CodeGen &cg, int lg) {
+  if (lg < 0 || lg > 30) {
+    return false;
+  }
+  const int mask = (1 << lg) - 1;
+  cg.emit("\tsraiw\tt1, a0, 31");
+  if (mask >= -2048 && mask <= 2047) {
+    cg.emit("\tandi\tt1, t1, " + to_string(mask));
+  } else {
+    cg.emit("\tli\tt2, " + to_string(mask));
+    cg.emit("\tand\tt1, t1, t2");
+  }
+  cg.emit("\taddw\ta0, a0, t1");
+  cg.emit("\tsraiw\ta0, a0, " + to_string(lg));
+  return true;
+}
+
 // -O1: exact SysY 32-bit signed division by known constant.
 static bool emitSDivByConst(CodeGen &cg, int32_t d) {
   if (!cg.optO1() || d == 0 || d == 1 || d == -1) {
     return false;
   }
   cg.emit("\tsext.w\ta0, a0");
+  if (d > 0) {
+    const int lg = intLog2Positive32(d);
+    if (lg >= 0 && (static_cast<int32_t>(1) << lg) == d) {
+      return emitSDivByConstPow2Trunc(cg, lg);
+    }
+  }
   return emitSigned32DivByConstMagicPayload(cg, d);
 }
 
@@ -130,6 +154,18 @@ static bool emitSRemByConst(CodeGen &cg, int32_t d) {
   }
   cg.emit("\tmv\tt6, a0");
   cg.emit("\tsext.w\ta0, t6");
+  if (d > 0) {
+    const int lg = intLog2Positive32(d);
+    if (lg >= 0 && (static_cast<int32_t>(1) << lg) == d) {
+      if (!emitSDivByConstPow2Trunc(cg, lg)) {
+        return false;
+      }
+      cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
+      cg.emit("\tmulw\tt1, a0, t1");
+      cg.emit("\tsubw\ta0, t6, t1");
+      return true;
+    }
+  }
   if (!emitSigned32DivByConstMagicPayload(cg, d)) {
     return false;
   }
@@ -1050,6 +1086,17 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
                   size_t instIdx) {
   (void)def;
   if (tryEmitIrBuiltinCall(ir, in, instIdx)) {
+    return;
+  }
+  if (optO1_ && in.callee == "idx" && in.args.size() == 3 && in.dst >= 0) {
+    emitIrLoadVregTo(in.args[0], "t2");
+    emitIrLoadVregTo(in.args[2], "t1");
+    emit("\tmulw\tt2, t2, t1");
+    emitIrLoadVreg(in.args[1], false);
+    emit("\taddw\ta0, t2, a0");
+    irVFloat_[static_cast<size_t>(in.dst)] = 0;
+    irVPtr_[static_cast<size_t>(in.dst)] = 0;
+    emitIrStoreVreg(in.dst, false);
     return;
   }
   auto vIsPtr = [&](int v) -> bool { return irVregIsPtr(v); };
@@ -3765,11 +3812,37 @@ bool CodeGen::tryEmitInlineCall(CallExpr *expr) {
     return true;
   }
 
+bool CodeGen::tryEmitIdxCall(CallExpr *expr) {
+  Function *fn = expr->function;
+  if (!optO1_ || !fn || fn->runtime || fn->name != "idx" || expr->args.size() != 3) {
+    return false;
+  }
+  for (size_t i = 0; i < 3; ++i) {
+    if (!expr->args[i]->type.isIntScalar()) {
+      return false;
+    }
+  }
+  emitExpr(expr->args[0].get());
+  emitConvert(expr->args[0]->type, Type::scalar(BaseType::Int));
+  emit("\tmv\tt2, a0");
+  emitExpr(expr->args[2].get());
+  emitConvert(expr->args[2]->type, Type::scalar(BaseType::Int));
+  emit("\tmv\tt1, a0");
+  emit("\tmulw\tt2, t2, t1");
+  emitExpr(expr->args[1].get());
+  emitConvert(expr->args[1]->type, Type::scalar(BaseType::Int));
+  emit("\taddw\ta0, t2, a0");
+  return true;
+}
+
 void CodeGen::emitCall(CallExpr *expr) {
     if (tryEmitBuiltinBitwiseCall(expr)) {
       return;
     }
     if (tryEmitBuiltinRotCall(expr)) {
+      return;
+    }
+    if (tryEmitIdxCall(expr)) {
       return;
     }
     if (tryEmitInlineCall(expr)) {

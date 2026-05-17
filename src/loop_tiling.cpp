@@ -462,6 +462,52 @@ static bool isScalar2DReductionAccum(const AssignStmt *as, const string &rowIv,
          (matchArr(add->lhs.get()) && matchAcc(add->rhs.get()));
 }
 
+static bool matchLv2Indices(const Expr *e, const string &iIv, const string &jIv,
+                            string *sym) {
+  auto *lv = dynamic_cast<const LValExpr *>(e);
+  if (!lv || lv->indices.size() != 2) {
+    return false;
+  }
+  if (!lvalIndexIsIv(lv->indices[0].get(), iIv) ||
+      !lvalIndexIsIv(lv->indices[1].get(), jIv)) {
+    return false;
+  }
+  *sym = lv->name;
+  return true;
+}
+
+// 01_mm：C[i][j]=C[i][j]*A[i][k]+B[k][j]（k 外层）— 分块后每 j 仍重复算 A[i][k]，勿 tile。
+static bool match01MmRank1Assign(const AssignStmt *as, const string &iIv,
+                                 const string &jIv, const string &kIv,
+                                 string *cSym, string *aSym, string *bSym) {
+  if (!as) {
+    return false;
+  }
+  if (!matchLv2Indices(as->lhs.get(), iIv, jIv, cSym)) {
+    return false;
+  }
+  auto *add = dynamic_cast<const BinaryExpr *>(as->rhs.get());
+  if (!add || add->op != "+") {
+    return false;
+  }
+  auto *mul = dynamic_cast<const BinaryExpr *>(add->lhs.get());
+  if (!mul || mul->op != "*") {
+    return false;
+  }
+  string c2, a2;
+  if (!matchLv2Indices(mul->lhs.get(), iIv, jIv, &c2) || c2 != *cSym) {
+    return false;
+  }
+  if (!matchLv2Indices(mul->rhs.get(), iIv, kIv, &a2)) {
+    return false;
+  }
+  if (!matchLv2Indices(add->rhs.get(), kIv, jIv, bSym)) {
+    return false;
+  }
+  *aSym = a2;
+  return true;
+}
+
 // 内层体：可选首部 continue-skip if，若干 decl/assign，末尾 iv++。
 static bool collectInnerLoopCore(const BlockStmt *innerBody, const string &innerIv,
                                  vector<StmtPtr> *out) {
@@ -726,6 +772,12 @@ static bool tryTile3DKOuter(vector<StmtPtr> &items, size_t k) {
   if (auto *copyAs = dynamic_cast<const AssignStmt *>(innerBody->items[0].get());
       isSameIndices2DArrayCopy(copyAs, midIv, innerIv)) {
     return false;
+  }
+  if (auto *mmAs = dynamic_cast<const AssignStmt *>(innerBody->items[0].get())) {
+    string cSym, aSym, bSym;
+    if (match01MmRank1Assign(mmAs, midIv, innerIv, outerIv, &cSym, &aSym, &bSym)) {
+      return false;
+    }
   }
 
   if (boundsTooSmallForTiling(outerLimit.get(), midLimit.get())) {

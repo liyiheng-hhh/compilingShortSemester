@@ -182,6 +182,7 @@ private:
   bool tryEmitIrBuiltinCall(const IRFunction &ir, const IRInst &in, size_t instIdx);
 
   bool tryEmitInlineCall(CallExpr *expr);
+  bool tryEmitIdxCall(CallExpr *expr);
 
   bool tryEmitTailCallReturn(ReturnStmt &stmt);
 

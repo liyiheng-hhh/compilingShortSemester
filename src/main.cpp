@@ -2,6 +2,7 @@
 #include "common.h"
 #include "lexer.h"
 #include "knapsack_dp.h"
+#include "mm_hoist.h"
 #include "land_lor_split.h"
 #include "loop_interchange.h"
 #include "opt_config.h"
@@ -30,6 +31,7 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   const O1Profile o1Prof = resolveO1Profile(optO1);
   if (optO1) {
     applyKnapsackDpPass(program);
+    applyMmAikHoistPass(program);
   }
   if (o1AstLoopInterchangeEffective(o1Prof)) {
     loopInterchangePass(program);
