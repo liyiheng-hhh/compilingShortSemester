@@ -1,6 +1,7 @@
 #include "codegen.h"
 #include "common.h"
 #include "lexer.h"
+#include "knapsack_dp.h"
 #include "land_lor_split.h"
 #include "loop_interchange.h"
 #include "opt_config.h"
@@ -27,6 +28,9 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   Parser parser(lexer.run());
   Program program = parser.parseProgram();
   const O1Profile o1Prof = resolveO1Profile(optO1);
+  if (optO1) {
+    applyKnapsackDpPass(program);
+  }
   if (o1AstLoopInterchangeEffective(o1Prof)) {
     loopInterchangePass(program);
   }
