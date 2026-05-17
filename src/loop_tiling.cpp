@@ -437,6 +437,31 @@ static bool isSameIndices2DArrayCopy(const AssignStmt *as, const string &rowIv,
          lvalIndexIsIv(rhs->indices[1].get(), colIv);
 }
 
+// acc = acc + A[i][j]（或反向加）：分块改变浮点累加顺序 → h-10 等 WA。
+static bool isScalar2DReductionAccum(const AssignStmt *as, const string &rowIv,
+                                   const string &colIv) {
+  if (!as || !as->lhs || !as->lhs->indices.empty()) {
+    return false;
+  }
+  auto *add = dynamic_cast<const BinaryExpr *>(as->rhs.get());
+  if (!add || add->op != "+") {
+    return false;
+  }
+  const string &acc = as->lhs->name;
+  auto matchAcc = [&](const Expr *e) {
+    auto *lv = dynamic_cast<const LValExpr *>(e);
+    return lv && lv->name == acc && lv->indices.empty();
+  };
+  auto matchArr = [&](const Expr *e) {
+    auto *lv = dynamic_cast<const LValExpr *>(e);
+    return lv && lv->indices.size() == 2 &&
+           lvalIndexIsIv(lv->indices[0].get(), rowIv) &&
+           lvalIndexIsIv(lv->indices[1].get(), colIv);
+  };
+  return (matchAcc(add->lhs.get()) && matchArr(add->rhs.get())) ||
+         (matchArr(add->lhs.get()) && matchAcc(add->rhs.get()));
+}
+
 // 内层体：可选首部 continue-skip if，若干 decl/assign，末尾 iv++。
 static bool collectInnerLoopCore(const BlockStmt *innerBody, const string &innerIv,
                                  vector<StmtPtr> *out) {
@@ -595,6 +620,11 @@ static bool tryTile2DNest(vector<StmtPtr> &items, size_t k) {
   auto *innerBody = dynamic_cast<BlockStmt *>(innerW->body.get());
   vector<StmtPtr> core;
   if (!collectInnerLoopCore(innerBody, innerIv, &core)) {
+    return false;
+  }
+  if (auto *coreAs = dynamic_cast<const AssignStmt *>(core[0].get());
+      isSameIndices2DArrayCopy(coreAs, outerIv, innerIv) ||
+      isScalar2DReductionAccum(coreAs, outerIv, innerIv)) {
     return false;
   }
   if (boundsTooSmallForTiling(outerLimit.get(), innerLimit.get())) {

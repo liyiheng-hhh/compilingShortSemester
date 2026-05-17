@@ -22,7 +22,7 @@
 | 2026-05-16 | `crc1` 等，**B 档** `-O1` | fixed | 输出 `0`，O0 为 `175` | IR 叶函数形参缓存在 `t4`–`t6`，`StoreLocal` 写栈未同步寄存器（`_xor` 循环一直用入口形参）；`codegen.cpp` `emitIr` `StoreLocal` 后 `mv t4,a0` 等 |
 | 2026-05-16 | 平台提交 B 档 | fixed | 全 AC | 形参缓存同步；`SYSY_O1_DEFAULT_TIER=2` |
 | 2026-05-16 | 平台提交 | **提交 D 档** | — | B 全 AC 后升档；`SYSY_O1_DEFAULT_TIER=4`；含 C（LICM+CSE）+ CFG LICM + store→load + 转置交换 |
-| 2026-05-17 | `many_mat_cal-*` / `h-10-01` `h-10-03` MMC WA | fixed | O1 结果哈希与 O0 不一致 | `tryInterchangeGemmIjk` 先清零 `A[i][j]` 丢掉 `k==i` 时对原 `A[i][j]` 的项；已关闭该交换。`tryTile3DKOuter` 对 `B[i][j]=C[i][j]` 等同索引拷贝勿分块（h-10 主循环） |
+| 2026-05-17 | `many_mat_cal-*` / `h-10-01` `h-10-03` WA | fixed | O1 结果哈希与 O0 不一致 | 关闭错误 GEMM i-k-j 交换；`tryTile2DNest` 勿分块 `B[i][j]=C[i][j]` 等同索引拷贝、勿分块 `ans=ans+B[i][j]` 浮点归约（改变累加顺序） |
 
 ---
 
