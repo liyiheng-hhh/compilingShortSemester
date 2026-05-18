@@ -20,6 +20,15 @@ bool irFunctionContainsCall(const IRFunction &fn) {
   return false;
 }
 
+static bool irFunctionUsesLocalSym(const IRFunction &fn) {
+  for (const IRInst &in : fn.insts) {
+    if (in.op == IROp::LoadLocal || in.op == IROp::StoreLocal) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static void markVregTypes(const IRFunction &fn, vector<char> &isFloat) {
   const int nv = fn.nextVreg;
   isFloat.assign(static_cast<size_t>(max(nv, 0)), 0);
@@ -189,10 +198,16 @@ static void computeLiveIn(IRFunction &fn, vector<vector<char>> &liveIn) {
   }
 }
 
-static vector<int> buildIntPool(bool leaf) {
-  (void)leaf;
-  // 仅用 callee-saved s1-s11，避免与 leaf 参数缓存 (t4-t6) 及调用约定冲突
+static vector<int> buildIntPool(bool internalCall) {
   vector<int> pool;
+  if (!internalCall) {
+    // 无体内 Call：caller-saved t3–t6（勿用 t0–t2：帧/setup 与 codegen 临时）
+    // 与形参缓存互斥：codegen 在 regalloc 开启时不建 t4–t6 缓存
+    for (int t = 3; t <= 6; ++t) {
+      pool.push_back(t);
+    }
+    return pool;
+  }
   for (int s = 1; s <= 11; ++s) {
     pool.push_back(100 + s);
   }
@@ -220,12 +235,13 @@ static string poolEntryName(int code) {
   return "";
 }
 
-const char *irRegallocIntRegName(const IRRegallocSummary &sum, int physIdx, bool leafPool) {
+const char *irRegallocIntRegName(const IRRegallocSummary &sum, int physIdx,
+                                 bool internalCallPool) {
   (void)sum;
   static thread_local string buf;
-  static vector<int> leaf = buildIntPool(true);
-  static vector<int> nonleaf = buildIntPool(false);
-  const vector<int> &pool = leafPool ? leaf : nonleaf;
+  static vector<int> noCall = buildIntPool(false);
+  static vector<int> withCall = buildIntPool(true);
+  const vector<int> &pool = internalCallPool ? withCall : noCall;
   if (physIdx < 0 || physIdx >= static_cast<int>(pool.size())) {
     return "";
   }
@@ -296,10 +312,9 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
   }
 
   sum.hasCall = irFunctionContainsCall(fn);
-  const bool leaf = !sum.hasCall;
-
-  // 含调用的函数：IR 中 LoadLocal/StoreLocal 与 vreg 物理寄存器易不同步，暂不着色
-  if (sum.hasCall) {
+  const bool internalCall = sum.hasCall;
+  // 含体内 Call：LoadLocal/StoreLocal 与 phys reg 易不同步，暂不着色
+  if (internalCall) {
     sum.vreg.assign(static_cast<size_t>(nv), IRRegallocInfo{});
     return sum;
   }
@@ -384,7 +399,7 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
     addInterferenceAt(atOp);
   }
 
-  vector<int> intPool = buildIntPool(leaf);
+  vector<int> intPool = buildIntPool(internalCall);
   vector<int> floatPool = buildFloatPool();
   vector<int> icol = colorGraph(nv, inInt, adjInt, intPool);
   vector<int> fcol = colorGraph(nv, inFloat, adjFloat, floatPool);
@@ -425,5 +440,6 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
     sum.vreg[static_cast<size_t>(v)] = info;
   }
   sum.enabled = true;
+  sum.syncStackSlots = irFunctionUsesLocalSym(fn);
   return sum;
 }

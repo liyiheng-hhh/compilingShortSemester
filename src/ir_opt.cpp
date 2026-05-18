@@ -3,6 +3,7 @@
 #include "common.h"
 #include "ir_loop_opt.h"
 #include "opt_config.h"
+#include "semantic.h"
 
 #include <algorithm>
 #include <climits>
@@ -1866,13 +1867,130 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
   irRefreshCFG(fn);
 }
 
-void irOptimizeBlock(IRFunction &fn, const O1Profile &prof) {
+static Function *irLookupFunction(const Semantic &sem, const string &callee) {
+  for (const auto &kv : sem.functions()) {
+    if (kv.second && kv.second->asmName == callee) {
+      return kv.second;
+    }
+  }
+  return nullptr;
+}
+
+static ReturnStmt *irSingleReturnStmt(FuncDef *def) {
+  if (!def || !def->body || def->body->items.size() != 1) {
+    return nullptr;
+  }
+  Stmt *stmt = def->body->items[0].get();
+  if (stmt->kind != StmtKind::Return) {
+    return nullptr;
+  }
+  auto *ret = static_cast<ReturnStmt *>(stmt);
+  return ret->expr ? ret : nullptr;
+}
+
+static bool irScalarIntLVal(Expr *e, Symbol *&symOut) {
+  if (!e || e->kind != ExprKind::LVal) {
+    return false;
+  }
+  auto *lv = static_cast<LValExpr *>(e);
+  if (!lv->indices.empty() || !lv->symbol || lv->symbol->isArray ||
+      lv->type.base != BaseType::Int || lv->type.isPointer) {
+    return false;
+  }
+  symOut = lv->symbol;
+  return true;
+}
+
+// 内联 return param % global 或 return global % param（如 hash）
+static bool irTryInlineModGlobalCall(IRFunction &fn, const IRInst &call,
+                                     FuncDef *calleeDef, vector<IRInst> &out) {
+  if (call.args.size() != 1 || call.callArgPtr.size() != 1 ||
+      call.callArgPtr[0] != 0) {
+    return false;
+  }
+  ReturnStmt *ret = irSingleReturnStmt(calleeDef);
+  if (!ret || calleeDef->params.size() != 1 || calleeDef->params[0].isArray ||
+      calleeDef->params[0].base != BaseType::Int || !calleeDef->params[0].symbol) {
+    return false;
+  }
+  Symbol *paramSym = calleeDef->params[0].symbol;
+  if (ret->expr->kind != ExprKind::Binary) {
+    return false;
+  }
+  auto *bin = static_cast<BinaryExpr *>(ret->expr.get());
+  if (bin->op != "%") {
+    return false;
+  }
+  Symbol *lhs = nullptr;
+  Symbol *rhs = nullptr;
+  if (!irScalarIntLVal(bin->lhs.get(), lhs) || !irScalarIntLVal(bin->rhs.get(), rhs)) {
+    return false;
+  }
+  Symbol *globalSym = nullptr;
+  int argVreg = call.args[0];
+  if (lhs == paramSym && rhs->isGlobal && !rhs->isArray) {
+    globalSym = rhs;
+  } else if (rhs == paramSym && lhs->isGlobal && !lhs->isArray) {
+    globalSym = lhs;
+  } else {
+    return false;
+  }
+
+  int modV = fn.allocVreg();
+  IRInst lg;
+  lg.op = IROp::LoadGlobal;
+  lg.dst = modV;
+  lg.sym = globalSym;
+  lg.isFloat = false;
+  out.push_back(lg);
+
+  IRInst rem;
+  rem.op = IROp::Rem;
+  rem.dst = call.dst;
+  rem.u = argVreg;
+  rem.v = modV;
+  out.push_back(rem);
+  return true;
+}
+
+static void irInlineTrivialCalls(IRFunction &fn, const Semantic &sem) {
+  if (envFlagTruthy("SYSY_CC_NO_IR_INLINE")) {
+    return;
+  }
+  vector<IRInst> rebuilt;
+  rebuilt.reserve(fn.insts.size());
+  for (const IRInst &in : fn.insts) {
+    if (in.op != IROp::Call || in.callee.empty()) {
+      rebuilt.push_back(in);
+      continue;
+    }
+    Function *fnSym = irLookupFunction(sem, in.callee);
+    if (!fnSym || fnSym->runtime || fnSym->variadic || fnSym->injectLineArgument ||
+        fnSym->ret != BaseType::Int || !fnSym->def) {
+      rebuilt.push_back(in);
+      continue;
+    }
+    vector<IRInst> repl;
+    if (irTryInlineModGlobalCall(fn, in, fnSym->def, repl)) {
+      rebuilt.insert(rebuilt.end(), repl.begin(), repl.end());
+    } else {
+      rebuilt.push_back(in);
+    }
+  }
+  fn.insts = std::move(rebuilt);
+}
+
+void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *semantic) {
   irRefreshCFG(fn);
   if (envFlagTruthy("SYSY_CC_IR_EMIT_ONLY")) {
     return;
   }
   if (!prof.irBackend || !prof.irMidend) {
     return;
+  }
+  if (semantic) {
+    irInlineTrivialCalls(fn, *semantic);
+    irRefreshCFG(fn);
   }
   size_t complexity = fn.insts.size() + static_cast<size_t>(fn.blocks.size()) * 4u;
   if (envFlagTruthy("SYSY_CC_IR_ECONOMY_MODE")) {

@@ -15,15 +15,17 @@ struct IRRegallocInfo {
 struct IRRegallocSummary {
   bool enabled = false;
   bool hasCall = false;
+  bool syncStackSlots = false; // 有 LoadLocal/StoreLocal 时写回 vreg 栈槽
   uint32_t usedCalleeSavedInt = 0; // bit i => s(i+1) 需在序言保存
   std::vector<IRRegallocInfo> vreg;
 };
 
 bool irFunctionContainsCall(const IRFunction &fn);
 
-// 在 irAssignSlots 之后调用；为 vreg 分配物理寄存器（图着色，仅无 Call 的 leaf）
+// 在 irAssignSlots 之后调用。无体内 Call 时用 t3–t6；含 Call 时暂不着色（LoadLocal 同步）
 IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled);
 
-const char *irRegallocIntRegName(const IRRegallocSummary &sum, int physIdx, bool leafPool);
+const char *irRegallocIntRegName(const IRRegallocSummary &sum, int physIdx,
+                                 bool internalCallPool);
 
 const char *irRegallocFloatRegName(const IRRegallocSummary &sum, int physIdx);

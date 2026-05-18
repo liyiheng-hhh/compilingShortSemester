@@ -752,10 +752,10 @@ void CodeGen::emitFunction(FuncDef &def) {
     bool useIr = false;
     if (kEnableIrBackend && o1Profile_.irBackend && irFunctionEligible(def)) {
       irBuildFunction(def, semantic_, irBuf);
-      irOptimizeBlock(irBuf, o1Profile_);
+      irOptimizeBlock(irBuf, o1Profile_, &semantic_);
       irAssignSlots(irBuf);
       irRegalloc_ = irRegallocGraphColor(irBuf, o1Profile_.irRegalloc);
-      irRegallocLeaf_ = !irFunctionContainsCall(irBuf);
+      irRegallocLeaf_ = irFunctionContainsCall(irBuf);
       irVregSlots_ = irBuf.vregSlots;
       useIr = true;
       irVregCount_ = irBuf.nextVreg;
@@ -795,7 +795,7 @@ void CodeGen::emitFunction(FuncDef &def) {
 
     // IR leaf functions: cache int params in t4-t6, float params in ft0-ft7
     irParamCache_.clear();
-    if (useIr && leaf) {
+    if (useIr && leaf && !irRegalloc_.enabled) {
       vector<ParamType> ptypes;
       for (const Param &p : def.params) {
         ptypes.push_back(ParamType{p.base, p.isArray, p.dims});
@@ -869,7 +869,7 @@ string CodeGen::irVregFloatPhysReg(int vid) const {
 }
 
 void CodeGen::emitIrSyncVregStackSlot(int vid, const string &valReg, bool asFloat) {
-  if (!irRegalloc_.enabled || vid < 0 ||
+  if (!irRegalloc_.enabled || !irRegalloc_.syncStackSlots || vid < 0 ||
       vid >= static_cast<int>(irVregSlots_.size()) ||
       irVregSlots_[static_cast<size_t>(vid)] < 0) {
     return;

@@ -108,7 +108,8 @@ void irBuildFunction(FuncDef &def, const Semantic &semantic, IRFunction &out);
 // 由 insts 划分 leaders、填充 blocks[].begin/end/succ；insts 为空则 blocks 清空
 void irRefreshCFG(IRFunction &fn);
 
-void irOptimizeBlock(IRFunction &fn, const O1Profile &profile);
+void irOptimizeBlock(IRFunction &fn, const O1Profile &profile,
+                     const Semantic *semantic = nullptr);
 
 void irAssignSlots(IRFunction &fn);
 
