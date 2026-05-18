@@ -141,117 +141,117 @@ void irRefreshCFG(IRFunction &fn) {
 // Single-block while: Label L; body (no inner Label); J L. Hoist LoadGlobal(s)
 // with no StoreGlobal to the same symbol in the body and no Call in the body.
 static void irHoistInvariantLoadGlobalSimpleWhile(IRFunction &fn) {
-  constexpr int kMaxRounds = 4096;
+  // 每轮只外提一个 while；禁止 allocVreg；轮次过多会把 prelude/Copy 堆满（reduce 万行 asm）
+  constexpr int kMaxRounds = 16;
+  const size_t instBudget0 = fn.insts.size();
   for (int round = 0; round < kMaxRounds; ++round) {
     vector<IRInst> &inst = fn.insts;
     const size_t n = inst.size();
+    if (n > instBudget0 * 3u + 256u) {
+      return;
+    }
     bool hoistedThisRound = false;
     for (size_t i = 0; i + 2 < n; ++i) {
-    if (inst[i].op != IROp::Label) {
-      continue;
-    }
-    const string &lab = inst[i].ext;
-    size_t j = i + 1;
-    while (j < n && inst[j].op != IROp::Label) {
-      ++j;
-    }
-    if (j <= i + 1 || inst[j - 1].op != IROp::J || inst[j - 1].ext != lab) {
-      continue;
-    }
-    const size_t bodyStart = i + 1;
-    const size_t bodyEnd = j - 2;
-    bool hasCall = false;
-    for (size_t k = bodyStart; k <= bodyEnd; ++k) {
-      if (inst[k].op == IROp::Call) {
-        hasCall = true;
-        break;
-      }
-    }
-    if (hasCall) {
-      continue;
-    }
-    vector<pair<Symbol *, IRInst>> prelude;
-    unordered_map<Symbol *, int> symToLoadVreg;
-    unordered_map<Symbol *, int> symToLeaVreg;
-    for (size_t k = bodyStart; k <= bodyEnd; ++k) {
-      if (inst[k].op != IROp::LoadGlobal && inst[k].op != IROp::LeaGlobal) {
+      if (inst[i].op != IROp::Label) {
         continue;
       }
-      Symbol *sym = inst[k].sym;
-      if (!sym) {
+      const string &lab = inst[i].ext;
+      size_t j = i + 1;
+      while (j < n && inst[j].op != IROp::Label) {
+        ++j;
+      }
+      if (j <= i + 1 || inst[j - 1].op != IROp::J || inst[j - 1].ext != lab) {
         continue;
       }
-      bool stored = false;
-      for (size_t t = bodyStart; t <= bodyEnd; ++t) {
-        if (inst[t].op == IROp::StoreGlobal && inst[t].sym == sym) {
-          stored = true;
+      const size_t bodyStart = i + 1;
+      const size_t bodyEnd = j - 2;
+      bool hasCall = false;
+      for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+        if (inst[k].op == IROp::Call) {
+          hasCall = true;
           break;
         }
       }
-      if (stored) {
+      if (hasCall) {
         continue;
       }
-      if (inst[k].op == IROp::LoadGlobal) {
-        if (symToLoadVreg.count(sym)) {
+      vector<IRInst> prelude;
+      unordered_map<Symbol *, int> symToLoadVreg;
+      unordered_map<Symbol *, int> symToLeaVreg;
+      for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+        if (inst[k].op != IROp::LoadGlobal && inst[k].op != IROp::LeaGlobal) {
           continue;
         }
-        int h = fn.allocVreg();
-        symToLoadVreg[sym] = h;
-        IRInst ld = inst[k];
-        ld.dst = h;
-        prelude.push_back({sym, ld});
-      } else {
-        if (symToLeaVreg.count(sym)) {
+        Symbol *sym = inst[k].sym;
+        if (!sym) {
           continue;
         }
-        int h = fn.allocVreg();
-        symToLeaVreg[sym] = h;
-        IRInst lea = inst[k];
-        lea.dst = h;
-        prelude.push_back({sym, lea});
-      }
-    }
-    if (prelude.empty()) {
-      continue;
-    }
-    vector<IRInst> out;
-    out.reserve(inst.size() + prelude.size());
-    size_t p = 0;
-    while (p < n) {
-      if (p == i) {
-        out.push_back(inst[i]);
-        for (const auto &pr : prelude) {
-          out.push_back(pr.second);
-        }
-        for (size_t k = bodyStart; k <= bodyEnd; ++k) {
-          IRInst w = inst[k];
-          if (w.op == IROp::LoadGlobal && symToLoadVreg.count(w.sym)) {
-            IRInst cp;
-            cp.op = IROp::Copy;
-            cp.dst = w.dst;
-            cp.u = symToLoadVreg[w.sym];
-            cp.isFloat = w.isFloat;
-            out.push_back(cp);
-          } else if (w.op == IROp::LeaGlobal && symToLeaVreg.count(w.sym)) {
-            IRInst cp;
-            cp.op = IROp::Copy;
-            cp.dst = w.dst;
-            cp.u = symToLeaVreg[w.sym];
-            cp.isFloat = false;
-            out.push_back(cp);
-          } else {
-            out.push_back(w);
+        bool stored = false;
+        for (size_t t = bodyStart; t <= bodyEnd; ++t) {
+          if (inst[t].op == IROp::StoreGlobal && inst[t].sym == sym) {
+            stored = true;
+            break;
           }
         }
-        out.push_back(inst[j - 1]);
-        p = j;
-      } else {
-        out.push_back(inst[p++]);
+        if (stored) {
+          continue;
+        }
+        if (inst[k].op == IROp::LoadGlobal) {
+          if (symToLoadVreg.count(sym)) {
+            continue;
+          }
+          // 复用首次出现的 dst，勿 allocVreg（多轮外提会撑爆 nextVreg）
+          symToLoadVreg[sym] = inst[k].dst;
+          prelude.push_back(inst[k]);
+        } else {
+          if (symToLeaVreg.count(sym)) {
+            continue;
+          }
+          symToLeaVreg[sym] = inst[k].dst;
+          prelude.push_back(inst[k]);
+        }
       }
-    }
-    inst.swap(out);
-    hoistedThisRound = true;
-    break;
+      if (prelude.empty()) {
+        continue;
+      }
+      vector<IRInst> out;
+      out.reserve(inst.size() + prelude.size());
+      size_t p = 0;
+      while (p < n) {
+        if (p == i) {
+          out.push_back(inst[i]);
+          for (const IRInst &pr : prelude) {
+            out.push_back(pr);
+          }
+          for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+            IRInst w = inst[k];
+            if (w.op == IROp::LoadGlobal && symToLoadVreg.count(w.sym)) {
+              IRInst cp;
+              cp.op = IROp::Copy;
+              cp.dst = w.dst;
+              cp.u = symToLoadVreg[w.sym];
+              cp.isFloat = w.isFloat;
+              out.push_back(cp);
+            } else if (w.op == IROp::LeaGlobal && symToLeaVreg.count(w.sym)) {
+              IRInst cp;
+              cp.op = IROp::Copy;
+              cp.dst = w.dst;
+              cp.u = symToLeaVreg[w.sym];
+              cp.isFloat = false;
+              out.push_back(cp);
+            } else {
+              out.push_back(w);
+            }
+          }
+          out.push_back(inst[j - 1]);
+          p = j;
+        } else {
+          out.push_back(inst[p++]);
+        }
+      }
+      inst.swap(out);
+      hoistedThisRound = true;
+      break;
     }
     if (!hoistedThisRound) {
       return;
@@ -647,7 +647,9 @@ static void irCollectLoopMemorySummary(const IRFunction &fn, const unordered_set
 // 在支配关系与「定义块支配所有 latch」条件下外提不变量；插入位置为循环头块首条 Label 之后（每轮迭代执行一次，与单块 LICM 一致）。
 static void irHoistLoopInvariantCFG(IRFunction &fn) {
   // 外提会改指令序列与 CFG；用迭代重建支配/循环，禁止尾递归自调（小图上也会无限递归栈溢出）。
-  constexpr int kMaxRounds = 4096;
+  // 嵌套循环每轮只处理一个 loop 且会复制指令到外层头；4096 轮会把 reduce 等撑到万行 asm。
+  constexpr int kMaxRounds = 16;
+  const size_t instBudget0 = fn.insts.size();
   for (int round = 0; round < kMaxRounds; ++round) {
     irRefreshCFG(fn);
     vector<IRInst> &inst = fn.insts;
@@ -655,6 +657,9 @@ static void irHoistLoopInvariantCFG(IRFunction &fn) {
     const int maxV = fn.nextVreg;
     const size_t n = inst.size();
     if (nb <= 0 || n == 0 || maxV <= 0) {
+      return;
+    }
+    if (n > instBudget0 * 4u + 512u) {
       return;
     }
   // 支配矩阵 dom 为 nb×nb 字节；大源文件基本块极多时可达数百 MB～数 GB，易被评测机 OOM Killer
@@ -854,7 +859,6 @@ static void irHoistLoopInvariantCFG(IRFunction &fn) {
     }
     inst.swap(out);
     hoistedThisRound = true;
-    break;
   }
   if (!hoistedThisRound) {
     return;

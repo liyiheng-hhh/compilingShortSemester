@@ -1,7 +1,2 @@
 suite,case_id,opt,label,status,compare,pass,median_ms,warmup_ms,run1_ms,asm_lines,compile_ok,link_ok,log
-performance,h-1-01,O1,sysy,ok,ok,1,106.163,141.947,106.163,447,1,1,/tmp/evalperf.23580/h-1-01/run.log
-performance,h-1-02,O1,sysy,ok,ok,1,24.902,24.579,24.902,447,1,1,/tmp/evalperf.23580/h-1-02/run.log
-performance,h-1-03,O1,sysy,ok,ok,1,600.949,605.081,600.949,447,1,1,/tmp/evalperf.23580/h-1-03/run.log
-performance,h-10-01,O1,sysy,timeout,mismatch,0,,20007.178,20006.141,860,1,1,/tmp/evalperf.23580/h-10-01/run.log
-performance,h-10-02,O1,sysy,timeout,mismatch,0,,20007.364,20006.096,860,1,1,/tmp/evalperf.23580/h-10-02/run.log
-performance,h-10-03,O1,sysy,timeout,mismatch,0,,17259082.187,20012.488,860,1,1,/tmp/evalperf.23580/h-10-03/run.log
+performance,shuffle1,O1,sysy,ok,ok,1,7591.385,8654.751,7591.385,1591,1,1,/tmp/evalperf.10869/shuffle1/run.log

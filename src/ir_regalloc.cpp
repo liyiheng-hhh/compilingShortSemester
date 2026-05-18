@@ -20,15 +20,6 @@ bool irFunctionContainsCall(const IRFunction &fn) {
   return false;
 }
 
-static bool irFunctionUsesLocalSym(const IRFunction &fn) {
-  for (const IRInst &in : fn.insts) {
-    if (in.op == IROp::LoadLocal || in.op == IROp::StoreLocal) {
-      return true;
-    }
-  }
-  return false;
-}
-
 static void markVregTypes(const IRFunction &fn, vector<char> &isFloat) {
   const int nv = fn.nextVreg;
   isFloat.assign(static_cast<size_t>(max(nv, 0)), 0);
@@ -382,7 +373,6 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
   }
 
   sum.hasCall = irFunctionContainsCall(fn);
-  const bool internalCall = sum.hasCall;
 
   vector<char> isFloat;
   markVregTypes(fn, isFloat);
@@ -455,7 +445,7 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
     addInterferenceAt(atOp);
   }
 
-  vector<int> intPool = buildIntPool(internalCall);
+  vector<int> intPool = buildIntPool(sum.hasCall);
   vector<int> floatPool = buildFloatPool();
   vector<int> icol = colorGraph(nv, inInt, adjInt, intPool);
   vector<int> fcol = colorGraph(nv, inFloat, adjFloat, floatPool);

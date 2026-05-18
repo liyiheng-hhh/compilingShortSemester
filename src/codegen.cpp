@@ -760,14 +760,16 @@ void CodeGen::emitFunction(FuncDef &def) {
       useIr = true;
       irVregCount_ = irBuf.nextVreg;
       irSpillBase_ = alignTo(currentFunction_->frameUsed, 16);
-      int slotCount = irSlotCount(irBuf);
+      const int slotCount = irSlotCount(irBuf);
       int calleeExtra = 0;
       for (int s = 1; s <= 11; ++s) {
         if (irRegalloc_.usedCalleeSavedInt & (1u << static_cast<unsigned>(s - 1))) {
           calleeExtra += 8;
         }
       }
-      int need = irSpillBase_ + 8 * std::max(slotCount, 0) + calleeExtra;
+      // 保存 s1–s11 于所有 IR spill 槽之后，避免盖住形参/局部（旧 -24 与 a1@-24 冲突）
+      irCalleeSaveBase_ = irSpillBase_ + 8 * std::max(slotCount, 0) + 8;
+      const int need = irCalleeSaveBase_ + calleeExtra;
       irTotalFrame_ = max(frame, alignTo(need, 16));
       frame = irTotalFrame_;
       irVFloat_.assign(static_cast<size_t>(max(irVregCount_, 0)), 0);
@@ -868,6 +870,44 @@ string CodeGen::irVregFloatPhysReg(int vid) const {
   return irRegallocFloatRegName(irRegalloc_, a.floatPhys);
 }
 
+void CodeGen::irBindVregLocalSym(int vid, Symbol *sym) {
+  if (vid < 0 || !sym) {
+    return;
+  }
+  for (auto it = irVregLocalSym_.begin(); it != irVregLocalSym_.end();) {
+    if (it->second == sym && it->first != vid) {
+      it = irVregLocalSym_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  irVregLocalSym_[vid] = sym;
+}
+
+bool CodeGen::irTryLoadVregFromLocalStack(int vid, const string &reg, bool asFloat) {
+  if (!irRegalloc_.enabled || vid < 0) {
+    return false;
+  }
+  auto it = irVregLocalSym_.find(vid);
+  if (it == irVregLocalSym_.end() || !it->second) {
+    return false;
+  }
+  Symbol *sym = it->second;
+  if (asFloat) {
+    (void)reg;
+    emitLoadMem("flw", "fa0", "s0", sym->offset);
+    irLastVregInFa0_ = -1;
+    return true;
+  }
+  bool isPtr = sym->isArray || (vid < static_cast<int>(irVPtr_.size()) &&
+                                irVPtr_[static_cast<size_t>(vid)]);
+  emitLoadMem(isPtr ? "ld" : "lw", reg, "s0", sym->offset);
+  if (reg == "a0") {
+    irLastVregInA0_ = -1;
+  }
+  return true;
+}
+
 void CodeGen::emitIrSyncVregStackSlot(int vid, const string &valReg, bool asFloat) {
   // 着色后 codegen 仍会用 t4–t6 等承载其它 vreg；栈槽为权威副本，避免物理寄存器被覆盖后读错。
   if (!irRegalloc_.enabled || vid < 0 ||
@@ -886,7 +926,7 @@ void CodeGen::emitIrSyncVregStackSlot(int vid, const string &valReg, bool asFloa
 }
 
 void CodeGen::emitIrSaveCalleeSavedRegs(uint32_t mask) {
-  int off = -24;
+  int off = -irCalleeSaveBase_;
   for (int s = 1; s <= 11; ++s) {
     if (mask & (1u << static_cast<unsigned>(s - 1))) {
       emit("\tsd\ts" + to_string(s) + ", " + to_string(off) + "(s0)");
@@ -897,7 +937,7 @@ void CodeGen::emitIrSaveCalleeSavedRegs(uint32_t mask) {
 
 void CodeGen::emitIrRestoreCalleeSavedRegs(uint32_t mask) {
   vector<pair<int, int>> slots;
-  int off = -24;
+  int off = -irCalleeSaveBase_;
   for (int s = 1; s <= 11; ++s) {
     if (mask & (1u << static_cast<unsigned>(s - 1))) {
       slots.push_back({s, off});
@@ -926,35 +966,31 @@ bool CodeGen::irVregIsPtr(int vid) const {
 void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
   if (vid < 0) return;
   const bool ra = irRegalloc_.enabled;
-  const bool stackHome =
-      ra && vid < static_cast<int>(irVregSlots_.size()) &&
-      irVregSlots_[static_cast<size_t>(vid)] >= 0;
+  if (ra && irTryLoadVregFromLocalStack(vid, "a0", asFloat)) {
+    return;
+  }
   if (asFloat) {
     if (!ra && irLastVregInFa0_ == vid) return;
-    if (!stackHome) {
-      string home = irVregFloatPhysReg(vid);
-      if (!home.empty()) {
-        if (home != "fa0") {
-          emit("\tfmv.s\tfa0, " + home);
-        }
-        irLastVregInFa0_ = ra ? -1 : vid;
-        return;
+    string home = irVregFloatPhysReg(vid);
+    if (!home.empty()) {
+      if (home != "fa0") {
+        emit("\tfmv.s\tfa0, " + home);
       }
+      irLastVregInFa0_ = ra ? -1 : vid;
+      return;
     }
     int off = irVregSlotOffset(vid);
     emitLoadMem("flw", "fa0", "s0", off);
     irLastVregInFa0_ = ra ? -1 : vid;
   } else {
     if (!ra && irLastVregInA0_ == vid) return;
-    if (!stackHome) {
-      string home = irVregIntPhysReg(vid);
-      if (!home.empty()) {
-        if (home != "a0") {
-          emit("\tmv\ta0, " + home);
-        }
-        irLastVregInA0_ = ra ? -1 : vid;
-        return;
+    string home = irVregIntPhysReg(vid);
+    if (!home.empty()) {
+      if (home != "a0") {
+        emit("\tmv\ta0, " + home);
       }
+      irLastVregInA0_ = ra ? -1 : vid;
+      return;
     }
     int off = irVregSlotOffset(vid);
     bool isPtr =
@@ -967,17 +1003,15 @@ void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
 // Load vreg into specified integer register (not a0), without tracking update
 void CodeGen::emitIrLoadVregTo(int vid, const string &reg) {
   if (vid < 0) return;
-  const bool stackHome =
-      irRegalloc_.enabled && vid < static_cast<int>(irVregSlots_.size()) &&
-      irVregSlots_[static_cast<size_t>(vid)] >= 0;
-  if (!stackHome) {
-    string home = irVregIntPhysReg(vid);
-    if (!home.empty()) {
-      if (home != reg) {
-        emit("\tmv\t" + reg + ", " + home);
-      }
-      return;
+  if (irTryLoadVregFromLocalStack(vid, reg, false)) {
+    return;
+  }
+  string home = irVregIntPhysReg(vid);
+  if (!home.empty()) {
+    if (home != reg) {
+      emit("\tmv\t" + reg + ", " + home);
     }
+    return;
   }
   if (!irRegalloc_.enabled && irLastVregInA0_ == vid) {
     emit("\tmv\t" + reg + ", a0");
@@ -1215,6 +1249,7 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
   irSkippedLast_ = false;
   irSkippedVreg_ = -1;
   irLocalSymVreg_.clear();
+  irVregLocalSym_.clear();
   for (size_t i = 0; i < ir.insts.size(); ++i) {
     IROp op = ir.insts[i].op;
     if (op == IROp::Call || op == IROp::Ret ||
@@ -1231,6 +1266,7 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
       irCacheFt0_ = -1;
       if (op == IROp::Call || op == IROp::Ret) {
         irLocalSymVreg_.clear();
+        irVregLocalSym_.clear();
       }
     }
     if (op == IROp::LoadLocal && !irParamCache_.empty()) {
@@ -1538,12 +1574,21 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
   case IROp::Copy: {
     const bool fl = in.u >= 0 && static_cast<size_t>(in.u) < irVFloat_.size() &&
                     irVFloat_[static_cast<size_t>(in.u)];
-    const bool raStack =
-        irRegalloc_.enabled && in.dst >= 0 &&
-        static_cast<size_t>(in.dst) < irVregSlots_.size() &&
-        irVregSlots_[static_cast<size_t>(in.dst)] >= 0;
-    string dstHome = raStack ? "" : (fl ? irVregFloatPhysReg(in.dst) : irVregIntPhysReg(in.dst));
-    string srcHome = raStack ? "" : (fl ? irVregFloatPhysReg(in.u) : irVregIntPhysReg(in.u));
+    if (irRegalloc_.enabled && in.u >= 0 &&
+        irVregLocalSym_.count(in.u) != 0) {
+      emitIrLoadVreg(in.u, fl);
+      emitIrStoreVreg(in.dst, fl);
+      if (in.dst >= 0 && in.u >= 0 && static_cast<size_t>(in.dst) < irVFloat_.size()) {
+        irVFloat_[static_cast<size_t>(in.dst)] = irVFloat_[static_cast<size_t>(in.u)];
+      }
+      auto lit = irVregLocalSym_.find(in.u);
+      if (lit != irVregLocalSym_.end() && in.dst >= 0) {
+        irBindVregLocalSym(in.dst, lit->second);
+      }
+      return;
+    }
+    string dstHome = fl ? irVregFloatPhysReg(in.dst) : irVregIntPhysReg(in.dst);
+    string srcHome = fl ? irVregFloatPhysReg(in.u) : irVregIntPhysReg(in.u);
     if (!dstHome.empty() && !srcHome.empty()) {
       if (fl) {
         if (dstHome != srcHome) {
@@ -1627,33 +1672,6 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         markInt(in.dst);
       }
     } else if (in.sym && in.dst >= 0) {
-      auto lit = irLocalSymVreg_.find(in.sym);
-      if (lit != irLocalSymVreg_.end() && lit->second >= 0 && irRegalloc_.enabled &&
-          !irRegallocLeaf_) {
-        const int src = lit->second;
-        const bool fl = in.isFloat;
-        string dstHome = fl ? irVregFloatPhysReg(in.dst) : irVregIntPhysReg(in.dst);
-        string srcHome = fl ? irVregFloatPhysReg(src) : irVregIntPhysReg(src);
-        if (!dstHome.empty() && !srcHome.empty()) {
-          if (fl) {
-            if (dstHome != srcHome) {
-              emit("\tfmv.s\t" + dstHome + ", " + srcHome);
-            }
-          } else if (dstHome != srcHome) {
-            emit("\tmv\t" + dstHome + ", " + srcHome);
-          }
-        } else {
-          emitIrLoadVreg(src, fl);
-          emitIrStoreVreg(in.dst, fl);
-        }
-        if (fl) {
-          markFl(in.dst);
-        } else {
-          markInt(in.dst);
-        }
-        irLocalSymVreg_[in.sym] = in.dst;
-        return;
-      }
       emitAddOffset("t0", "s0", in.sym->offset);
       if (in.isFloat) {
         emit("\tflw\tfa0, 0(t0)");
@@ -1666,6 +1684,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       }
       if (in.sym) {
         irLocalSymVreg_[in.sym] = in.dst;
+        irBindVregLocalSym(in.dst, in.sym);
       }
     }
     return;
@@ -1711,6 +1730,18 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     // 形参缓存在 t4–t6：写回栈槽后同步寄存器，否则下一轮仍用旧 t4（crc1 的 _xor）。
     if (in.sym) {
       irLocalSymVreg_[in.sym] = in.u;
+      irBindVregLocalSym(in.u, in.sym);
+      if (irRegalloc_.enabled) {
+        string home =
+            in.isFloat ? irVregFloatPhysReg(in.u) : irVregIntPhysReg(in.u);
+        if (!home.empty()) {
+          if (in.isFloat) {
+            emit("\tfmv.s\t" + home + ", fa0");
+          } else {
+            emit("\tmv\t" + home + ", a0");
+          }
+        }
+      }
       auto pit = irParamCache_.find(in.sym);
       if (pit != irParamCache_.end()) {
         if (in.isFloat) {
