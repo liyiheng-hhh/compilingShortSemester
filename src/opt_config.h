@@ -14,7 +14,7 @@
 // | B  | + IR 发射；中端仅 **常量折叠 + DCE**（无 LICM、无 store→load、无算术 CSE） |
 // | C  | + 单块 While LICM + 算术 CSE |
 // | D  | + CFG LICM + store→load/GVN + AST 转置交换 + 16×16 循环分块 |
-//      |   + IR 内联 hash 式小函数 + 图着色 regalloc（无体内 Call 用 t3–t6） |
+//      |   + IR 内联 + 块内 LoadGlobal 合并 + 图着色 regalloc（t3–t6 / s1–s11） |
 //      |   （允许有界局部数组走 IR；`land_lor_split` 拆 &&/||） |
 //
 // 默认（`SYSY_O1_FULL=0`、未设 `SYSY_O1_TIER`）：**D**（`SYSY_O1_DEFAULT_TIER`）。
@@ -95,7 +95,8 @@ inline void fillO1ProfileFromTier(int tier, O1Profile &p) {
     p.irStoreLoadForward = true;
     p.astLoopInterchange = true;
     p.irLoopOpt = true;
-    p.irRegalloc = true;
+    // 图着色：默认关；本地验证通过后设 SYSY_CC_IR_REGALLOC=1 开启
+    p.irRegalloc = envFlagTruthy("SYSY_CC_IR_REGALLOC");
   }
 }
 

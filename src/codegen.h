@@ -62,6 +62,8 @@ private:
   int irSkippedVreg_ = -1;
   std::unordered_map<Symbol *, std::string> irParamCache_;
   std::unordered_map<Symbol *, Expr *> inlineArgMap_;
+  // 标量局部变量当前由哪个 vreg 持有（配合 regalloc 避免 LoadLocal 读陈旧栈）
+  std::unordered_map<Symbol *, int> irLocalSymVreg_;
   IRRegallocSummary irRegalloc_{};
   bool irRegallocLeaf_ = false;
 

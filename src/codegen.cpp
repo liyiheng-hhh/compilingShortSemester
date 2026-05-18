@@ -869,7 +869,8 @@ string CodeGen::irVregFloatPhysReg(int vid) const {
 }
 
 void CodeGen::emitIrSyncVregStackSlot(int vid, const string &valReg, bool asFloat) {
-  if (!irRegalloc_.enabled || !irRegalloc_.syncStackSlots || vid < 0 ||
+  // 着色后 codegen 仍会用 t4–t6 等承载其它 vreg；栈槽为权威副本，避免物理寄存器被覆盖后读错。
+  if (!irRegalloc_.enabled || vid < 0 ||
       vid >= static_cast<int>(irVregSlots_.size()) ||
       irVregSlots_[static_cast<size_t>(vid)] < 0) {
     return;
@@ -925,28 +926,35 @@ bool CodeGen::irVregIsPtr(int vid) const {
 void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
   if (vid < 0) return;
   const bool ra = irRegalloc_.enabled;
+  const bool stackHome =
+      ra && vid < static_cast<int>(irVregSlots_.size()) &&
+      irVregSlots_[static_cast<size_t>(vid)] >= 0;
   if (asFloat) {
     if (!ra && irLastVregInFa0_ == vid) return;
-    string home = irVregFloatPhysReg(vid);
-    if (!home.empty()) {
-      if (home != "fa0") {
-        emit("\tfmv.s\tfa0, " + home);
+    if (!stackHome) {
+      string home = irVregFloatPhysReg(vid);
+      if (!home.empty()) {
+        if (home != "fa0") {
+          emit("\tfmv.s\tfa0, " + home);
+        }
+        irLastVregInFa0_ = ra ? -1 : vid;
+        return;
       }
-      irLastVregInFa0_ = ra ? -1 : vid;
-      return;
     }
     int off = irVregSlotOffset(vid);
     emitLoadMem("flw", "fa0", "s0", off);
     irLastVregInFa0_ = ra ? -1 : vid;
   } else {
     if (!ra && irLastVregInA0_ == vid) return;
-    string home = irVregIntPhysReg(vid);
-    if (!home.empty()) {
-      if (home != "a0") {
-        emit("\tmv\ta0, " + home);
+    if (!stackHome) {
+      string home = irVregIntPhysReg(vid);
+      if (!home.empty()) {
+        if (home != "a0") {
+          emit("\tmv\ta0, " + home);
+        }
+        irLastVregInA0_ = ra ? -1 : vid;
+        return;
       }
-      irLastVregInA0_ = ra ? -1 : vid;
-      return;
     }
     int off = irVregSlotOffset(vid);
     bool isPtr =
@@ -959,12 +967,17 @@ void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
 // Load vreg into specified integer register (not a0), without tracking update
 void CodeGen::emitIrLoadVregTo(int vid, const string &reg) {
   if (vid < 0) return;
-  string home = irVregIntPhysReg(vid);
-  if (!home.empty()) {
-    if (home != reg) {
-      emit("\tmv\t" + reg + ", " + home);
+  const bool stackHome =
+      irRegalloc_.enabled && vid < static_cast<int>(irVregSlots_.size()) &&
+      irVregSlots_[static_cast<size_t>(vid)] >= 0;
+  if (!stackHome) {
+    string home = irVregIntPhysReg(vid);
+    if (!home.empty()) {
+      if (home != reg) {
+        emit("\tmv\t" + reg + ", " + home);
+      }
+      return;
     }
-    return;
   }
   if (!irRegalloc_.enabled && irLastVregInA0_ == vid) {
     emit("\tmv\t" + reg + ", a0");
@@ -1201,6 +1214,7 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
   irCacheFt0_ = -1;
   irSkippedLast_ = false;
   irSkippedVreg_ = -1;
+  irLocalSymVreg_.clear();
   for (size_t i = 0; i < ir.insts.size(); ++i) {
     IROp op = ir.insts[i].op;
     if (op == IROp::Call || op == IROp::Ret ||
@@ -1215,6 +1229,9 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
       irCacheT4_ = -1;
       irCacheT5_ = -1;
       irCacheFt0_ = -1;
+      if (op == IROp::Call || op == IROp::Ret) {
+        irLocalSymVreg_.clear();
+      }
     }
     if (op == IROp::LoadLocal && !irParamCache_.empty()) {
       emitIrFlushSkipped();
@@ -1521,8 +1538,12 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
   case IROp::Copy: {
     const bool fl = in.u >= 0 && static_cast<size_t>(in.u) < irVFloat_.size() &&
                     irVFloat_[static_cast<size_t>(in.u)];
-    string dstHome = fl ? irVregFloatPhysReg(in.dst) : irVregIntPhysReg(in.dst);
-    string srcHome = fl ? irVregFloatPhysReg(in.u) : irVregIntPhysReg(in.u);
+    const bool raStack =
+        irRegalloc_.enabled && in.dst >= 0 &&
+        static_cast<size_t>(in.dst) < irVregSlots_.size() &&
+        irVregSlots_[static_cast<size_t>(in.dst)] >= 0;
+    string dstHome = raStack ? "" : (fl ? irVregFloatPhysReg(in.dst) : irVregIntPhysReg(in.dst));
+    string srcHome = raStack ? "" : (fl ? irVregFloatPhysReg(in.u) : irVregIntPhysReg(in.u));
     if (!dstHome.empty() && !srcHome.empty()) {
       if (fl) {
         if (dstHome != srcHome) {
@@ -1605,7 +1626,34 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
       }
-    } else {
+    } else if (in.sym && in.dst >= 0) {
+      auto lit = irLocalSymVreg_.find(in.sym);
+      if (lit != irLocalSymVreg_.end() && lit->second >= 0 && irRegalloc_.enabled &&
+          !irRegallocLeaf_) {
+        const int src = lit->second;
+        const bool fl = in.isFloat;
+        string dstHome = fl ? irVregFloatPhysReg(in.dst) : irVregIntPhysReg(in.dst);
+        string srcHome = fl ? irVregFloatPhysReg(src) : irVregIntPhysReg(src);
+        if (!dstHome.empty() && !srcHome.empty()) {
+          if (fl) {
+            if (dstHome != srcHome) {
+              emit("\tfmv.s\t" + dstHome + ", " + srcHome);
+            }
+          } else if (dstHome != srcHome) {
+            emit("\tmv\t" + dstHome + ", " + srcHome);
+          }
+        } else {
+          emitIrLoadVreg(src, fl);
+          emitIrStoreVreg(in.dst, fl);
+        }
+        if (fl) {
+          markFl(in.dst);
+        } else {
+          markInt(in.dst);
+        }
+        irLocalSymVreg_[in.sym] = in.dst;
+        return;
+      }
       emitAddOffset("t0", "s0", in.sym->offset);
       if (in.isFloat) {
         emit("\tflw\tfa0, 0(t0)");
@@ -1615,6 +1663,9 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         emit("\tlw\ta0, 0(t0)");
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
+      }
+      if (in.sym) {
+        irLocalSymVreg_[in.sym] = in.dst;
       }
     }
     return;
@@ -1659,6 +1710,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     }
     // 形参缓存在 t4–t6：写回栈槽后同步寄存器，否则下一轮仍用旧 t4（crc1 的 _xor）。
     if (in.sym) {
+      irLocalSymVreg_[in.sym] = in.u;
       auto pit = irParamCache_.find(in.sym);
       if (pit != irParamCache_.end()) {
         if (in.isFloat) {
@@ -1793,6 +1845,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       emit("\tslliw\ta0, a0, " + to_string(in.immI & 31));
     } else {
       emit("\tmv\tt2, a0");
+      // t3 为无 regalloc 时移位量临时；着色池勿含 t3
       emitIrLoadVregTo(in.v, "t3");
       emit("\tandi\tt3, t3, 31");
       emit("\tsllw\ta0, t2, t3");

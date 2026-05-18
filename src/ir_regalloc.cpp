@@ -48,6 +48,18 @@ static void markVregTypes(const IRFunction &fn, vector<char> &isFloat) {
       isFloat[static_cast<size_t>(in.dst)] = 1;
       break;
     case IROp::ICvtF:
+    case IROp::ConstI:
+    case IROp::Add:
+    case IROp::Sub:
+    case IROp::Mul:
+    case IROp::Sll:
+    case IROp::Sra:
+    case IROp::Div:
+    case IROp::Rem:
+    case IROp::Neg:
+    case IROp::Slt:
+    case IROp::Seqz:
+    case IROp::Snez:
       isFloat[static_cast<size_t>(in.dst)] = 0;
       break;
     case IROp::Copy:
@@ -198,13 +210,69 @@ static void computeLiveIn(IRFunction &fn, vector<vector<char>> &liveIn) {
   }
 }
 
+// CFG 活跃分析超预算时：按基本块局部反向扫描（偏保守，但足以驱动着色）
+static void computeLiveInPerBlock(const IRFunction &fn, vector<vector<char>> &liveIn) {
+  const int nv = fn.nextVreg;
+  const size_t n = fn.insts.size();
+  liveIn.assign(n + 1, vector<char>(static_cast<size_t>(max(nv, 0)), 0));
+  if (nv <= 0 || n == 0 || fn.blocks.empty()) {
+    return;
+  }
+
+  vector<unsigned char> active(static_cast<size_t>(nv), 0);
+  vector<int> list;
+  list.reserve(256);
+
+  for (const IRBlock &blk : fn.blocks) {
+    fill(active.begin(), active.end(), 0);
+    list.clear();
+    for (size_t i = blk.begin; i < blk.end; ++i) {
+      liveIn[i] = vector<char>(active.begin(), active.end());
+      const IRInst &in = fn.insts[i];
+      auto bump = [&](int r) {
+        if (r >= 0 && r < nv && !active[static_cast<size_t>(r)]) {
+          active[static_cast<size_t>(r)] = 1;
+          list.push_back(r);
+        }
+      };
+      bump(in.u);
+      bump(in.v);
+      for (int a : in.args) {
+        bump(a);
+      }
+      if (in.dst >= 0 && in.dst < nv) {
+        active[static_cast<size_t>(in.dst)] = 0;
+        for (size_t k = 0; k < list.size(); ++k) {
+          if (list[k] == in.dst) {
+            list[k] = list.back();
+            list.pop_back();
+            break;
+          }
+        }
+        list.push_back(in.dst);
+        active[static_cast<size_t>(in.dst)] = 1;
+      }
+    }
+  }
+}
+
+static bool liveInAnyActive(const vector<vector<char>> &liveIn) {
+  for (const vector<char> &li : liveIn) {
+    for (char c : li) {
+      if (c) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 static vector<int> buildIntPool(bool internalCall) {
   vector<int> pool;
   if (!internalCall) {
-    // 无体内 Call：caller-saved t3–t6（勿用 t0–t2：帧/setup 与 codegen 临时）
-    // 与形参缓存互斥：codegen 在 regalloc 开启时不建 t4–t6 缓存
-    for (int t = 3; t <= 6; ++t) {
-      pool.push_back(t);
+    // 无体内 Call：callee-saved s1–s6（prologue 保存）；t0–t3 为 codegen 临时
+    for (int s = 1; s <= 6; ++s) {
+      pool.push_back(100 + s);
     }
     return pool;
   }
@@ -306,18 +374,15 @@ static vector<int> colorGraph(int nv, const vector<char> &inBank,
 IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
   IRRegallocSummary sum;
   const int nv = fn.nextVreg;
-  if (!optEnabled || nv <= 0 || envFlagTruthy("SYSY_CC_NO_IR_REGALLOC")) {
-    sum.vreg.assign(static_cast<size_t>(nv), IRRegallocInfo{});
+  constexpr int kMaxVreg = 4096;
+  if (!optEnabled || nv <= 0 || nv > kMaxVreg ||
+      envFlagTruthy("SYSY_CC_NO_IR_REGALLOC")) {
+    sum.vreg.assign(static_cast<size_t>(max(nv, 0)), IRRegallocInfo{});
     return sum;
   }
 
   sum.hasCall = irFunctionContainsCall(fn);
   const bool internalCall = sum.hasCall;
-  // 含体内 Call：LoadLocal/StoreLocal 与 phys reg 易不同步，暂不着色
-  if (internalCall) {
-    sum.vreg.assign(static_cast<size_t>(nv), IRRegallocInfo{});
-    return sum;
-  }
 
   vector<char> isFloat;
   markVregTypes(fn, isFloat);
@@ -328,19 +393,10 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
     sum.vreg.assign(static_cast<size_t>(nv), IRRegallocInfo{});
     return sum;
   }
-  bool anyLive = false;
-  for (const vector<char> &li : liveIn) {
-    for (char c : li) {
-      if (c) {
-        anyLive = true;
-        break;
-      }
-    }
-    if (anyLive) {
-      break;
-    }
+  if (!liveInAnyActive(liveIn)) {
+    computeLiveInPerBlock(fn, liveIn);
   }
-  if (!anyLive) {
+  if (!liveInAnyActive(liveIn)) {
     sum.vreg.assign(static_cast<size_t>(nv), IRRegallocInfo{});
     return sum;
   }
@@ -425,6 +481,7 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
   }
 
   sum.vreg.resize(static_cast<size_t>(nv));
+  bool anyColored = false;
   for (int v = 0; v < nv; ++v) {
     IRRegallocInfo info;
     if (icol[static_cast<size_t>(v)] >= 0) {
@@ -433,13 +490,15 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
       if (code >= 100) {
         sum.usedCalleeSavedInt |= 1u << static_cast<unsigned>(code - 100 - 1);
       }
+      anyColored = true;
     }
     if (fcol[static_cast<size_t>(v)] >= 0) {
       info.floatPhys = fcol[static_cast<size_t>(v)];
+      anyColored = true;
     }
     sum.vreg[static_cast<size_t>(v)] = info;
   }
-  sum.enabled = true;
-  sum.syncStackSlots = irFunctionUsesLocalSym(fn);
+  sum.enabled = anyColored;
+  sum.syncStackSlots = sum.enabled;
   return sum;
 }

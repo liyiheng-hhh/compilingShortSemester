@@ -1901,6 +1901,18 @@ static bool irScalarIntLVal(Expr *e, Symbol *&symOut) {
   return true;
 }
 
+static bool irScalarIntConst(Expr *e, int32_t &valOut) {
+  if (!e || e->kind != ExprKind::Number) {
+    return false;
+  }
+  auto *n = static_cast<NumberExpr *>(e);
+  if (n->isFloat) {
+    return false;
+  }
+  valOut = n->intVal;
+  return true;
+}
+
 // 内联 return param % global 或 return global % param（如 hash）
 static bool irTryInlineModGlobalCall(IRFunction &fn, const IRInst &call,
                                      FuncDef *calleeDef, vector<IRInst> &out) {
@@ -1953,6 +1965,131 @@ static bool irTryInlineModGlobalCall(IRFunction &fn, const IRInst &call,
   return true;
 }
 
+// 内联 return param % const 或 return const % param
+static bool irTryInlineModConstCall(IRFunction &fn, const IRInst &call,
+                                    FuncDef *calleeDef, vector<IRInst> &out) {
+  if (call.args.size() != 1 || call.callArgPtr.size() != 1 ||
+      call.callArgPtr[0] != 0) {
+    return false;
+  }
+  ReturnStmt *ret = irSingleReturnStmt(calleeDef);
+  if (!ret || calleeDef->params.size() != 1 || calleeDef->params[0].isArray ||
+      calleeDef->params[0].base != BaseType::Int || !calleeDef->params[0].symbol) {
+    return false;
+  }
+  Symbol *paramSym = calleeDef->params[0].symbol;
+  if (ret->expr->kind != ExprKind::Binary) {
+    return false;
+  }
+  auto *bin = static_cast<BinaryExpr *>(ret->expr.get());
+  if (bin->op != "%") {
+    return false;
+  }
+  Symbol *lhs = nullptr;
+  Symbol *rhs = nullptr;
+  int32_t modConst = 0;
+  int argVreg = call.args[0];
+  bool ok = false;
+  if (irScalarIntLVal(bin->lhs.get(), lhs) && lhs == paramSym &&
+      irScalarIntConst(bin->rhs.get(), modConst)) {
+    ok = true;
+  } else if (irScalarIntLVal(bin->rhs.get(), rhs) && rhs == paramSym &&
+             irScalarIntConst(bin->lhs.get(), modConst)) {
+    ok = true;
+  }
+  if (!ok || modConst == 0 || modConst == -1) {
+    return false;
+  }
+  int modV = fn.allocVreg();
+  IRInst ci;
+  ci.op = IROp::ConstI;
+  ci.dst = modV;
+  ci.immI = modConst;
+  out.push_back(ci);
+  IRInst rem;
+  rem.op = IROp::Rem;
+  rem.dst = call.dst;
+  rem.u = argVreg;
+  rem.v = modV;
+  out.push_back(rem);
+  return true;
+}
+
+// 内联 return param（单参数透传）
+static bool irTryInlineIdentityCall(IRFunction &fn, const IRInst &call,
+                                    FuncDef *calleeDef, vector<IRInst> &out) {
+  if (call.args.size() != 1 || call.callArgPtr[0] != 0 || call.dst < 0) {
+    return false;
+  }
+  ReturnStmt *ret = irSingleReturnStmt(calleeDef);
+  if (!ret || calleeDef->params.size() != 1 || calleeDef->params[0].isArray ||
+      calleeDef->params[0].base != BaseType::Int || !calleeDef->params[0].symbol) {
+    return false;
+  }
+  Symbol *paramSym = calleeDef->params[0].symbol;
+  Symbol *retSym = nullptr;
+  if (!irScalarIntLVal(ret->expr.get(), retSym) || retSym != paramSym) {
+    return false;
+  }
+  IRInst cp;
+  cp.op = IROp::Copy;
+  cp.dst = call.dst;
+  cp.u = call.args[0];
+  out.push_back(cp);
+  return true;
+}
+
+static bool irTryInlineOneCall(IRFunction &fn, const IRInst &call, FuncDef *calleeDef,
+                               vector<IRInst> &out) {
+  if (irTryInlineModGlobalCall(fn, call, calleeDef, out)) {
+    return true;
+  }
+  if (irTryInlineModConstCall(fn, call, calleeDef, out)) {
+    return true;
+  }
+  if (irTryInlineIdentityCall(fn, call, calleeDef, out)) {
+    return true;
+  }
+  return false;
+}
+
+// 基本块内同一 global 的重复 LoadGlobal → Copy（hashmod 等；利于后续 CSE/LICM）
+static void irCanonicalizeLoadGlobalInBlocks(IRFunction &fn) {
+  irRefreshCFG(fn);
+  if (fn.blocks.empty()) {
+    return;
+  }
+  vector<IRInst> &inst = fn.insts;
+  for (const IRBlock &blk : fn.blocks) {
+    if (blk.end <= blk.begin) {
+      continue;
+    }
+    unordered_map<Symbol *, int> canon;
+    for (size_t i = blk.begin; i < blk.end; ++i) {
+      IRInst &in = inst[i];
+      if (in.op == IROp::Label || in.op == IROp::Call || in.op == IROp::Ret) {
+        canon.clear();
+        continue;
+      }
+      if (in.op == IROp::StoreGlobal && in.sym) {
+        canon.erase(in.sym);
+        continue;
+      }
+      if (in.op == IROp::LoadGlobal && in.sym && in.dst >= 0 && !in.isFloat) {
+        auto it = canon.find(in.sym);
+        if (it != canon.end() && it->second >= 0) {
+          in.op = IROp::Copy;
+          in.u = it->second;
+          in.sym = nullptr;
+          in.isFloat = false;
+        } else {
+          canon[in.sym] = in.dst;
+        }
+      }
+    }
+  }
+}
+
 static void irInlineTrivialCalls(IRFunction &fn, const Semantic &sem) {
   if (envFlagTruthy("SYSY_CC_NO_IR_INLINE")) {
     return;
@@ -1971,7 +2108,7 @@ static void irInlineTrivialCalls(IRFunction &fn, const Semantic &sem) {
       continue;
     }
     vector<IRInst> repl;
-    if (irTryInlineModGlobalCall(fn, in, fnSym->def, repl)) {
+    if (irTryInlineOneCall(fn, in, fnSym->def, repl)) {
       rebuilt.insert(rebuilt.end(), repl.begin(), repl.end());
     } else {
       rebuilt.push_back(in);
@@ -1990,6 +2127,7 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
   }
   if (semantic) {
     irInlineTrivialCalls(fn, *semantic);
+    irCanonicalizeLoadGlobalInBlocks(fn);
     irRefreshCFG(fn);
   }
   size_t complexity = fn.insts.size() + static_cast<size_t>(fn.blocks.size()) * 4u;

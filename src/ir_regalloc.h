@@ -22,7 +22,7 @@ struct IRRegallocSummary {
 
 bool irFunctionContainsCall(const IRFunction &fn);
 
-// 在 irAssignSlots 之后调用。无体内 Call 时用 t3–t6；含 Call 时暂不着色（LoadLocal 同步）
+// 在 irAssignSlots 之后调用。无体内 Call 用 t3–t6；含 Call 用 s1–s11（codegen 跟踪 Local↔vreg）
 IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled);
 
 const char *irRegallocIntRegName(const IRRegallocSummary &sum, int physIdx,
