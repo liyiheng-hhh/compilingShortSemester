@@ -1,0 +1,10 @@
+case_id,o0_pass,o1_pass,o0_median_ms,o1_median_ms,delta_ms,ratio,verdict
+03_sort1,1,1,573.607,842.054,268.447,1.4680,regressed
+03_sort2,1,1,460.257,533.828,73.571,1.1598,regressed
+crypto-3,1,1,959.306,1016.558,57.252,1.0597,regressed
+h-1-01,1,1,135.174,161.925,26.751,1.1979,regressed
+h-1-02,1,1,45.098,53.704,8.606,1.1908,regressed
+h-10-01,1,1,139.621,152.297,12.676,1.0908,regressed
+h-4-02,1,1,21.707,48.343,26.636,2.2271,regressed
+h-9-02,1,1,25.704,32.743,7.039,1.2738,regressed
+optimization_scheduling3,1,1,31.907,53.634,21.727,1.6809,regressed

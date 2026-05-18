@@ -893,17 +893,48 @@ bool CodeGen::irTryLoadVregFromLocalStack(int vid, const string &reg, bool asFlo
     return false;
   }
   Symbol *sym = it->second;
+  auto cit = irLocalSymVreg_.find(sym);
+  const bool canonical =
+      cit != irLocalSymVreg_.end() && cit->second == vid;
   if (asFloat) {
     (void)reg;
+    if (canonical) {
+      string home = irVregFloatPhysReg(vid);
+      if (!home.empty()) {
+        if (home != "fa0") {
+          emit("\tfmv.s\tfa0, " + home);
+        }
+        irLastVregInFa0_ = vid;
+        return true;
+      }
+    }
     emitLoadMem("flw", "fa0", "s0", sym->offset);
     irLastVregInFa0_ = -1;
+    return true;
+  }
+  if (canonical) {
+    string home = irVregIntPhysReg(vid);
+    if (!home.empty()) {
+      if (home != reg) {
+        emit("\tmv\t" + reg + ", " + home);
+      }
+      if (reg == "a0") {
+        irLastVregInA0_ = vid;
+        irFreshLocalSym_ = sym;
+      }
+      return true;
+    }
+  }
+  if (reg == "a0" && irFreshLocalSym_ == sym) {
+    irLastVregInA0_ = vid;
     return true;
   }
   bool isPtr = sym->isArray || (vid < static_cast<int>(irVPtr_.size()) &&
                                 irVPtr_[static_cast<size_t>(vid)]);
   emitLoadMem(isPtr ? "ld" : "lw", reg, "s0", sym->offset);
   if (reg == "a0") {
-    irLastVregInA0_ = -1;
+    irLastVregInA0_ = vid;
+    irFreshLocalSym_ = sym;
   }
   return true;
 }
@@ -970,7 +1001,7 @@ void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
     return;
   }
   if (asFloat) {
-    if (!ra && irLastVregInFa0_ == vid) return;
+    if (irLastVregInFa0_ == vid) return;
     string home = irVregFloatPhysReg(vid);
     if (!home.empty()) {
       if (home != "fa0") {
@@ -983,7 +1014,14 @@ void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
     emitLoadMem("flw", "fa0", "s0", off);
     irLastVregInFa0_ = ra ? -1 : vid;
   } else {
-    if (!ra && irLastVregInA0_ == vid) return;
+    auto lit = irVregLocalSym_.find(vid);
+    if (irLastVregInA0_ == vid && lit != irVregLocalSym_.end() &&
+        irFreshLocalSym_ == lit->second) {
+      return;
+    }
+    if (!ra && irLastVregInA0_ == vid) {
+      return;
+    }
     string home = irVregIntPhysReg(vid);
     if (!home.empty()) {
       if (home != "a0") {
@@ -1013,8 +1051,18 @@ void CodeGen::emitIrLoadVregTo(int vid, const string &reg) {
     }
     return;
   }
+  auto lit = irVregLocalSym_.find(vid);
+  if (irLastVregInA0_ == vid && lit != irVregLocalSym_.end() &&
+      irFreshLocalSym_ == lit->second) {
+    if (reg != "a0") {
+      emit("\tmv\t" + reg + ", a0");
+    }
+    return;
+  }
   if (!irRegalloc_.enabled && irLastVregInA0_ == vid) {
-    emit("\tmv\t" + reg + ", a0");
+    if (reg != "a0") {
+      emit("\tmv\t" + reg + ", a0");
+    }
     return;
   }
   int off = irVregSlotOffset(vid);
@@ -1059,8 +1107,14 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
     }
     emitIrSyncVregStackSlot(vid, homeI, false);
     irLastVregInA0_ = (ra || homeI != "a0") ? -1 : vid;
+    irFreshLocalSym_ = nullptr;
     return;
   }
+  if (ra && !asFloat && irVregLocalSym_.count(vid) != 0) {
+    irLastVregInA0_ = vid;
+    return;
+  }
+  irFreshLocalSym_ = nullptr;
   int off = irVregSlotOffset(vid);
   if (asFloat) {
     emitStoreMem("fsw", "fa0", "s0", off);
@@ -1250,6 +1304,7 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
   irSkippedVreg_ = -1;
   irLocalSymVreg_.clear();
   irVregLocalSym_.clear();
+  irFreshLocalSym_ = nullptr;
   for (size_t i = 0; i < ir.insts.size(); ++i) {
     IROp op = ir.insts[i].op;
     if (op == IROp::Call || op == IROp::Ret ||
@@ -1261,12 +1316,14 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
       emitIrFlushSkipped();
       irLastVregInA0_ = -1;
       irLastVregInFa0_ = -1;
+      irFreshLocalSym_ = nullptr;
       irCacheT4_ = -1;
       irCacheT5_ = -1;
       irCacheFt0_ = -1;
       if (op == IROp::Call || op == IROp::Ret) {
         irLocalSymVreg_.clear();
         irVregLocalSym_.clear();
+        irFreshLocalSym_ = nullptr;
       }
     }
     if (op == IROp::LoadLocal && !irParamCache_.empty()) {
@@ -1574,16 +1631,47 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
   case IROp::Copy: {
     const bool fl = in.u >= 0 && static_cast<size_t>(in.u) < irVFloat_.size() &&
                     irVFloat_[static_cast<size_t>(in.u)];
-    if (irRegalloc_.enabled && in.u >= 0 &&
+    if (irRegalloc_.enabled && !fl && in.u >= 0 &&
         irVregLocalSym_.count(in.u) != 0) {
+      Symbol *sym = irVregLocalSym_[in.u];
+      if (irLastVregInA0_ == in.u && irFreshLocalSym_ == sym && in.dst >= 0) {
+        irBindVregLocalSym(in.dst, sym);
+        irLocalSymVreg_[sym] = in.dst;
+        irLastVregInA0_ = in.dst;
+        if (static_cast<size_t>(in.dst) < irVFloat_.size()) {
+          irVFloat_[static_cast<size_t>(in.dst)] =
+              irVFloat_[static_cast<size_t>(in.u)];
+        }
+        return;
+      }
+      auto cit = irLocalSymVreg_.find(sym);
+      const bool srcCanon =
+          cit != irLocalSymVreg_.end() && cit->second == in.u;
+      string srcHome = irVregIntPhysReg(in.u);
+      string dstHome = irVregIntPhysReg(in.dst);
+      if (srcCanon && !srcHome.empty() && !dstHome.empty()) {
+        if (dstHome != srcHome) {
+          emit("\tmv\t" + dstHome + ", " + srcHome);
+        }
+        if (in.dst >= 0) {
+          irBindVregLocalSym(in.dst, sym);
+          irLocalSymVreg_[sym] = in.dst;
+        }
+        if (in.dst >= 0 && in.u >= 0 &&
+            static_cast<size_t>(in.dst) < irVFloat_.size()) {
+          irVFloat_[static_cast<size_t>(in.dst)] =
+              irVFloat_[static_cast<size_t>(in.u)];
+        }
+        return;
+      }
       emitIrLoadVreg(in.u, fl);
       emitIrStoreVreg(in.dst, fl);
       if (in.dst >= 0 && in.u >= 0 && static_cast<size_t>(in.dst) < irVFloat_.size()) {
         irVFloat_[static_cast<size_t>(in.dst)] = irVFloat_[static_cast<size_t>(in.u)];
       }
-      auto lit = irVregLocalSym_.find(in.u);
-      if (lit != irVregLocalSym_.end() && in.dst >= 0) {
-        irBindVregLocalSym(in.dst, lit->second);
+      if (in.dst >= 0) {
+        irBindVregLocalSym(in.dst, sym);
+        irLocalSymVreg_[sym] = in.dst;
       }
       return;
     }
@@ -1672,17 +1760,22 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         markInt(in.dst);
       }
     } else if (in.sym && in.dst >= 0) {
-      emitAddOffset("t0", "s0", in.sym->offset);
       if (in.isFloat) {
-        emit("\tflw\tfa0, 0(t0)");
+        emitLoadMem("flw", "fa0", "s0", in.sym->offset);
         emitIrStoreVreg(in.dst, true);
         markFl(in.dst);
+      } else if (irRegalloc_.enabled) {
+        emitLoadMem("lw", "a0", "s0", in.sym->offset);
+        irFreshLocalSym_ = in.sym;
+        irLocalSymVreg_[in.sym] = in.dst;
+        irBindVregLocalSym(in.dst, in.sym);
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
       } else {
+        emitAddOffset("t0", "s0", in.sym->offset);
         emit("\tlw\ta0, 0(t0)");
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
-      }
-      if (in.sym) {
         irLocalSymVreg_[in.sym] = in.dst;
         irBindVregLocalSym(in.dst, in.sym);
       }

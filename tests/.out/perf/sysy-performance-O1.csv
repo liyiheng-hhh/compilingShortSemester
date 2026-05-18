@@ -1,2 +1,2 @@
 suite,case_id,opt,label,status,compare,pass,median_ms,warmup_ms,run1_ms,asm_lines,compile_ok,link_ok,log
-performance,shuffle1,O1,sysy,ok,ok,1,7591.385,8654.751,7591.385,1591,1,1,/tmp/evalperf.10869/shuffle1/run.log
+performance,shuffle1,O1,sysy,ok,ok,1,11528.158,11352.266,11528.158,923,1,1,/tmp/evalperf.21850/shuffle1/run.log

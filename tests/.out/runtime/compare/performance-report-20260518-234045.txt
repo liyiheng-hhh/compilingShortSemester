@@ -1,0 +1,34 @@
+suite=performance ts=20260518-234045
+O0: csv=/mnt/c/Users/asus/compiler2026-x/tests/.out/runtime/compare/performance-O0-20260518-234045.csv pass_rate=0.8833 median_ms=999.816 p90_ms=4455.749
+O1: csv=/mnt/c/Users/asus/compiler2026-x/tests/.out/runtime/compare/performance-O1-20260518-234045.csv pass_rate=1.0000 median_ms=461.927 p90_ms=2538.838
+median_ratio(O1/O0)=0.4620
+regressed=9 improved=43
+tolerance: ratio<=0.01 or delta_ms<=0.05
+
+top regressed:
+268.447 03_sort1
+73.571 03_sort2
+57.252 crypto-3
+26.751 h-1-01
+26.636 h-4-02
+21.727 optimization_scheduling3
+12.676 h-10-01
+8.606 h-1-02
+7.039 h-9-02
+
+top improved:
+-4161.958 knapsack_naive-1
+-3911.902 knapsack_naive-2
+-3488.391 knapsack_naive-3
+-3369.250 many_mat_cal-2
+-2891.308 many_mat_cal-1
+-2771.480 many_mat_cal-3
+-2692.502 conv2d-1
+-1862.633 shuffle1
+-1822.869 h-8-02
+-1557.878 huffman-01
+-1436.867 h-8-01
+-1386.476 h-8-03
+-1264.544 huffman-02
+-1172.706 huffman-03
+-1059.385 h-5-02

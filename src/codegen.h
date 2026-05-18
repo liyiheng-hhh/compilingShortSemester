@@ -67,6 +67,7 @@ private:
   std::unordered_map<Symbol *, int> irLocalSymVreg_;
   // regalloc 下：vreg 若由 LoadLocal 产生，读时以栈上局部槽为准（避免 LICM/转发 后读陈旧 spill）
   std::unordered_map<int, Symbol *> irVregLocalSym_;
+  Symbol *irFreshLocalSym_ = nullptr; // a0 已含该局部标量，避免连续 lw 同一栈槽
   IRRegallocSummary irRegalloc_{};
   bool irRegallocLeaf_ = false;
 
