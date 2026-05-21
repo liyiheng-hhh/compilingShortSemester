@@ -2,6 +2,7 @@
 
 #include "common.h"
 #include "ir_loop_opt.h"
+#include "ir_mem2reg.h"
 #include "opt_config.h"
 #include "semantic.h"
 
@@ -2134,12 +2135,11 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
     irCanonicalizeLoadGlobalInBlocks(fn);
     irRefreshCFG(fn);
   }
-  // SSA Mem2Reg：将局部标量变量提升为虚拟寄存器
-  // TODO: 当前实现有 bug，暂时禁用直到修复
-  // if (!envFlagTruthy("SYSY_CC_ENABLE_SSA_MEM2REG")) {
-  //   irMem2Reg(fn);
-  //   irRefreshCFG(fn);
-  // }
+  // SSA Mem2Reg：基本块内局部变量提升
+  if (!envFlagTruthy("SYSY_CC_NO_MEM2REG")) {
+    irMem2Reg(fn);
+    irRefreshCFG(fn);
+  }
   size_t complexity = fn.insts.size() + static_cast<size_t>(fn.blocks.size()) * 4u;
   if (envFlagTruthy("SYSY_CC_IR_ECONOMY_MODE")) {
     complexity *= 2;

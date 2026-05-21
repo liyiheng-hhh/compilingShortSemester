@@ -8,7 +8,7 @@ SY_DIRS ?= examples
 SRCDIR := src
 SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/parser.cpp \
 	$(SRCDIR)/semantic.cpp $(SRCDIR)/codegen.cpp $(SRCDIR)/ir_build.cpp $(SRCDIR)/ir_opt.cpp \
-	$(SRCDIR)/ir_loop_opt.cpp $(SRCDIR)/ir_regalloc.cpp \
+	$(SRCDIR)/ir_loop_opt.cpp $(SRCDIR)/ir_regalloc.cpp $(SRCDIR)/ir_mem2reg.cpp \
 	$(SRCDIR)/loop_interchange.cpp $(SRCDIR)/loop_tiling.cpp $(SRCDIR)/land_lor_split.cpp \
 	$(SRCDIR)/knapsack_dp.cpp $(SRCDIR)/mm_hoist.cpp
 OBJS := $(SRCS:.cpp=.o)
