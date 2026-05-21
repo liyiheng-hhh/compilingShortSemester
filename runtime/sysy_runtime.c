@@ -1,5 +1,9 @@
 #include <stdarg.h>
 #include <stdio.h>
+#include <sys/time.h>
+
+static struct timeval g_sysy_start;
+static struct timeval g_sysy_end;
 
 int getint(void) {
   int x = 0;
@@ -67,6 +71,15 @@ void putf(const char *fmt, ...) {
   va_end(ap);
 }
 
-void _sysy_starttime(int lineno) { (void)lineno; }
+void _sysy_starttime(int lineno) {
+  (void)lineno;
+  gettimeofday(&g_sysy_start, NULL);
+}
 
-void _sysy_stoptime(int lineno) { (void)lineno; }
+void _sysy_stoptime(int lineno) {
+  (void)lineno;
+  gettimeofday(&g_sysy_end, NULL);
+  long us = (g_sysy_end.tv_sec - g_sysy_start.tv_sec) * 1000000L +
+            (g_sysy_end.tv_usec - g_sysy_start.tv_usec);
+  fprintf(stderr, "TOTAL: %ld us\n", us);
+}

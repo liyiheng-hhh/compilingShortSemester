@@ -166,6 +166,109 @@ static bool isZeroAssignTo(const AssignStmt *as, const string &v) {
   return num && !num->isFloat && num->intVal == 0;
 }
 
+static bool parseZeroInit(const Stmt *s, string *name) {
+  if (auto *as = dynamic_cast<const AssignStmt *>(s)) {
+    if (as->lhs && as->lhs->indices.empty() &&
+        isZeroAssignTo(as, as->lhs->name)) {
+      *name = as->lhs->name;
+      return true;
+    }
+  }
+  if (auto *d = dynamic_cast<const DeclStmt *>(s)) {
+    if (d->defs.size() == 1 && d->defs[0].init && d->defs[0].init->expr) {
+      auto *n = dynamic_cast<const NumberExpr *>(d->defs[0].init->expr.get());
+      if (n && !n->isFloat && n->intVal == 0) {
+        *name = d->defs[0].name;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static unique_ptr<AssignStmt> makeZeroAssign(int line, const string &v) {
+  auto lhs = make_unique<LValExpr>(line, v);
+  return make_unique<AssignStmt>(line, std::move(lhs),
+                                 make_unique<NumberExpr>(line, 0));
+}
+
+static unique_ptr<AssignStmt> cloneZeroInitAsAssign(const Stmt *s) {
+  if (auto *as = dynamic_cast<const AssignStmt *>(s)) {
+    return cloneAssign(as);
+  }
+  string name;
+  if (auto *d = dynamic_cast<const DeclStmt *>(s)) {
+    if (parseZeroInit(d, &name)) {
+      return makeZeroAssign(d->line, name);
+    }
+  }
+  return nullptr;
+}
+
+static bool extractLtBound(const Expr *cond, string *iv, ExprPtr *limit) {
+  auto *b = dynamic_cast<const BinaryExpr *>(cond);
+  if (!b || b->op != "<") {
+    return false;
+  }
+  if (auto *lv = dynamic_cast<const LValExpr *>(b->lhs.get())) {
+    if (!lv->indices.empty()) {
+      return false;
+    }
+    *iv = lv->name;
+    *limit = cloneExpr(b->rhs.get());
+    return true;
+  }
+  if (auto *lv = dynamic_cast<const LValExpr *>(b->rhs.get())) {
+    if (!lv->indices.empty()) {
+      return false;
+    }
+    *iv = lv->name;
+    *limit = cloneExpr(b->lhs.get());
+    return true;
+  }
+  return false;
+}
+
+struct OuterLoopHead {
+  string iv;
+  ExprPtr limit;
+  bool ivFromDecl = false;
+};
+
+static bool matchOuterLoopHead(const Stmt *initStmt, const WhileStmt *outerW,
+                               OuterLoopHead *out) {
+  if (!initStmt || !outerW || !out) {
+    return false;
+  }
+  if (!extractLtBound(outerW->cond.get(), &out->iv, &out->limit)) {
+    return false;
+  }
+  out->ivFromDecl = false;
+  if (auto *as = dynamic_cast<const AssignStmt *>(initStmt)) {
+    return isZeroAssignTo(as, out->iv);
+  }
+  if (auto *d = dynamic_cast<const DeclStmt *>(initStmt)) {
+    if (d->defs.size() != 1 || d->base != BaseType::Int) {
+      return false;
+    }
+    string name;
+    if (!parseZeroInit(d, &name) || name != out->iv) {
+      return false;
+    }
+    out->ivFromDecl = true;
+    return true;
+  }
+  return false;
+}
+
+static void stripDeclZeroInit(Stmt *s) {
+  if (auto *d = dynamic_cast<DeclStmt *>(s)) {
+    if (d->defs.size() == 1) {
+      d->defs[0].init.reset();
+    }
+  }
+}
+
 static bool isIncByOne(const AssignStmt *as, const string &v) {
   if (!as || !as->lhs || as->lhs->name != v || !as->lhs->indices.empty()) {
     return false;
@@ -250,52 +353,39 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
   if (k + 1 >= items.size()) {
     return false;
   }
-  auto *init = dynamic_cast<AssignStmt *>(items[k].get());
   auto *outer = dynamic_cast<WhileStmt *>(items[k + 1].get());
-  if (!init || !outer) {
+  if (!outer) {
     return false;
   }
   string outerIv;
-  if (!extractLoopIv(outer, &outerIv)) {
-    return false;
-  }
-  if (!isZeroAssignTo(init, outerIv)) {
+  string outerInitIv;
+  if (!extractLoopIv(outer, &outerIv) || !parseZeroInit(items[k].get(), &outerInitIv) ||
+      outerInitIv != outerIv) {
     return false;
   }
   auto *outerBody = dynamic_cast<BlockStmt *>(outer->body.get());
-  if (!outerBody) {
+  if (!outerBody || outerBody->items.size() != 3) {
     return false;
   }
-  // 不支持外层体含局部声明（避免错误搬移）
-  for (const auto &it : outerBody->items) {
-    if (it->kind == StmtKind::Decl) {
+  for (size_t idx = 0; idx < outerBody->items.size(); ++idx) {
+    if (outerBody->items[idx]->kind == StmtKind::Decl && idx != 0) {
       return false;
     }
   }
-  if (outerBody->items.size() != 3) {
+  string innerIv;
+  if (!parseZeroInit(outerBody->items[0].get(), &innerIv)) {
     return false;
   }
-  auto *innerInit = dynamic_cast<AssignStmt *>(outerBody->items[0].get());
   auto *inner = dynamic_cast<WhileStmt *>(outerBody->items[1].get());
   auto *outerInc = dynamic_cast<AssignStmt *>(outerBody->items[2].get());
-  if (!innerInit || !inner || !outerInc) {
+  if (!inner || !outerInc || !isIncByOne(outerInc, outerIv)) {
     return false;
   }
-  if (!isZeroAssignTo(innerInit, innerInit->lhs->name)) {
-    return false;
-  }
-  if (!isIncByOne(outerInc, outerIv)) {
-    return false;
-  }
-
-  string innerIv;
-  if (!extractLoopIv(inner, &innerIv)) {
+  string innerIvLoop;
+  if (!extractLoopIv(inner, &innerIvLoop) || innerIvLoop != innerIv) {
     return false;
   }
   if (innerIv == outerIv) {
-    return false;
-  }
-  if (innerInit->lhs->name != innerIv) {
     return false;
   }
 
@@ -335,8 +425,8 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
   }
 
   int line = outer->line;
-  unique_ptr<AssignStmt> newParentInit = cloneAssign(innerInit);
-  unique_ptr<AssignStmt> innerOuterZero = cloneAssign(init);
+  unique_ptr<AssignStmt> newParentInit = cloneZeroInitAsAssign(outerBody->items[0].get());
+  unique_ptr<AssignStmt> innerOuterZero = cloneZeroInitAsAssign(items[k].get());
   unique_ptr<AssignStmt> incOuterIv = cloneAssign(outerInc);
   unique_ptr<AssignStmt> incInnerIv = cloneAssign(innerInc);
   if (!newParentInit || !innerOuterZero || !incOuterIv || !incInnerIv) {
@@ -360,6 +450,288 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
   return true;
 }
 
+static unique_ptr<LValExpr> makeArray2DLVal(int line, const string &arr,
+                                            const string &iv0, const string &iv1) {
+  auto lv = make_unique<LValExpr>(line, arr);
+  lv->indices.push_back(make_unique<LValExpr>(line, iv0));
+  lv->indices.push_back(make_unique<LValExpr>(line, iv1));
+  return lv;
+}
+
+static bool indexIsIv(const Expr *e, const string &iv) {
+  auto *lv = dynamic_cast<const LValExpr *>(e);
+  return lv && lv->name == iv && lv->indices.empty();
+}
+
+static bool matchCik(const LValExpr *lv, const string &iIv, const string &kIv,
+                     string *sym) {
+  if (!lv || lv->indices.size() != 2) {
+    return false;
+  }
+  if (!indexIsIv(lv->indices[0].get(), iIv) ||
+      !indexIsIv(lv->indices[1].get(), kIv)) {
+    return false;
+  }
+  *sym = lv->name;
+  return true;
+}
+
+static bool matchAkj(const LValExpr *lv, const string &kIv, const string &jIv,
+                     string *sym) {
+  if (!lv || lv->indices.size() != 2) {
+    return false;
+  }
+  if (!indexIsIv(lv->indices[0].get(), kIv) ||
+      !indexIsIv(lv->indices[1].get(), jIv)) {
+    return false;
+  }
+  *sym = lv->name;
+  return true;
+}
+
+static bool matchAij(const LValExpr *lv, const string &iIv, const string &jIv,
+                     string *sym) {
+  if (!lv || lv->indices.size() != 2) {
+    return false;
+  }
+  if (!indexIsIv(lv->indices[0].get(), iIv) ||
+      !indexIsIv(lv->indices[1].get(), jIv)) {
+    return false;
+  }
+  *sym = lv->name;
+  return true;
+}
+
+// sum = sum + C[i][k] * A[k][j]（many_mat_cal 内层 k 循环）
+static bool matchGemmSumAccum(const AssignStmt *as, const string &sumIv,
+                              const string &iIv, const string &jIv,
+                              const string &kIv, string *cSym, string *aSym) {
+  if (!as || !as->lhs || as->lhs->name != sumIv || !as->lhs->indices.empty()) {
+    return false;
+  }
+  auto *add = dynamic_cast<const BinaryExpr *>(as->rhs.get());
+  if (!add || add->op != "+") {
+    return false;
+  }
+  auto *sumL = dynamic_cast<const LValExpr *>(add->lhs.get());
+  if (!sumL || sumL->name != sumIv || !sumL->indices.empty()) {
+    return false;
+  }
+  auto *mul = dynamic_cast<const BinaryExpr *>(add->rhs.get());
+  if (!mul || mul->op != "*") {
+    return false;
+  }
+  auto *l0 = dynamic_cast<const LValExpr *>(mul->lhs.get());
+  auto *l1 = dynamic_cast<const LValExpr *>(mul->rhs.get());
+  if (!l0 || !l1) {
+    return false;
+  }
+  string c0, a0;
+  if (matchCik(l0, iIv, kIv, &c0) && matchAkj(l1, kIv, jIv, &a0)) {
+    *cSym = c0;
+    *aSym = a0;
+    return true;
+  }
+  if (matchCik(l1, iIv, kIv, &c0) && matchAkj(l0, kIv, jIv, &a0)) {
+    *cSym = c0;
+    *aSym = a0;
+    return true;
+  }
+  return false;
+}
+
+// i-j-k 点积 → i-k-j：每行先清零 A[i][*]，再对 k 扫 j 累加（A[k][j] 行优先）
+static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
+  (void)items;
+  (void)k;
+  // i-k-j 交换在 k==i 项上须保留原 A[i][j]；当前实现仍 WA（many_mat_cal），先关闭保正确性。
+  return false;
+#if 0
+  if (k + 1 >= items.size()) {
+    return false;
+  }
+  auto *outerW = dynamic_cast<WhileStmt *>(items[k + 1].get());
+  OuterLoopHead head;
+  if (!matchOuterLoopHead(items[k].get(), outerW, &head)) {
+    return false;
+  }
+  const string &iIv = head.iv;
+  const ExprPtr &iLimit = head.limit;
+  auto *outerBody = dynamic_cast<BlockStmt *>(outerW->body.get());
+  if (!outerBody || outerBody->items.size() != 3) {
+    return false;
+  }
+  string jIv;
+  if (!parseZeroInit(outerBody->items[0].get(), &jIv)) {
+    return false;
+  }
+  auto *midW = dynamic_cast<WhileStmt *>(outerBody->items[1].get());
+  auto *outerInc = dynamic_cast<AssignStmt *>(outerBody->items[2].get());
+  if (!midW || !isIncByOne(outerInc, iIv)) {
+    return false;
+  }
+  string jIv2;
+  ExprPtr jLimit;
+  if (!extractLtBound(midW->cond.get(), &jIv2, &jLimit) || jIv2 != jIv) {
+    return false;
+  }
+  auto *midBody = dynamic_cast<BlockStmt *>(midW->body.get());
+  if (!midBody || midBody->items.size() != 5) {
+    return false;
+  }
+  string kIv;
+  if (!parseZeroInit(midBody->items[0].get(), &kIv)) {
+    return false;
+  }
+  string sumIv;
+  if (!parseZeroInit(midBody->items[1].get(), &sumIv)) {
+    return false;
+  }
+  auto *innerW = dynamic_cast<WhileStmt *>(midBody->items[2].get());
+  if (!innerW) {
+    return false;
+  }
+  string kIv2;
+  ExprPtr kLimit;
+  if (!extractLtBound(innerW->cond.get(), &kIv2, &kLimit) || kIv2 != kIv) {
+    return false;
+  }
+  auto *innerBody = dynamic_cast<BlockStmt *>(innerW->body.get());
+  if (!innerBody || innerBody->items.size() != 2 ||
+      innerBody->items[0]->kind != StmtKind::Assign ||
+      !isIncByOne(dynamic_cast<const AssignStmt *>(innerBody->items[1].get()), kIv)) {
+    return false;
+  }
+  auto *accumAs = dynamic_cast<const AssignStmt *>(innerBody->items[0].get());
+  string cSym, aSym;
+  if (!matchGemmSumAccum(accumAs, sumIv, iIv, jIv, kIv, &cSym, &aSym)) {
+    return false;
+  }
+  auto *storeAs = dynamic_cast<const AssignStmt *>(midBody->items[3].get());
+  string aOut;
+  if (!storeAs || !storeAs->lhs || storeAs->lhs->indices.size() != 2) {
+    return false;
+  }
+  if (!matchAij(storeAs->lhs.get(), iIv, jIv, &aOut) || aOut != aSym) {
+    return false;
+  }
+  auto *sumRhs = dynamic_cast<const LValExpr *>(storeAs->rhs.get());
+  if (!sumRhs || sumRhs->name != sumIv || !sumRhs->indices.empty()) {
+    return false;
+  }
+  auto *midInc = dynamic_cast<const AssignStmt *>(midBody->items[4].get());
+  if (!isIncByOne(midInc, jIv)) {
+    return false;
+  }
+  if (exprUsesVarName(jLimit.get(), iIv) || exprUsesVarName(kLimit.get(), iIv) ||
+      exprUsesVarName(kLimit.get(), jIv) || exprUsesVarName(iLimit.get(), jIv)) {
+    return false;
+  }
+
+  const int line = outerW->line;
+  // k==i 项须用改写前的 A[i][j]：A[i][j] = C[i][i] * A[i][j]（不能先清零再累加）
+  auto diagBody = make_unique<BlockStmt>(line);
+  {
+    auto alhs = makeArray2DLVal(line, aSym, iIv, jIv);
+    auto cii = makeArray2DLVal(line, cSym, iIv, iIv);
+    auto arhs = makeArray2DLVal(line, aSym, iIv, jIv);
+    auto mul = make_unique<BinaryExpr>(line, "*", std::move(cii), std::move(arhs));
+    diagBody->items.push_back(
+        make_unique<AssignStmt>(line, std::move(alhs), std::move(mul)));
+    diagBody->items.push_back(cloneAssign(midInc));
+  }
+  auto diagWhile = make_unique<WhileStmt>(line, cloneExpr(midW->cond.get()), nullptr);
+  diagWhile->body = std::move(diagBody);
+
+  // k!=i：A[i][j] = A[i][j] + C[i][k] * A[k][j]
+  auto accBody = make_unique<BlockStmt>(line);
+  {
+    auto alhs = makeArray2DLVal(line, aSym, iIv, jIv);
+    auto arhs = makeArray2DLVal(line, aSym, iIv, jIv);
+    auto cik = makeArray2DLVal(line, cSym, iIv, kIv);
+    auto akj = makeArray2DLVal(line, aSym, kIv, jIv);
+    auto mul = make_unique<BinaryExpr>(line, "*", std::move(cik), std::move(akj));
+    auto add = make_unique<BinaryExpr>(line, "+", std::move(arhs), std::move(mul));
+    accBody->items.push_back(
+        make_unique<AssignStmt>(line, std::move(alhs), std::move(add)));
+    accBody->items.push_back(cloneAssign(midInc));
+  }
+  auto accWhile = make_unique<WhileStmt>(line, cloneExpr(midW->cond.get()), nullptr);
+  accWhile->body = std::move(accBody);
+
+  auto kNeiBody = make_unique<BlockStmt>(line);
+  if (StmtPtr jInit = cloneZeroInitAsAssign(outerBody->items[0].get())) {
+    kNeiBody->items.push_back(std::move(jInit));
+  } else {
+    return false;
+  }
+  kNeiBody->items.push_back(std::move(accWhile));
+  auto kNe = make_unique<BinaryExpr>(line, "!=",
+                                     make_unique<LValExpr>(line, kIv),
+                                     make_unique<LValExpr>(line, iIv));
+  auto kSkipI = make_unique<IfStmt>(line, std::move(kNe), std::move(kNeiBody), nullptr);
+
+  auto kBody = make_unique<BlockStmt>(line);
+  kBody->items.push_back(std::move(kSkipI));
+  if (unique_ptr<AssignStmt> kInc = cloneAssign(
+          dynamic_cast<const AssignStmt *>(innerBody->items[1].get()))) {
+    kBody->items.push_back(std::move(kInc));
+  } else {
+    return false;
+  }
+  auto kWhile = make_unique<WhileStmt>(line, cloneExpr(innerW->cond.get()), nullptr);
+  kWhile->body = std::move(kBody);
+
+  auto newOuterBody = make_unique<BlockStmt>(line);
+  if (auto *jd = dynamic_cast<const DeclStmt *>(outerBody->items[0].get())) {
+    auto nd = make_unique<DeclStmt>(jd->line, jd->isConst, jd->base);
+    VarDef vj;
+    vj.name = jIv;
+    vj.line = jd->line;
+    nd->defs.push_back(std::move(vj));
+    newOuterBody->items.push_back(std::move(nd));
+  } else if (StmtPtr jz = cloneZeroInitAsAssign(outerBody->items[0].get())) {
+    newOuterBody->items.push_back(std::move(jz));
+  } else {
+    return false;
+  }
+  newOuterBody->items.push_back(std::move(diagWhile));
+  if (dynamic_cast<const DeclStmt *>(midBody->items[0].get()) != nullptr) {
+    auto kd = make_unique<DeclStmt>(line, false, BaseType::Int);
+    VarDef vd;
+    vd.name = kIv;
+    vd.line = line;
+    kd->defs.push_back(std::move(vd));
+    newOuterBody->items.push_back(std::move(kd));
+  }
+  if (StmtPtr kZero = cloneZeroInitAsAssign(midBody->items[0].get())) {
+    newOuterBody->items.push_back(std::move(kZero));
+  } else {
+    return false;
+  }
+  newOuterBody->items.push_back(std::move(kWhile));
+  newOuterBody->items.push_back(cloneAssign(outerInc));
+
+  auto newOuterWhile =
+      make_unique<WhileStmt>(line, cloneExpr(outerW->cond.get()), nullptr);
+  newOuterWhile->body = std::move(newOuterBody);
+
+  if (head.ivFromDecl) {
+    stripDeclZeroInit(items[k].get());
+    items.erase(items.begin() + static_cast<ptrdiff_t>(k + 1),
+                items.begin() + static_cast<ptrdiff_t>(k + 2));
+    items.insert(items.begin() + static_cast<ptrdiff_t>(k + 1),
+                 std::move(newOuterWhile));
+  } else {
+    items.erase(items.begin() + static_cast<ptrdiff_t>(k),
+                items.begin() + static_cast<ptrdiff_t>(k + 2));
+    items.insert(items.begin() + static_cast<ptrdiff_t>(k),
+                 std::move(newOuterWhile));
+  }
+  return true;
+#endif
+}
+
 static void processBlock(BlockStmt *blk) {
   if (!blk) {
     return;
@@ -380,6 +752,10 @@ static void processBlock(BlockStmt *blk) {
     }
   }
   for (size_t i = 0; i + 1 < blk->items.size();) {
+    if (tryInterchangeGemmIjk(blk->items, i)) {
+      ++i;
+      continue;
+    }
     if (tryInterchangeTransposePair(blk->items, i)) {
       ++i;
       continue;
@@ -395,4 +771,5 @@ void loopInterchangePass(Program &program) {
     }
     processBlock(item.func->body.get());
   }
+  loopTilingPass(program);
 }

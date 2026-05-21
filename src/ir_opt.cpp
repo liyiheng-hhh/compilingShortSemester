@@ -1,7 +1,9 @@
 #include "ir.h"
 
 #include "common.h"
+#include "ir_loop_opt.h"
 #include "opt_config.h"
+#include "semantic.h"
 
 #include <algorithm>
 #include <climits>
@@ -139,117 +141,117 @@ void irRefreshCFG(IRFunction &fn) {
 // Single-block while: Label L; body (no inner Label); J L. Hoist LoadGlobal(s)
 // with no StoreGlobal to the same symbol in the body and no Call in the body.
 static void irHoistInvariantLoadGlobalSimpleWhile(IRFunction &fn) {
-  constexpr int kMaxRounds = 4096;
+  // 每轮只外提一个 while；禁止 allocVreg；轮次过多会把 prelude/Copy 堆满（reduce 万行 asm）
+  constexpr int kMaxRounds = 16;
+  const size_t instBudget0 = fn.insts.size();
   for (int round = 0; round < kMaxRounds; ++round) {
     vector<IRInst> &inst = fn.insts;
     const size_t n = inst.size();
+    if (n > instBudget0 * 3u + 256u) {
+      return;
+    }
     bool hoistedThisRound = false;
     for (size_t i = 0; i + 2 < n; ++i) {
-    if (inst[i].op != IROp::Label) {
-      continue;
-    }
-    const string &lab = inst[i].ext;
-    size_t j = i + 1;
-    while (j < n && inst[j].op != IROp::Label) {
-      ++j;
-    }
-    if (j <= i + 1 || inst[j - 1].op != IROp::J || inst[j - 1].ext != lab) {
-      continue;
-    }
-    const size_t bodyStart = i + 1;
-    const size_t bodyEnd = j - 2;
-    bool hasCall = false;
-    for (size_t k = bodyStart; k <= bodyEnd; ++k) {
-      if (inst[k].op == IROp::Call) {
-        hasCall = true;
-        break;
-      }
-    }
-    if (hasCall) {
-      continue;
-    }
-    vector<pair<Symbol *, IRInst>> prelude;
-    unordered_map<Symbol *, int> symToLoadVreg;
-    unordered_map<Symbol *, int> symToLeaVreg;
-    for (size_t k = bodyStart; k <= bodyEnd; ++k) {
-      if (inst[k].op != IROp::LoadGlobal && inst[k].op != IROp::LeaGlobal) {
+      if (inst[i].op != IROp::Label) {
         continue;
       }
-      Symbol *sym = inst[k].sym;
-      if (!sym) {
+      const string &lab = inst[i].ext;
+      size_t j = i + 1;
+      while (j < n && inst[j].op != IROp::Label) {
+        ++j;
+      }
+      if (j <= i + 1 || inst[j - 1].op != IROp::J || inst[j - 1].ext != lab) {
         continue;
       }
-      bool stored = false;
-      for (size_t t = bodyStart; t <= bodyEnd; ++t) {
-        if (inst[t].op == IROp::StoreGlobal && inst[t].sym == sym) {
-          stored = true;
+      const size_t bodyStart = i + 1;
+      const size_t bodyEnd = j - 2;
+      bool hasCall = false;
+      for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+        if (inst[k].op == IROp::Call) {
+          hasCall = true;
           break;
         }
       }
-      if (stored) {
+      if (hasCall) {
         continue;
       }
-      if (inst[k].op == IROp::LoadGlobal) {
-        if (symToLoadVreg.count(sym)) {
+      vector<IRInst> prelude;
+      unordered_map<Symbol *, int> symToLoadVreg;
+      unordered_map<Symbol *, int> symToLeaVreg;
+      for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+        if (inst[k].op != IROp::LoadGlobal && inst[k].op != IROp::LeaGlobal) {
           continue;
         }
-        int h = fn.allocVreg();
-        symToLoadVreg[sym] = h;
-        IRInst ld = inst[k];
-        ld.dst = h;
-        prelude.push_back({sym, ld});
-      } else {
-        if (symToLeaVreg.count(sym)) {
+        Symbol *sym = inst[k].sym;
+        if (!sym) {
           continue;
         }
-        int h = fn.allocVreg();
-        symToLeaVreg[sym] = h;
-        IRInst lea = inst[k];
-        lea.dst = h;
-        prelude.push_back({sym, lea});
-      }
-    }
-    if (prelude.empty()) {
-      continue;
-    }
-    vector<IRInst> out;
-    out.reserve(inst.size() + prelude.size());
-    size_t p = 0;
-    while (p < n) {
-      if (p == i) {
-        out.push_back(inst[i]);
-        for (const auto &pr : prelude) {
-          out.push_back(pr.second);
-        }
-        for (size_t k = bodyStart; k <= bodyEnd; ++k) {
-          IRInst w = inst[k];
-          if (w.op == IROp::LoadGlobal && symToLoadVreg.count(w.sym)) {
-            IRInst cp;
-            cp.op = IROp::Copy;
-            cp.dst = w.dst;
-            cp.u = symToLoadVreg[w.sym];
-            cp.isFloat = w.isFloat;
-            out.push_back(cp);
-          } else if (w.op == IROp::LeaGlobal && symToLeaVreg.count(w.sym)) {
-            IRInst cp;
-            cp.op = IROp::Copy;
-            cp.dst = w.dst;
-            cp.u = symToLeaVreg[w.sym];
-            cp.isFloat = false;
-            out.push_back(cp);
-          } else {
-            out.push_back(w);
+        bool stored = false;
+        for (size_t t = bodyStart; t <= bodyEnd; ++t) {
+          if (inst[t].op == IROp::StoreGlobal && inst[t].sym == sym) {
+            stored = true;
+            break;
           }
         }
-        out.push_back(inst[j - 1]);
-        p = j;
-      } else {
-        out.push_back(inst[p++]);
+        if (stored) {
+          continue;
+        }
+        if (inst[k].op == IROp::LoadGlobal) {
+          if (symToLoadVreg.count(sym)) {
+            continue;
+          }
+          // 复用首次出现的 dst，勿 allocVreg（多轮外提会撑爆 nextVreg）
+          symToLoadVreg[sym] = inst[k].dst;
+          prelude.push_back(inst[k]);
+        } else {
+          if (symToLeaVreg.count(sym)) {
+            continue;
+          }
+          symToLeaVreg[sym] = inst[k].dst;
+          prelude.push_back(inst[k]);
+        }
       }
-    }
-    inst.swap(out);
-    hoistedThisRound = true;
-    break;
+      if (prelude.empty()) {
+        continue;
+      }
+      vector<IRInst> out;
+      out.reserve(inst.size() + prelude.size());
+      size_t p = 0;
+      while (p < n) {
+        if (p == i) {
+          out.push_back(inst[i]);
+          for (const IRInst &pr : prelude) {
+            out.push_back(pr);
+          }
+          for (size_t k = bodyStart; k <= bodyEnd; ++k) {
+            IRInst w = inst[k];
+            if (w.op == IROp::LoadGlobal && symToLoadVreg.count(w.sym)) {
+              IRInst cp;
+              cp.op = IROp::Copy;
+              cp.dst = w.dst;
+              cp.u = symToLoadVreg[w.sym];
+              cp.isFloat = w.isFloat;
+              out.push_back(cp);
+            } else if (w.op == IROp::LeaGlobal && symToLeaVreg.count(w.sym)) {
+              IRInst cp;
+              cp.op = IROp::Copy;
+              cp.dst = w.dst;
+              cp.u = symToLeaVreg[w.sym];
+              cp.isFloat = false;
+              out.push_back(cp);
+            } else {
+              out.push_back(w);
+            }
+          }
+          out.push_back(inst[j - 1]);
+          p = j;
+        } else {
+          out.push_back(inst[p++]);
+        }
+      }
+      inst.swap(out);
+      hoistedThisRound = true;
+      break;
     }
     if (!hoistedThisRound) {
       return;
@@ -645,7 +647,9 @@ static void irCollectLoopMemorySummary(const IRFunction &fn, const unordered_set
 // 在支配关系与「定义块支配所有 latch」条件下外提不变量；插入位置为循环头块首条 Label 之后（每轮迭代执行一次，与单块 LICM 一致）。
 static void irHoistLoopInvariantCFG(IRFunction &fn) {
   // 外提会改指令序列与 CFG；用迭代重建支配/循环，禁止尾递归自调（小图上也会无限递归栈溢出）。
-  constexpr int kMaxRounds = 4096;
+  // 嵌套循环每轮只处理一个 loop 且会复制指令到外层头；4096 轮会把 reduce 等撑到万行 asm。
+  constexpr int kMaxRounds = 16;
+  const size_t instBudget0 = fn.insts.size();
   for (int round = 0; round < kMaxRounds; ++round) {
     irRefreshCFG(fn);
     vector<IRInst> &inst = fn.insts;
@@ -653,6 +657,9 @@ static void irHoistLoopInvariantCFG(IRFunction &fn) {
     const int maxV = fn.nextVreg;
     const size_t n = inst.size();
     if (nb <= 0 || n == 0 || maxV <= 0) {
+      return;
+    }
+    if (n > instBudget0 * 4u + 512u) {
       return;
     }
   // 支配矩阵 dom 为 nb×nb 字节；大源文件基本块极多时可达数百 MB～数 GB，易被评测机 OOM Killer
@@ -852,7 +859,6 @@ static void irHoistLoopInvariantCFG(IRFunction &fn) {
     }
     inst.swap(out);
     hoistedThisRound = true;
-    break;
   }
   if (!hoistedThisRound) {
     return;
@@ -939,6 +945,28 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
   unordered_map<Key, int, KeyHash> cse;
   cse.reserve(256);
 
+  vector<IRInst> out;
+  out.reserve(fn.insts.size());
+
+  auto tryCseEarly = [&](const Key &k, int dst) -> bool {
+    if (!prof.irArithmeticCse || dst < 0) {
+      return false;
+    }
+    auto it = cse.find(k);
+    if (it == cse.end()) {
+      return false;
+    }
+    IRInst cp;
+    cp.op = IROp::Copy;
+    cp.dst = dst;
+    cp.u = it->second;
+    out.push_back(cp);
+    if (dst < static_cast<int>(copyUF.size())) {
+      copyUF[dst] = findRoot(copyUF, it->second);
+    }
+    return true;
+  };
+
   auto makeKeyComm = [&](const IRInst &in) -> Key {
     Key k{in.op, 0, 0, in.immI, in.isFloat};
     int ru = remap(in.u);
@@ -987,12 +1015,13 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
 
   // Store-to-load forwarding state (integrated into main loop)
   unordered_map<Symbol *, int> fwdStore;   // symbol → last stored vreg
-
-  vector<IRInst> out;
-  out.reserve(fn.insts.size());
+  unordered_map<int, int> fwdMem;          // address vreg → last stored value vreg
 
   for (IRInst in : fn.insts) {
     // Memory-clobbering operations invalidate forwarding
+    if (in.op == IROp::StoreMem || in.op == IROp::Call) {
+      fwdMem.clear();
+    }
     if (in.op == IROp::StoreMem || in.op == IROp::Call) {
       fwdStore.clear();
     }
@@ -1007,6 +1036,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     case IROp::Label:
       cse.clear();
       fwdStore.clear();
+      fwdMem.clear();
       for (int t = 0; t < n; ++t) {
         copyUF[static_cast<size_t>(t)] = t;
       }
@@ -1017,6 +1047,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     case IROp::J:
       cse.clear();
       fwdStore.clear();
+      fwdMem.clear();
       for (int t = 0; t < n; ++t) {
         copyUF[static_cast<size_t>(t)] = t;
       }
@@ -1027,6 +1058,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     case IROp::Beqz:
       cse.clear();
       fwdStore.clear();
+      fwdMem.clear();
       in.u = remap(in.u);
       out.push_back(in);
       continue;
@@ -1088,15 +1120,59 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
         }
       }
       fwdStore.erase(in.sym);
-      in.u = remap(in.u);
+      if (in.sym && in.dst >= 0) {
+        Key k{IROp::LoadGlobal, reinterpret_cast<uint64_t>(in.sym), 0, 0, in.isFloat};
+        if (tryCseEarly(k, in.dst)) {
+          continue;
+        }
+        cse[k] = in.dst;
+      }
+      out.push_back(in);
+      continue;
+    }
+    case IROp::LeaGlobal: {
+      if (in.sym && in.dst >= 0) {
+        Key k{IROp::LeaGlobal, reinterpret_cast<uint64_t>(in.sym), 0, 0, false};
+        if (tryCseEarly(k, in.dst)) {
+          continue;
+        }
+        cse[k] = in.dst;
+      }
+      out.push_back(in);
+      continue;
+    }
+    case IROp::LeaLocal: {
+      if (in.sym && in.dst >= 0) {
+        Key k{IROp::LeaLocal, reinterpret_cast<uint64_t>(in.sym), 0, 0, false};
+        if (tryCseEarly(k, in.dst)) {
+          continue;
+        }
+        cse[k] = in.dst;
+      }
+      out.push_back(in);
+      continue;
+    }
+    case IROp::LoadParamAddr: {
+      if (in.sym && in.dst >= 0) {
+        Key k{IROp::LoadParamAddr, reinterpret_cast<uint64_t>(in.sym), 0, 0, false};
+        if (tryCseEarly(k, in.dst)) {
+          continue;
+        }
+        cse[k] = in.dst;
+      }
       out.push_back(in);
       continue;
     }
     case IROp::LeaStr:
-    case IROp::LeaGlobal:
-    case IROp::LeaLocal:
-    case IROp::LoadParamAddr:
-    case IROp::StoreMem:
+    case IROp::StoreMem: {
+      in.u = remap(in.u);
+      in.v = remap(in.v);
+      if (prof.irStoreLoadForward && in.u >= 0) {
+        fwdMem[in.u] = in.v;
+      }
+      out.push_back(in);
+      continue;
+    }
     case IROp::Call:
     case IROp::Ret:
     case IROp::Nop:
@@ -1724,13 +1800,32 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
       if (!folded) cse[k] = in.dst;
       break;
     }
-    case IROp::LoadMem:
-      k = Key{in.op, static_cast<uint64_t>(static_cast<uint32_t>(in.u)), 0, 0, in.isFloat};
+    case IROp::LoadMem: {
+      int addr = remap(in.u);
+      if (prof.irStoreLoadForward) {
+        auto mf = fwdMem.find(addr);
+        if (mf != fwdMem.end() && mf->second >= 0 && in.dst >= 0) {
+          IRInst cp;
+          cp.op = IROp::Copy;
+          cp.dst = in.dst;
+          cp.u = remap(mf->second);
+          cp.isFloat = in.isFloat;
+          out.push_back(cp);
+          if (in.dst < static_cast<int>(copyUF.size())) {
+            copyUF[in.dst] = findRoot(copyUF, remap(mf->second));
+          }
+          folded = true;
+          break;
+        }
+      }
+      k = Key{in.op, static_cast<uint64_t>(static_cast<uint32_t>(addr)), 0, 0, in.isFloat};
       folded = tryCse(k);
       if (!folded) {
         cse[k] = in.dst;
       }
+      fwdMem.erase(addr);
       break;
+    }
     default:
       break;
     }
@@ -1776,7 +1871,257 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
   irRefreshCFG(fn);
 }
 
-void irOptimizeBlock(IRFunction &fn, const O1Profile &prof) {
+static Function *irLookupFunction(const Semantic &sem, const string &callee) {
+  for (const auto &kv : sem.functions()) {
+    if (kv.second && kv.second->asmName == callee) {
+      return kv.second;
+    }
+  }
+  return nullptr;
+}
+
+static ReturnStmt *irSingleReturnStmt(FuncDef *def) {
+  if (!def || !def->body || def->body->items.size() != 1) {
+    return nullptr;
+  }
+  Stmt *stmt = def->body->items[0].get();
+  if (stmt->kind != StmtKind::Return) {
+    return nullptr;
+  }
+  auto *ret = static_cast<ReturnStmt *>(stmt);
+  return ret->expr ? ret : nullptr;
+}
+
+static bool irScalarIntLVal(Expr *e, Symbol *&symOut) {
+  if (!e || e->kind != ExprKind::LVal) {
+    return false;
+  }
+  auto *lv = static_cast<LValExpr *>(e);
+  if (!lv->indices.empty() || !lv->symbol || lv->symbol->isArray ||
+      lv->type.base != BaseType::Int || lv->type.isPointer) {
+    return false;
+  }
+  symOut = lv->symbol;
+  return true;
+}
+
+static bool irScalarIntConst(Expr *e, int32_t &valOut) {
+  if (!e || e->kind != ExprKind::Number) {
+    return false;
+  }
+  auto *n = static_cast<NumberExpr *>(e);
+  if (n->isFloat) {
+    return false;
+  }
+  valOut = n->intVal;
+  return true;
+}
+
+// 内联 return param % global 或 return global % param（如 hash）
+static bool irTryInlineModGlobalCall(IRFunction &fn, const IRInst &call,
+                                     FuncDef *calleeDef, vector<IRInst> &out) {
+  if (call.args.size() != 1 || call.callArgPtr.size() != 1 ||
+      call.callArgPtr[0] != 0) {
+    return false;
+  }
+  ReturnStmt *ret = irSingleReturnStmt(calleeDef);
+  if (!ret || calleeDef->params.size() != 1 || calleeDef->params[0].isArray ||
+      calleeDef->params[0].base != BaseType::Int || !calleeDef->params[0].symbol) {
+    return false;
+  }
+  Symbol *paramSym = calleeDef->params[0].symbol;
+  if (ret->expr->kind != ExprKind::Binary) {
+    return false;
+  }
+  auto *bin = static_cast<BinaryExpr *>(ret->expr.get());
+  if (bin->op != "%") {
+    return false;
+  }
+  Symbol *lhs = nullptr;
+  Symbol *rhs = nullptr;
+  if (!irScalarIntLVal(bin->lhs.get(), lhs) || !irScalarIntLVal(bin->rhs.get(), rhs)) {
+    return false;
+  }
+  Symbol *globalSym = nullptr;
+  int argVreg = call.args[0];
+  if (lhs == paramSym && rhs->isGlobal && !rhs->isArray) {
+    globalSym = rhs;
+  } else if (rhs == paramSym && lhs->isGlobal && !lhs->isArray) {
+    globalSym = lhs;
+  } else {
+    return false;
+  }
+
+  int modV = fn.allocVreg();
+  IRInst lg;
+  lg.op = IROp::LoadGlobal;
+  lg.dst = modV;
+  lg.sym = globalSym;
+  lg.isFloat = false;
+  out.push_back(lg);
+
+  IRInst rem;
+  rem.op = IROp::Rem;
+  rem.dst = call.dst;
+  rem.u = argVreg;
+  rem.v = modV;
+  out.push_back(rem);
+  return true;
+}
+
+// 内联 return param % const 或 return const % param
+static bool irTryInlineModConstCall(IRFunction &fn, const IRInst &call,
+                                    FuncDef *calleeDef, vector<IRInst> &out) {
+  if (call.args.size() != 1 || call.callArgPtr.size() != 1 ||
+      call.callArgPtr[0] != 0) {
+    return false;
+  }
+  ReturnStmt *ret = irSingleReturnStmt(calleeDef);
+  if (!ret || calleeDef->params.size() != 1 || calleeDef->params[0].isArray ||
+      calleeDef->params[0].base != BaseType::Int || !calleeDef->params[0].symbol) {
+    return false;
+  }
+  Symbol *paramSym = calleeDef->params[0].symbol;
+  if (ret->expr->kind != ExprKind::Binary) {
+    return false;
+  }
+  auto *bin = static_cast<BinaryExpr *>(ret->expr.get());
+  if (bin->op != "%") {
+    return false;
+  }
+  Symbol *lhs = nullptr;
+  Symbol *rhs = nullptr;
+  int32_t modConst = 0;
+  int argVreg = call.args[0];
+  bool ok = false;
+  if (irScalarIntLVal(bin->lhs.get(), lhs) && lhs == paramSym &&
+      irScalarIntConst(bin->rhs.get(), modConst)) {
+    ok = true;
+  } else if (irScalarIntLVal(bin->rhs.get(), rhs) && rhs == paramSym &&
+             irScalarIntConst(bin->lhs.get(), modConst)) {
+    ok = true;
+  }
+  if (!ok || modConst == 0 || modConst == -1) {
+    return false;
+  }
+  int modV = fn.allocVreg();
+  IRInst ci;
+  ci.op = IROp::ConstI;
+  ci.dst = modV;
+  ci.immI = modConst;
+  out.push_back(ci);
+  IRInst rem;
+  rem.op = IROp::Rem;
+  rem.dst = call.dst;
+  rem.u = argVreg;
+  rem.v = modV;
+  out.push_back(rem);
+  return true;
+}
+
+// 内联 return param（单参数透传）
+static bool irTryInlineIdentityCall(IRFunction &fn, const IRInst &call,
+                                    FuncDef *calleeDef, vector<IRInst> &out) {
+  if (call.args.size() != 1 || call.callArgPtr[0] != 0 || call.dst < 0) {
+    return false;
+  }
+  ReturnStmt *ret = irSingleReturnStmt(calleeDef);
+  if (!ret || calleeDef->params.size() != 1 || calleeDef->params[0].isArray ||
+      calleeDef->params[0].base != BaseType::Int || !calleeDef->params[0].symbol) {
+    return false;
+  }
+  Symbol *paramSym = calleeDef->params[0].symbol;
+  Symbol *retSym = nullptr;
+  if (!irScalarIntLVal(ret->expr.get(), retSym) || retSym != paramSym) {
+    return false;
+  }
+  IRInst cp;
+  cp.op = IROp::Copy;
+  cp.dst = call.dst;
+  cp.u = call.args[0];
+  out.push_back(cp);
+  return true;
+}
+
+static bool irTryInlineOneCall(IRFunction &fn, const IRInst &call, FuncDef *calleeDef,
+                               vector<IRInst> &out) {
+  if (irTryInlineModGlobalCall(fn, call, calleeDef, out)) {
+    return true;
+  }
+  if (irTryInlineModConstCall(fn, call, calleeDef, out)) {
+    return true;
+  }
+  if (irTryInlineIdentityCall(fn, call, calleeDef, out)) {
+    return true;
+  }
+  return false;
+}
+
+// 基本块内同一 global 的重复 LoadGlobal → Copy（hashmod 等；利于后续 CSE/LICM）
+static void irCanonicalizeLoadGlobalInBlocks(IRFunction &fn) {
+  irRefreshCFG(fn);
+  if (fn.blocks.empty()) {
+    return;
+  }
+  vector<IRInst> &inst = fn.insts;
+  for (const IRBlock &blk : fn.blocks) {
+    if (blk.end <= blk.begin) {
+      continue;
+    }
+    unordered_map<Symbol *, int> canon;
+    for (size_t i = blk.begin; i < blk.end; ++i) {
+      IRInst &in = inst[i];
+      if (in.op == IROp::Label || in.op == IROp::Call || in.op == IROp::Ret) {
+        canon.clear();
+        continue;
+      }
+      if (in.op == IROp::StoreGlobal && in.sym) {
+        canon.erase(in.sym);
+        continue;
+      }
+      if (in.op == IROp::LoadGlobal && in.sym && in.dst >= 0 && !in.isFloat) {
+        auto it = canon.find(in.sym);
+        if (it != canon.end() && it->second >= 0) {
+          in.op = IROp::Copy;
+          in.u = it->second;
+          in.sym = nullptr;
+          in.isFloat = false;
+        } else {
+          canon[in.sym] = in.dst;
+        }
+      }
+    }
+  }
+}
+
+static void irInlineTrivialCalls(IRFunction &fn, const Semantic &sem) {
+  if (envFlagTruthy("SYSY_CC_NO_IR_INLINE")) {
+    return;
+  }
+  vector<IRInst> rebuilt;
+  rebuilt.reserve(fn.insts.size());
+  for (const IRInst &in : fn.insts) {
+    if (in.op != IROp::Call || in.callee.empty()) {
+      rebuilt.push_back(in);
+      continue;
+    }
+    Function *fnSym = irLookupFunction(sem, in.callee);
+    if (!fnSym || fnSym->runtime || fnSym->variadic || fnSym->injectLineArgument ||
+        fnSym->ret != BaseType::Int || !fnSym->def) {
+      rebuilt.push_back(in);
+      continue;
+    }
+    vector<IRInst> repl;
+    if (irTryInlineOneCall(fn, in, fnSym->def, repl)) {
+      rebuilt.insert(rebuilt.end(), repl.begin(), repl.end());
+    } else {
+      rebuilt.push_back(in);
+    }
+  }
+  fn.insts = std::move(rebuilt);
+}
+
+void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *semantic) {
   irRefreshCFG(fn);
   if (envFlagTruthy("SYSY_CC_IR_EMIT_ONLY")) {
     return;
@@ -1784,13 +2129,30 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof) {
   if (!prof.irBackend || !prof.irMidend) {
     return;
   }
-  const int maxOuter = prof.irCfgLicm || prof.irSimpleLicm ? 8 : 4;
+  if (semantic) {
+    irInlineTrivialCalls(fn, *semantic);
+    irCanonicalizeLoadGlobalInBlocks(fn);
+    irRefreshCFG(fn);
+  }
+  size_t complexity = fn.insts.size() + static_cast<size_t>(fn.blocks.size()) * 4u;
+  if (envFlagTruthy("SYSY_CC_IR_ECONOMY_MODE")) {
+    complexity *= 2;
+  }
+  int maxOuter = prof.irCfgLicm || prof.irSimpleLicm ? 12 : 4;
+  if (complexity > 12000) {
+    maxOuter = min(maxOuter, 4);
+  } else if (complexity > 6000) {
+    maxOuter = min(maxOuter, 8);
+  }
   for (int outer = 0; outer < maxOuter; ++outer) {
     const uint64_t before = irInstructionFingerprint(fn);
     irOptimizeBlockOneRound(fn, prof);
     if (irInstructionFingerprint(fn) == before) {
       break;
     }
+  }
+  if (prof.irLoopOpt) {
+    irOptimizeLoopsAndScalars(fn, prof);
   }
 }
 

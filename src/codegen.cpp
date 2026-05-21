@@ -1,5 +1,7 @@
 #include "codegen.h"
 
+#include "ir_regalloc.h"
+
 #include "common.h"
 
 #include <algorithm>
@@ -115,12 +117,36 @@ static bool emitSigned32DivByConstMagicPayload(CodeGen &cg, int32_t d) {
   return true;
 }
 
+// SysY 截断除法：n / 2^lg（lg>=0，除数为正 2 的幂）。
+static bool emitSDivByConstPow2Trunc(CodeGen &cg, int lg) {
+  if (lg < 0 || lg > 30) {
+    return false;
+  }
+  const int mask = (1 << lg) - 1;
+  cg.emit("\tsraiw\tt1, a0, 31");
+  if (mask >= -2048 && mask <= 2047) {
+    cg.emit("\tandi\tt1, t1, " + to_string(mask));
+  } else {
+    cg.emit("\tli\tt2, " + to_string(mask));
+    cg.emit("\tand\tt1, t1, t2");
+  }
+  cg.emit("\taddw\ta0, a0, t1");
+  cg.emit("\tsraiw\ta0, a0, " + to_string(lg));
+  return true;
+}
+
 // -O1: exact SysY 32-bit signed division by known constant.
 static bool emitSDivByConst(CodeGen &cg, int32_t d) {
   if (!cg.optO1() || d == 0 || d == 1 || d == -1) {
     return false;
   }
   cg.emit("\tsext.w\ta0, a0");
+  if (d > 0) {
+    const int lg = intLog2Positive32(d);
+    if (lg >= 0 && (static_cast<int32_t>(1) << lg) == d) {
+      return emitSDivByConstPow2Trunc(cg, lg);
+    }
+  }
   return emitSigned32DivByConstMagicPayload(cg, d);
 }
 
@@ -130,6 +156,18 @@ static bool emitSRemByConst(CodeGen &cg, int32_t d) {
   }
   cg.emit("\tmv\tt6, a0");
   cg.emit("\tsext.w\ta0, t6");
+  if (d > 0) {
+    const int lg = intLog2Positive32(d);
+    if (lg >= 0 && (static_cast<int32_t>(1) << lg) == d) {
+      if (!emitSDivByConstPow2Trunc(cg, lg)) {
+        return false;
+      }
+      cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
+      cg.emit("\tmulw\tt1, a0, t1");
+      cg.emit("\tsubw\ta0, t6, t1");
+      return true;
+    }
+  }
   if (!emitSigned32DivByConstMagicPayload(cg, d)) {
     return false;
   }
@@ -202,15 +240,6 @@ static bool emitMulByConst(CodeGen &cg, int32_t k) {
   };
   if (k > 0) return tryEmit(k, false);
   return tryEmit(-k, true);
-}
-
-static void emitAndA0Const(CodeGen &cg, uint32_t mask) {
-  if (mask <= 2047u) {
-    cg.emit("\tandi\ta0, a0, " + to_string(static_cast<int>(mask)));
-  } else {
-    cg.emit("\tli\tt6, " + to_string(mask));
-    cg.emit("\tand\ta0, a0, t6");
-  }
 }
 
 static bool exprIsLeaf(Expr *e) {
@@ -723,19 +752,31 @@ void CodeGen::emitFunction(FuncDef &def) {
     bool useIr = false;
     if (kEnableIrBackend && o1Profile_.irBackend && irFunctionEligible(def)) {
       irBuildFunction(def, semantic_, irBuf);
-      irOptimizeBlock(irBuf, o1Profile_);
+      irOptimizeBlock(irBuf, o1Profile_, &semantic_);
       irAssignSlots(irBuf);
+      irRegalloc_ = irRegallocGraphColor(irBuf, o1Profile_.irRegalloc);
+      irRegallocLeaf_ = irFunctionContainsCall(irBuf);
       irVregSlots_ = irBuf.vregSlots;
       useIr = true;
       irVregCount_ = irBuf.nextVreg;
       irSpillBase_ = alignTo(currentFunction_->frameUsed, 16);
-      int slotCount = irSlotCount(irBuf);
-      int need = irSpillBase_ + 8 * std::max(slotCount, 0);
+      const int slotCount = irSlotCount(irBuf);
+      int calleeExtra = 0;
+      for (int s = 1; s <= 11; ++s) {
+        if (irRegalloc_.usedCalleeSavedInt & (1u << static_cast<unsigned>(s - 1))) {
+          calleeExtra += 8;
+        }
+      }
+      // 保存 s1–s11 于所有 IR spill 槽之后，避免盖住形参/局部（旧 -24 与 a1@-24 冲突）
+      irCalleeSaveBase_ = irSpillBase_ + 8 * std::max(slotCount, 0) + 8;
+      const int need = irCalleeSaveBase_ + calleeExtra;
       irTotalFrame_ = max(frame, alignTo(need, 16));
       frame = irTotalFrame_;
       irVFloat_.assign(static_cast<size_t>(max(irVregCount_, 0)), 0);
       irInferPtrRegs(irBuf);
     } else {
+      irRegalloc_ = {};
+      irRegallocLeaf_ = false;
       irVregCount_ = 0;
       irSpillBase_ = 0;
       irTotalFrame_ = frame;
@@ -749,11 +790,14 @@ void CodeGen::emitFunction(FuncDef &def) {
     }
     emit("\tsd\ts0, -16(t0)");
     emit("\tmv\ts0, t0");
+    if (useIr && irRegalloc_.enabled && irRegalloc_.usedCalleeSavedInt != 0) {
+      emitIrSaveCalleeSavedRegs(irRegalloc_.usedCalleeSavedInt);
+    }
     emitStoreParams(def);
 
     // IR leaf functions: cache int params in t4-t6, float params in ft0-ft7
     irParamCache_.clear();
-    if (useIr && leaf) {
+    if (useIr && leaf && !irRegalloc_.enabled) {
       vector<ParamType> ptypes;
       for (const Param &p : def.params) {
         ptypes.push_back(ParamType{p.base, p.isArray, p.dims});
@@ -788,6 +832,9 @@ void CodeGen::emitFunction(FuncDef &def) {
       emit("\tfmv.w.x\tfa0, zero");
     }
     emit(currentFunction_->returnLabel + ":");
+    if (useIr && irRegalloc_.enabled && irRegalloc_.usedCalleeSavedInt != 0) {
+      emitIrRestoreCalleeSavedRegs(irRegalloc_.usedCalleeSavedInt);
+    }
     if (!leaf) {
       emit("\tld\tra, -8(s0)");
     }
@@ -798,6 +845,140 @@ void CodeGen::emitFunction(FuncDef &def) {
     emit("\t.size\t" + def.name + ", .-" + def.name);
     currentFunction_ = nullptr;
   }
+
+string CodeGen::irVregIntPhysReg(int vid) const {
+  if (!irRegalloc_.enabled || vid < 0 ||
+      static_cast<size_t>(vid) >= irRegalloc_.vreg.size()) {
+    return "";
+  }
+  const IRRegallocInfo &a = irRegalloc_.vreg[static_cast<size_t>(vid)];
+  if (a.intPhys < 0) {
+    return "";
+  }
+  return irRegallocIntRegName(irRegalloc_, a.intPhys, irRegallocLeaf_);
+}
+
+string CodeGen::irVregFloatPhysReg(int vid) const {
+  if (!irRegalloc_.enabled || vid < 0 ||
+      static_cast<size_t>(vid) >= irRegalloc_.vreg.size()) {
+    return "";
+  }
+  const IRRegallocInfo &a = irRegalloc_.vreg[static_cast<size_t>(vid)];
+  if (a.floatPhys < 0) {
+    return "";
+  }
+  return irRegallocFloatRegName(irRegalloc_, a.floatPhys);
+}
+
+void CodeGen::irBindVregLocalSym(int vid, Symbol *sym) {
+  if (vid < 0 || !sym) {
+    return;
+  }
+  for (auto it = irVregLocalSym_.begin(); it != irVregLocalSym_.end();) {
+    if (it->second == sym && it->first != vid) {
+      it = irVregLocalSym_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  irVregLocalSym_[vid] = sym;
+}
+
+bool CodeGen::irTryLoadVregFromLocalStack(int vid, const string &reg, bool asFloat) {
+  if (!irRegalloc_.enabled || vid < 0) {
+    return false;
+  }
+  auto it = irVregLocalSym_.find(vid);
+  if (it == irVregLocalSym_.end() || !it->second) {
+    return false;
+  }
+  Symbol *sym = it->second;
+  auto cit = irLocalSymVreg_.find(sym);
+  const bool canonical =
+      cit != irLocalSymVreg_.end() && cit->second == vid;
+  if (asFloat) {
+    (void)reg;
+    if (canonical) {
+      string home = irVregFloatPhysReg(vid);
+      if (!home.empty()) {
+        if (home != "fa0") {
+          emit("\tfmv.s\tfa0, " + home);
+        }
+        irLastVregInFa0_ = vid;
+        return true;
+      }
+    }
+    emitLoadMem("flw", "fa0", "s0", sym->offset);
+    irLastVregInFa0_ = -1;
+    return true;
+  }
+  if (canonical) {
+    string home = irVregIntPhysReg(vid);
+    if (!home.empty()) {
+      if (home != reg) {
+        emit("\tmv\t" + reg + ", " + home);
+      }
+      if (reg == "a0") {
+        irLastVregInA0_ = vid;
+        irFreshLocalSym_ = sym;
+      }
+      return true;
+    }
+  }
+  if (reg == "a0" && irFreshLocalSym_ == sym) {
+    irLastVregInA0_ = vid;
+    return true;
+  }
+  bool isPtr = sym->isArray || (vid < static_cast<int>(irVPtr_.size()) &&
+                                irVPtr_[static_cast<size_t>(vid)]);
+  emitLoadMem(isPtr ? "ld" : "lw", reg, "s0", sym->offset);
+  if (reg == "a0") {
+    irLastVregInA0_ = vid;
+    irFreshLocalSym_ = sym;
+  }
+  return true;
+}
+
+void CodeGen::emitIrSyncVregStackSlot(int vid, const string &valReg, bool asFloat) {
+  // 着色后 codegen 仍会用 t4–t6 等承载其它 vreg；栈槽为权威副本，避免物理寄存器被覆盖后读错。
+  if (!irRegalloc_.enabled || vid < 0 ||
+      vid >= static_cast<int>(irVregSlots_.size()) ||
+      irVregSlots_[static_cast<size_t>(vid)] < 0) {
+    return;
+  }
+  int off = irVregSlotOffset(vid);
+  if (asFloat) {
+    emitStoreMem("fsw", valReg, "s0", off);
+    return;
+  }
+  bool isPtr =
+      vid < static_cast<int>(irVPtr_.size()) && irVPtr_[static_cast<size_t>(vid)];
+  emitStoreMem(isPtr ? "sd" : "sw", valReg, "s0", off);
+}
+
+void CodeGen::emitIrSaveCalleeSavedRegs(uint32_t mask) {
+  int off = -irCalleeSaveBase_;
+  for (int s = 1; s <= 11; ++s) {
+    if (mask & (1u << static_cast<unsigned>(s - 1))) {
+      emit("\tsd\ts" + to_string(s) + ", " + to_string(off) + "(s0)");
+      off -= 8;
+    }
+  }
+}
+
+void CodeGen::emitIrRestoreCalleeSavedRegs(uint32_t mask) {
+  vector<pair<int, int>> slots;
+  int off = -irCalleeSaveBase_;
+  for (int s = 1; s <= 11; ++s) {
+    if (mask & (1u << static_cast<unsigned>(s - 1))) {
+      slots.push_back({s, off});
+      off -= 8;
+    }
+  }
+  for (auto it = slots.rbegin(); it != slots.rend(); ++it) {
+    emit("\tld\ts" + to_string(it->first) + ", " + to_string(it->second) + "(s0)");
+  }
+}
 
 int CodeGen::irVregSlotOffset(int vid) const {
   if (vid < 0) return -(irSpillBase_ + 8);
@@ -815,26 +996,73 @@ bool CodeGen::irVregIsPtr(int vid) const {
 
 void CodeGen::emitIrLoadVreg(int vid, bool asFloat) {
   if (vid < 0) return;
+  const bool ra = irRegalloc_.enabled;
+  if (ra && irTryLoadVregFromLocalStack(vid, "a0", asFloat)) {
+    return;
+  }
   if (asFloat) {
     if (irLastVregInFa0_ == vid) return;
+    string home = irVregFloatPhysReg(vid);
+    if (!home.empty()) {
+      if (home != "fa0") {
+        emit("\tfmv.s\tfa0, " + home);
+      }
+      irLastVregInFa0_ = ra ? -1 : vid;
+      return;
+    }
     int off = irVregSlotOffset(vid);
     emitLoadMem("flw", "fa0", "s0", off);
-    irLastVregInFa0_ = vid;
+    irLastVregInFa0_ = ra ? -1 : vid;
   } else {
-    if (irLastVregInA0_ == vid) return;
+    auto lit = irVregLocalSym_.find(vid);
+    if (irLastVregInA0_ == vid && lit != irVregLocalSym_.end() &&
+        irFreshLocalSym_ == lit->second) {
+      return;
+    }
+    if (!ra && irLastVregInA0_ == vid) {
+      return;
+    }
+    string home = irVregIntPhysReg(vid);
+    if (!home.empty()) {
+      if (home != "a0") {
+        emit("\tmv\ta0, " + home);
+      }
+      irLastVregInA0_ = ra ? -1 : vid;
+      return;
+    }
     int off = irVregSlotOffset(vid);
     bool isPtr =
         vid < static_cast<int>(irVPtr_.size()) && irVPtr_[static_cast<size_t>(vid)];
     emitLoadMem(isPtr ? "ld" : "lw", "a0", "s0", off);
-    irLastVregInA0_ = vid;
+    irLastVregInA0_ = ra ? -1 : vid;
   }
 }
 
 // Load vreg into specified integer register (not a0), without tracking update
 void CodeGen::emitIrLoadVregTo(int vid, const string &reg) {
   if (vid < 0) return;
-  if (irLastVregInA0_ == vid) {
-    emit("\tmv\t" + reg + ", a0");
+  if (irTryLoadVregFromLocalStack(vid, reg, false)) {
+    return;
+  }
+  string home = irVregIntPhysReg(vid);
+  if (!home.empty()) {
+    if (home != reg) {
+      emit("\tmv\t" + reg + ", " + home);
+    }
+    return;
+  }
+  auto lit = irVregLocalSym_.find(vid);
+  if (irLastVregInA0_ == vid && lit != irVregLocalSym_.end() &&
+      irFreshLocalSym_ == lit->second) {
+    if (reg != "a0") {
+      emit("\tmv\t" + reg + ", a0");
+    }
+    return;
+  }
+  if (!irRegalloc_.enabled && irLastVregInA0_ == vid) {
+    if (reg != "a0") {
+      emit("\tmv\t" + reg + ", a0");
+    }
     return;
   }
   int off = irVregSlotOffset(vid);
@@ -862,25 +1090,68 @@ void CodeGen::emitIrStoreVreg(int vid, bool asFloat) {
   // Normal spill: rotate register cache
   irSkippedLast_ = false;
   irSkippedVreg_ = -1;
+  string homeF = irVregFloatPhysReg(vid);
+  string homeI = irVregIntPhysReg(vid);
+  const bool ra = irRegalloc_.enabled;
+  if (asFloat && !homeF.empty()) {
+    if (homeF != "fa0") {
+      emit("\tfmv.s\t" + homeF + ", fa0");
+    }
+    emitIrSyncVregStackSlot(vid, homeF, true);
+    irLastVregInFa0_ = (ra || homeF != "fa0") ? -1 : vid;
+    return;
+  }
+  if (!asFloat && !homeI.empty()) {
+    if (homeI != "a0") {
+      emit("\tmv\t" + homeI + ", a0");
+    }
+    emitIrSyncVregStackSlot(vid, homeI, false);
+    irLastVregInA0_ = (ra || homeI != "a0") ? -1 : vid;
+    irFreshLocalSym_ = nullptr;
+    return;
+  }
+  if (ra && !asFloat && irVregLocalSym_.count(vid) != 0) {
+    irLastVregInA0_ = vid;
+    return;
+  }
+  irFreshLocalSym_ = nullptr;
   int off = irVregSlotOffset(vid);
   if (asFloat) {
     emitStoreMem("fsw", "fa0", "s0", off);
-    irLastVregInFa0_ = vid;
+    irLastVregInFa0_ = ra ? -1 : vid;
   } else {
     bool isPtr =
         vid < static_cast<int>(irVPtr_.size()) && irVPtr_[static_cast<size_t>(vid)];
     emitStoreMem(isPtr ? "sd" : "sw", "a0", "s0", off);
-    irLastVregInA0_ = vid;
+    irLastVregInA0_ = ra ? -1 : vid;
   }
 }
 
 // Spill previously skipped vreg if not yet stored (called before a0 is overwritten)
 void CodeGen::emitIrFlushSkipped() {
   if (irSkippedLast_ && irSkippedVreg_ >= 0) {
-    int off = irVregSlotOffset(irSkippedVreg_);
-    bool isPtr = irSkippedVreg_ < static_cast<int>(irVPtr_.size()) &&
-                 irVPtr_[static_cast<size_t>(irSkippedVreg_)];
-    emitStoreMem(isPtr ? "sd" : "sw", "a0", "s0", off);
+    const bool fl =
+        irSkippedVreg_ < static_cast<int>(irVFloat_.size()) &&
+        irVFloat_[static_cast<size_t>(irSkippedVreg_)] != 0;
+    string home = fl ? irVregFloatPhysReg(irSkippedVreg_) : irVregIntPhysReg(irSkippedVreg_);
+    if (!home.empty()) {
+      if (fl) {
+        if (home != "fa0") {
+          emit("\tfmv.s\t" + home + ", fa0");
+        }
+        emitIrSyncVregStackSlot(irSkippedVreg_, home, true);
+      } else {
+        if (home != "a0") {
+          emit("\tmv\t" + home + ", a0");
+        }
+        emitIrSyncVregStackSlot(irSkippedVreg_, home, false);
+      }
+    } else {
+      int off = irVregSlotOffset(irSkippedVreg_);
+      bool isPtr = irSkippedVreg_ < static_cast<int>(irVPtr_.size()) &&
+                   irVPtr_[static_cast<size_t>(irSkippedVreg_)];
+      emitStoreMem(isPtr ? "sd" : "sw", "a0", "s0", off);
+    }
     irSkippedLast_ = false;
     irSkippedVreg_ = -1;
   }
@@ -1031,6 +1302,9 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
   irCacheFt0_ = -1;
   irSkippedLast_ = false;
   irSkippedVreg_ = -1;
+  irLocalSymVreg_.clear();
+  irVregLocalSym_.clear();
+  irFreshLocalSym_ = nullptr;
   for (size_t i = 0; i < ir.insts.size(); ++i) {
     IROp op = ir.insts[i].op;
     if (op == IROp::Call || op == IROp::Ret ||
@@ -1042,9 +1316,15 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
       emitIrFlushSkipped();
       irLastVregInA0_ = -1;
       irLastVregInFa0_ = -1;
+      irFreshLocalSym_ = nullptr;
       irCacheT4_ = -1;
       irCacheT5_ = -1;
       irCacheFt0_ = -1;
+      if (op == IROp::Call || op == IROp::Ret) {
+        irLocalSymVreg_.clear();
+        irVregLocalSym_.clear();
+        irFreshLocalSym_ = nullptr;
+      }
     }
     if (op == IROp::LoadLocal && !irParamCache_.empty()) {
       emitIrFlushSkipped();
@@ -1058,6 +1338,20 @@ void CodeGen::emitIrFunction(FuncDef &def, IRFunction &ir) {
 void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
                   size_t instIdx) {
   (void)def;
+  if (tryEmitIrBuiltinCall(ir, in, instIdx)) {
+    return;
+  }
+  if (optO1_ && in.callee == "idx" && in.args.size() == 3 && in.dst >= 0) {
+    emitIrLoadVregTo(in.args[0], "t2");
+    emitIrLoadVregTo(in.args[2], "t1");
+    emit("\tmulw\tt2, t2, t1");
+    emitIrLoadVreg(in.args[1], false);
+    emit("\taddw\ta0, t2, a0");
+    irVFloat_[static_cast<size_t>(in.dst)] = 0;
+    irVPtr_[static_cast<size_t>(in.dst)] = 0;
+    emitIrStoreVreg(in.dst, false);
+    return;
+  }
   auto vIsPtr = [&](int v) -> bool { return irVregIsPtr(v); };
   Function *fn = lookupFunctionAsm(semantic_, in.callee);
   if (!fn) {
@@ -1334,13 +1628,80 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     emitIrStoreVreg(in.dst, true);
     markFl(in.dst);
     return;
-  case IROp::Copy:
-    emitIrLoadVreg(in.u, irVFloat_[static_cast<size_t>(in.u)] != 0);
-    emitIrStoreVreg(in.dst, irVFloat_[static_cast<size_t>(in.u)] != 0);
+  case IROp::Copy: {
+    const bool fl = in.u >= 0 && static_cast<size_t>(in.u) < irVFloat_.size() &&
+                    irVFloat_[static_cast<size_t>(in.u)];
+    if (irRegalloc_.enabled && !fl && in.u >= 0 &&
+        irVregLocalSym_.count(in.u) != 0) {
+      Symbol *sym = irVregLocalSym_[in.u];
+      if (irLastVregInA0_ == in.u && irFreshLocalSym_ == sym && in.dst >= 0) {
+        irBindVregLocalSym(in.dst, sym);
+        irLocalSymVreg_[sym] = in.dst;
+        irLastVregInA0_ = in.dst;
+        if (static_cast<size_t>(in.dst) < irVFloat_.size()) {
+          irVFloat_[static_cast<size_t>(in.dst)] =
+              irVFloat_[static_cast<size_t>(in.u)];
+        }
+        return;
+      }
+      auto cit = irLocalSymVreg_.find(sym);
+      const bool srcCanon =
+          cit != irLocalSymVreg_.end() && cit->second == in.u;
+      string srcHome = irVregIntPhysReg(in.u);
+      string dstHome = irVregIntPhysReg(in.dst);
+      if (srcCanon && !srcHome.empty() && !dstHome.empty()) {
+        if (dstHome != srcHome) {
+          emit("\tmv\t" + dstHome + ", " + srcHome);
+        }
+        if (in.dst >= 0) {
+          irBindVregLocalSym(in.dst, sym);
+          irLocalSymVreg_[sym] = in.dst;
+        }
+        if (in.dst >= 0 && in.u >= 0 &&
+            static_cast<size_t>(in.dst) < irVFloat_.size()) {
+          irVFloat_[static_cast<size_t>(in.dst)] =
+              irVFloat_[static_cast<size_t>(in.u)];
+        }
+        return;
+      }
+      emitIrLoadVreg(in.u, fl);
+      emitIrStoreVreg(in.dst, fl);
+      if (in.dst >= 0 && in.u >= 0 && static_cast<size_t>(in.dst) < irVFloat_.size()) {
+        irVFloat_[static_cast<size_t>(in.dst)] = irVFloat_[static_cast<size_t>(in.u)];
+      }
+      if (in.dst >= 0) {
+        irBindVregLocalSym(in.dst, sym);
+        irLocalSymVreg_[sym] = in.dst;
+      }
+      return;
+    }
+    string dstHome = fl ? irVregFloatPhysReg(in.dst) : irVregIntPhysReg(in.dst);
+    string srcHome = fl ? irVregFloatPhysReg(in.u) : irVregIntPhysReg(in.u);
+    if (!dstHome.empty() && !srcHome.empty()) {
+      if (fl) {
+        if (dstHome != srcHome) {
+          emit("\tfmv.s\t" + dstHome + ", " + srcHome);
+        }
+        emitIrSyncVregStackSlot(in.dst, dstHome, true);
+        irLastVregInFa0_ =
+            (irRegalloc_.enabled || dstHome != "fa0") ? -1 : in.dst;
+      } else {
+        if (dstHome != srcHome) {
+          emit("\tmv\t" + dstHome + ", " + srcHome);
+        }
+        emitIrSyncVregStackSlot(in.dst, dstHome, false);
+        irLastVregInA0_ =
+            (irRegalloc_.enabled || dstHome != "a0") ? -1 : in.dst;
+      }
+    } else {
+      emitIrLoadVreg(in.u, fl);
+      emitIrStoreVreg(in.dst, fl);
+    }
     if (in.dst >= 0 && in.u >= 0 && static_cast<size_t>(in.dst) < irVFloat_.size()) {
       irVFloat_[static_cast<size_t>(in.dst)] = irVFloat_[static_cast<size_t>(in.u)];
     }
     return;
+  }
   case IROp::LeaStr: {
     string label;
     for (const auto &lit : stringLiterals_) {
@@ -1398,16 +1759,25 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
       }
-    } else {
-      emitAddOffset("t0", "s0", in.sym->offset);
+    } else if (in.sym && in.dst >= 0) {
       if (in.isFloat) {
-        emit("\tflw\tfa0, 0(t0)");
+        emitLoadMem("flw", "fa0", "s0", in.sym->offset);
         emitIrStoreVreg(in.dst, true);
         markFl(in.dst);
+      } else if (irRegalloc_.enabled) {
+        emitLoadMem("lw", "a0", "s0", in.sym->offset);
+        irFreshLocalSym_ = in.sym;
+        irLocalSymVreg_[in.sym] = in.dst;
+        irBindVregLocalSym(in.dst, in.sym);
+        emitIrStoreVreg(in.dst, false);
+        markInt(in.dst);
       } else {
+        emitAddOffset("t0", "s0", in.sym->offset);
         emit("\tlw\ta0, 0(t0)");
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
+        irLocalSymVreg_[in.sym] = in.dst;
+        irBindVregLocalSym(in.dst, in.sym);
       }
     }
     return;
@@ -1452,6 +1822,19 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     }
     // 形参缓存在 t4–t6：写回栈槽后同步寄存器，否则下一轮仍用旧 t4（crc1 的 _xor）。
     if (in.sym) {
+      irLocalSymVreg_[in.sym] = in.u;
+      irBindVregLocalSym(in.u, in.sym);
+      if (irRegalloc_.enabled) {
+        string home =
+            in.isFloat ? irVregFloatPhysReg(in.u) : irVregIntPhysReg(in.u);
+        if (!home.empty()) {
+          if (in.isFloat) {
+            emit("\tfmv.s\t" + home + ", fa0");
+          } else {
+            emit("\tmv\t" + home + ", a0");
+          }
+        }
+      }
       auto pit = irParamCache_.find(in.sym);
       if (pit != irParamCache_.end()) {
         if (in.isFloat) {
@@ -1586,6 +1969,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       emit("\tslliw\ta0, a0, " + to_string(in.immI & 31));
     } else {
       emit("\tmv\tt2, a0");
+      // t3 为无 regalloc 时移位量临时；着色池勿含 t3
       emitIrLoadVregTo(in.v, "t3");
       emit("\tandi\tt3, t3, 31");
       emit("\tsllw\ta0, t2, t3");
@@ -2167,6 +2551,216 @@ void CodeGen::emitIf(IfStmt &stmt) {
     emit(endLabel + ":");
   }
 
+static bool indexIsScalarIv(const Expr *e, const string &name) {
+  auto *lv = dynamic_cast<const LValExpr *>(e);
+  return lv && lv->indices.empty() && lv->name == name;
+}
+
+static void scanExprForRowBase(Expr *e, const string &outerIv, const string &innerIv,
+                               vector<Symbol *> &out) {
+  if (!e) {
+    return;
+  }
+  if (e->kind == ExprKind::LVal) {
+    auto *lv = static_cast<LValExpr *>(e);
+    if (lv->symbol && lv->symbol->isArray && lv->indices.size() == 2 &&
+        indexIsScalarIv(lv->indices[0].get(), outerIv) &&
+        indexIsScalarIv(lv->indices[1].get(), innerIv)) {
+      Symbol *sym = lv->symbol;
+      for (Symbol *s : out) {
+        if (s == sym) {
+          return;
+        }
+      }
+      out.push_back(sym);
+    }
+    for (auto &ix : lv->indices) {
+      scanExprForRowBase(ix.get(), outerIv, innerIv, out);
+    }
+    return;
+  }
+  if (e->kind == ExprKind::Unary) {
+    scanExprForRowBase(static_cast<UnaryExpr *>(e)->expr.get(), outerIv, innerIv,
+                       out);
+    return;
+  }
+  if (e->kind == ExprKind::Binary) {
+    auto *b = static_cast<BinaryExpr *>(e);
+    scanExprForRowBase(b->lhs.get(), outerIv, innerIv, out);
+    scanExprForRowBase(b->rhs.get(), outerIv, innerIv, out);
+    return;
+  }
+  if (e->kind == ExprKind::Call) {
+    auto *c = static_cast<CallExpr *>(e);
+    for (auto &a : c->args) {
+      scanExprForRowBase(a.get(), outerIv, innerIv, out);
+    }
+  }
+}
+
+static void scanStmtForRowBase(Stmt *s, const string &outerIv, const string &innerIv,
+                               vector<Symbol *> &out) {
+  if (!s) {
+    return;
+  }
+  switch (s->kind) {
+  case StmtKind::Assign:
+    scanExprForRowBase(static_cast<AssignStmt *>(s)->lhs.get(), outerIv, innerIv, out);
+    scanExprForRowBase(static_cast<AssignStmt *>(s)->rhs.get(), outerIv, innerIv, out);
+    return;
+  case StmtKind::Expr:
+    scanExprForRowBase(static_cast<ExprStmt *>(s)->expr.get(), outerIv, innerIv, out);
+    return;
+  case StmtKind::Block:
+    for (auto &it : static_cast<BlockStmt *>(s)->items) {
+      scanStmtForRowBase(it.get(), outerIv, innerIv, out);
+    }
+    return;
+  case StmtKind::If: {
+    auto *ifs = static_cast<IfStmt *>(s);
+    scanStmtForRowBase(ifs->thenStmt.get(), outerIv, innerIv, out);
+    if (ifs->elseStmt) {
+      scanStmtForRowBase(ifs->elseStmt.get(), outerIv, innerIv, out);
+    }
+    return;
+  }
+  case StmtKind::While:
+    scanStmtForRowBase(static_cast<WhileStmt *>(s)->body.get(), outerIv, innerIv, out);
+    return;
+  default:
+    return;
+  }
+}
+
+bool CodeGen::extractWhileLtIv(const Expr *cond, string *iv) const {
+  auto *b = dynamic_cast<const BinaryExpr *>(cond);
+  if (!b || b->op != "<") {
+    return false;
+  }
+  if (auto *lv = dynamic_cast<const LValExpr *>(b->lhs.get())) {
+    if (lv->indices.empty()) {
+      *iv = lv->name;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool extractIvFromSplitWhile(const WhileStmt *w, string *iv) {
+  auto *one = dynamic_cast<const NumberExpr *>(w->cond.get());
+  if (!one || one->isFloat || one->intVal != 1) {
+    return false;
+  }
+  auto *blk = dynamic_cast<const BlockStmt *>(w->body.get());
+  if (!blk) {
+    return false;
+  }
+  for (const auto &st : blk->items) {
+    auto *ifs = dynamic_cast<const IfStmt *>(st.get());
+    if (!ifs || ifs->elseStmt || ifs->thenStmt->kind != StmtKind::Break) {
+      break;
+    }
+    auto *u = dynamic_cast<const UnaryExpr *>(ifs->cond.get());
+    if (!u || u->op != "!") {
+      break;
+    }
+    auto *cmp = dynamic_cast<const BinaryExpr *>(u->expr.get());
+    if (!cmp || cmp->op != "<") {
+      break;
+    }
+    if (auto *lv = dynamic_cast<const LValExpr *>(cmp->lhs.get())) {
+      if (lv->indices.empty()) {
+        *iv = lv->name;
+        return true;
+      }
+    }
+    break;
+  }
+  return false;
+}
+
+void CodeGen::collectRowBaseSyms(Stmt *body, const string &outerIv,
+                                 const string &innerIv,
+                                 vector<Symbol *> &out) const {
+  scanStmtForRowBase(body, outerIv, innerIv, out);
+}
+
+void CodeGen::emitRowBaseSetups(const vector<Symbol *> &syms,
+                                const string &outerIv) {
+  static const char *kRowRegs[] = {"t3", "t4", "t5", "t6"};
+  Symbol *outerSym = nullptr;
+  for (const auto &up : semantic_.symbols()) {
+    if (up->name == outerIv && !up->isGlobal) {
+      outerSym = up.get();
+      break;
+    }
+  }
+  const string innerIv =
+      loopIvStack_.empty() ? string() : loopIvStack_.back();
+  for (size_t i = 0; i < syms.size() && i < 4; ++i) {
+    Symbol *sym = syms[i];
+    const string reg(kRowRegs[i]);
+    if (sym->isGlobal) {
+      emit("\tlla\t" + reg + ", " + sym->label);
+    } else if (sym->isParamArray) {
+      emitLoadMem("ld", reg, "s0", sym->offset);
+    } else {
+      emitAddOffset(reg, "s0", sym->offset);
+    }
+    if (!outerSym) {
+      continue;
+    }
+    if (fitsImm12(outerSym->offset)) {
+      emit("\tlw\ta0, " + to_string(outerSym->offset) + "(s0)");
+    } else {
+      emitAddOffset("a0", "s0", outerSym->offset);
+      emit("\tlw\ta0, 0(a0)");
+    }
+    const int rowStrideBytes = strideForIndex(sym, 0) * 4;
+    const int lg = intLog2Positive32(static_cast<int32_t>(rowStrideBytes));
+    if (lg >= 0) {
+      emit("\tslliw\tt2, a0, " + to_string(lg));
+    } else if (emitMulByConst(*this, static_cast<int32_t>(rowStrideBytes))) {
+      emit("\tmv\tt2, a0");
+    } else {
+      emit("\tli\tt1, " + to_string(rowStrideBytes));
+      emit("\tmulw\tt2, a0, t1");
+    }
+    emit("\tadd\t" + reg + ", " + reg + ", t2");
+    rowBaseCache_.push_back(RowBaseCache{sym, outerIv, innerIv, reg});
+  }
+}
+
+bool CodeGen::tryEmitRowBaseLValAddress(LValExpr *expr) {
+  if (!optO1_ || rowBaseCache_.empty() || expr->indices.size() != 2) {
+    return false;
+  }
+  for (const RowBaseCache &rb : rowBaseCache_) {
+    if (rb.sym != expr->symbol) {
+      continue;
+    }
+    if (!indexIsScalarIv(expr->indices[0].get(), rb.outerIv) ||
+        !indexIsScalarIv(expr->indices[1].get(), rb.innerIv)) {
+      continue;
+    }
+    emitExpr(expr->indices[1].get());
+    emitConvert(expr->indices[1]->type, Type::scalar(BaseType::Int));
+    const int colStrideBytes = strideForIndex(expr->symbol, 1) * 4;
+    const int lg = intLog2Positive32(static_cast<int32_t>(colStrideBytes));
+    if (lg >= 0) {
+      emit("\tslliw\tt2, a0, " + to_string(lg));
+    } else if (emitMulByConst(*this, static_cast<int32_t>(colStrideBytes))) {
+      emit("\tmv\tt2, a0");
+    } else {
+      emit("\tli\tt1, " + to_string(colStrideBytes));
+      emit("\tmulw\tt2, a0, t1");
+    }
+    emit("\tadd\ta0, " + rb.reg + ", t2");
+    return true;
+  }
+  return false;
+}
+
 void CodeGen::emitWhile(WhileStmt &stmt) {
     if (optO1_ && stmt.cond->isConst) {
       bool never = false;
@@ -2184,16 +2778,37 @@ void CodeGen::emitWhile(WhileStmt &stmt) {
     string endLabel = newLabel("while_end");
     continueLabels_.push_back(condLabel);
     breakLabels_.push_back(endLabel);
+    string loopIv;
+    bool trackIv = optO1_ && extractWhileLtIv(stmt.cond.get(), &loopIv);
+    if (!trackIv && optO1_) {
+      trackIv = extractIvFromSplitWhile(&stmt, &loopIv);
+    }
+    if (trackIv) {
+      loopIvStack_.push_back(loopIv);
+    }
     emit(condLabel + ":");
     if (!tryEmitCondBranchFalse(stmt.cond.get(), endLabel)) {
       emitCond(stmt.cond.get(), bodyLabel, endLabel);
     }
     emit(bodyLabel + ":");
+    if (optO1_ && loopIvStack_.size() >= 2) {
+      const string &outer = loopIvStack_[loopIvStack_.size() - 2];
+      const string &inner = loopIvStack_.back();
+      vector<Symbol *> rowSyms;
+      collectRowBaseSyms(stmt.body.get(), outer, inner, rowSyms);
+      if (!rowSyms.empty()) {
+        emitRowBaseSetups(rowSyms, outer);
+      }
+    }
     emitStmt(stmt.body.get());
+    rowBaseCache_.clear();
     emit("\tj\t" + condLabel);
     emit(endLabel + ":");
     breakLabels_.pop_back();
     continueLabels_.pop_back();
+    if (trackIv) {
+      loopIvStack_.pop_back();
+    }
   }
 
 bool CodeGen::tryEmitTailCallReturn(ReturnStmt &stmt) {
@@ -2492,16 +3107,6 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             emit("\tnegw\ta0, a0");
             return;
           }
-          int lg = intLog2Positive32(k);
-          if (k > 0 && lg >= 0) {
-            emitExpr(expr->lhs.get());
-            emit("\tli\ta2, " + to_string(k - 1));
-            emit("\tsraiw\tt1, a0, 31");
-            emit("\tand\tt1, t1, a2");
-            emit("\taddw\tt3, a0, t1");
-            emit("\tsraiw\ta0, t3, " + to_string(lg));
-            return;
-          }
           emitExpr(expr->lhs.get());
           if (optO1_ && emitSDivByConst(*this, k)) {
             return;
@@ -2624,21 +3229,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
               /* a0 = lhs */
             } else if (k == -1) {
               emit("\tnegw\ta0, a0");
-            } else if (k != 0 && k > 0) {
-              int lg = intLog2Positive32(k);
-              if (lg >= 0) {
-                emit("\tli\ta2, " + to_string(static_cast<int>(k - 1)));
-                emit("\tsraiw\tt1, a0, 31");
-                emit("\tand\tt1, t1, a2");
-                emit("\taddw\tt3, a0, t1");
-                emit("\tsraiw\ta0, t3, " + to_string(lg));
-              } else if (optO1_ && emitSDivByConst(*this, k)) {
-              } else {
-                emit("\tmv\tt2, a0");
-                emit("\tli\ta0, " + to_string(static_cast<int>(k)));
-                emit("\tdivw\ta0, t2, a0");
-              }
-            } else {
+            } else if (k != 0) {
               if (optO1_ && emitSDivByConst(*this, k)) {
               } else {
                 emit("\tmv\tt2, a0");
@@ -2656,15 +3247,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             if (k == 1 || k == -1) {
               emit("\tli\ta0, 0");
             } else if (k != 0) {
-              int lg = intLog2Positive32(k);
-              if (lg >= 1) {
-                uint32_t mask = static_cast<uint32_t>(k) - 1;
-                emit("\tsraiw\tt1, a0, 31");
-                emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
-                emit("\taddw\ta0, a0, t1");
-                emitAndA0Const(*this, mask);
-                emit("\tsubw\ta0, a0, t1");
-              } else if (optO1_ && emitSRemByConst(*this, k)) {
+              if (optO1_ && emitSRemByConst(*this, k)) {
               } else {
                 emit("\tmv\tt2, a0");
                 emit("\tli\ta0, " + to_string(static_cast<int>(k)));
@@ -2714,19 +3297,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
               /* a0 = lhs */
             } else if (k == -1) {
               emit("\tnegw\ta0, a0");
-            } else if (k != 0 && k > 0) {
-              int lg = intLog2Positive32(k);
-              if (lg >= 0) {
-                emit("\tli\ta2, " + to_string(static_cast<int>(k - 1)));
-                emit("\tsraiw\tt1, a0, 31");
-                emit("\tand\tt1, t1, a2");
-                emit("\taddw\tt3, a0, t1");
-                emit("\tsraiw\ta0, t3, " + to_string(lg));
-              } else if (optO1_ && emitSDivByConst(*this, k)) {
-              } else {
-                emit("\tdivw\ta0, a0, t4");
-              }
-            } else {
+            } else if (k != 0) {
               if (optO1_ && emitSDivByConst(*this, k)) {
               } else {
                 emit("\tdivw\ta0, a0, t4");
@@ -2741,15 +3312,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             if (k == 1 || k == -1) {
               emit("\tli\ta0, 0");
             } else if (k != 0) {
-              int lg = intLog2Positive32(k);
-              if (lg >= 1) {
-                uint32_t mask = static_cast<uint32_t>(k) - 1;
-                emit("\tsraiw\tt1, a0, 31");
-                emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
-                emit("\taddw\ta0, a0, t1");
-                emitAndA0Const(*this, mask);
-                emit("\tsubw\ta0, a0, t1");
-              } else if (optO1_ && emitSRemByConst(*this, k)) {
+              if (optO1_ && emitSRemByConst(*this, k)) {
               } else {
                 emit("\tremw\ta0, a0, t4");
               }
@@ -2927,14 +3490,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
                expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
                op == "/") {
       int32_t k = constAsInt(expr->rhs->constVal);
-      int lg = intLog2Positive32(k);
-      if (k > 0 && lg >= 0) {
-        emit("\tli\ta2, " + to_string(k - 1));
-        emit("\tsraiw\tt1, a0, 31");
-        emit("\tand\tt1, t1, a2");
-        emit("\taddw\tt3, a0, t1");
-        emit("\tsraiw\ta0, t3, " + to_string(lg));
-      } else if (emitSDivByConst(*this, k)) {
+      if (emitSDivByConst(*this, k)) {
         /* optimized by magic multiply */
       } else {
         emit("\tdivw\ta0, a0, a1");
@@ -2962,15 +3518,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
                expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
                op == "%") {
       int32_t k = constAsInt(expr->rhs->constVal);
-      int lg = intLog2Positive32(k);
-      if (lg >= 1) {
-        uint32_t mask = static_cast<uint32_t>(k) - 1;
-        emit("\tsraiw\tt1, a0, 31");
-        emit("\tsrliw\tt1, t1, " + to_string(32 - lg));
-        emit("\taddw\ta0, a0, t1");
-        emitAndA0Const(*this, mask);
-        emit("\tsubw\ta0, a0, t1");
-      } else if (emitSRemByConst(*this, k)) {
+      if (emitSRemByConst(*this, k)) {
         /* optimized by magic multiply */
       } else {
         emit("\tremw\ta0, a0, a1");
@@ -3257,6 +3805,9 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
     if (expr->indices.empty()) {
       return;
     }
+    if (tryEmitRowBaseLValAddress(expr)) {
+      return;
+    }
     if (optO1_ && expr->indices.size() == 1 &&
         exprHasNoCall(expr->indices[0].get()) &&
         !exprUsesArrayAddress(expr->indices[0].get())) {
@@ -3375,6 +3926,189 @@ int CodeGen::strideForIndex(Symbol *sym, size_t index) {
     return index + 1 < sym->dims.size() ? product(sym->dims, index + 1) : 1;
   }
 
+static bool isBinaryIntFn(const Function *fn, const char *name) {
+  return fn && !fn->runtime && fn->name == name && fn->ret == BaseType::Int &&
+         fn->params.size() == 2 && !fn->params[0].isArray && !fn->params[1].isArray &&
+         fn->params[0].base == BaseType::Int && fn->params[1].base == BaseType::Int;
+}
+
+static bool stmtTreeContainsWhile(const Stmt *s) {
+  if (!s) {
+    return false;
+  }
+  if (s->kind == StmtKind::While) {
+    return true;
+  }
+  if (auto *b = dynamic_cast<const BlockStmt *>(s)) {
+    for (const auto &st : b->items) {
+      if (stmtTreeContainsWhile(st.get())) {
+        return true;
+      }
+    }
+  }
+  if (auto *ifs = dynamic_cast<const IfStmt *>(s)) {
+    return stmtTreeContainsWhile(ifs->thenStmt.get()) ||
+           (ifs->elseStmt && stmtTreeContainsWhile(ifs->elseStmt.get()));
+  }
+  return false;
+}
+
+// Huffman：32 次 while 模拟位运算；crypto 等同名函数为 return a+b 等，不可按名字降级。
+static bool funcIsBitwiseSimulator(const Function *fn) {
+  if (!fn || !fn->def || !fn->def->body) {
+    return false;
+  }
+  if (!isBinaryIntFn(fn, "_and") && !isBinaryIntFn(fn, "_or") &&
+      !isBinaryIntFn(fn, "_xor")) {
+    return false;
+  }
+  return stmtTreeContainsWhile(fn->def->body.get());
+}
+
+static bool funcIsRotIfChain(const Function *fn) {
+  if (!fn || !fn->def || !fn->def->body || fn->def->body->items.empty()) {
+    return false;
+  }
+  if (!isBinaryIntFn(fn, "rotlN") && !isBinaryIntFn(fn, "rotrN")) {
+    return false;
+  }
+  return fn->def->body->items[0]->kind == StmtKind::If;
+}
+
+bool CodeGen::tryEmitBuiltinBitwiseCall(CallExpr *expr) {
+  if (!optO1_ || !expr->function || expr->args.size() != 2) {
+    return false;
+  }
+  Function *fn = expr->function;
+  const char *opc = nullptr;
+  if (isBinaryIntFn(fn, "_and")) {
+    opc = "and";
+  } else if (isBinaryIntFn(fn, "_or")) {
+    opc = "or";
+  } else if (isBinaryIntFn(fn, "_xor")) {
+    opc = "xor";
+  } else {
+    return false;
+  }
+  if (!funcIsBitwiseSimulator(fn)) {
+    return false;
+  }
+  for (const auto &arg : expr->args) {
+    if (!arg->type.isIntScalar() || !exprHasNoCall(arg.get())) {
+      return false;
+    }
+  }
+  emitExpr(expr->args[0].get());
+  emit("\tsext.w\tt4, a0");
+  emitExpr(expr->args[1].get());
+  emit("\tsext.w\ta0, a0");
+  emit("\t" + string(opc) + "\ta0, t4, a0");
+  emit("\tsext.w\ta0, a0");
+  return true;
+}
+
+bool CodeGen::tryEmitBuiltinRotCall(CallExpr *expr) {
+  if (!optO1_ || !expr->function || expr->args.size() != 2) {
+    return false;
+  }
+  Function *fn = expr->function;
+  if (!funcIsRotIfChain(fn)) {
+    return false;
+  }
+  const bool isLeft = fn->name == "rotlN";
+  for (const auto &arg : expr->args) {
+    if (!arg->type.isIntScalar() || !exprHasNoCall(arg.get())) {
+      return false;
+    }
+  }
+  const string identity = newLabel("rot_id");
+  const string done = newLabel("rot_done");
+  emitExpr(expr->args[0].get());
+  emit("\tsext.w\tt4, a0");
+  emitExpr(expr->args[1].get());
+  emit("\tsext.w\tt2, a0");
+  emit("\tli\tt1, 8");
+  emit("\tbgt\tt2, t1, " + identity);
+  if (isLeft) {
+    emit("\tsllw\ta0, t4, t2");
+  } else {
+    emit("\tsrlw\ta0, t4, t2");
+  }
+  emit("\tj\t" + done);
+  emit(identity + ":");
+  emit("\tmv\ta0, t4");
+  emit(done + ":");
+  return true;
+}
+
+bool CodeGen::tryEmitIrBuiltinCall(const IRFunction &ir, const IRInst &in,
+                                   size_t instIdx) {
+  if (!optO1_ || in.dst < 0 || in.args.size() != 2) {
+    return false;
+  }
+  const string &c = in.callee;
+  Function *fn = lookupFunctionAsm(semantic_, c);
+  const char *opc = nullptr;
+  if (c == "_and") {
+    opc = "and";
+  } else if (c == "_or") {
+    opc = "or";
+  } else if (c == "_xor") {
+    opc = "xor";
+  }
+  const bool isLeft = c == "rotlN";
+  const bool isRight = c == "rotrN";
+  if (!opc && !isLeft && !isRight) {
+    return false;
+  }
+  if (opc && !funcIsBitwiseSimulator(fn)) {
+    return false;
+  }
+  if ((isLeft || isRight) && !funcIsRotIfChain(fn)) {
+    return false;
+  }
+
+  auto loadArg = [&](int av) {
+  if (optional<int32_t> ic = irTraceConstI(ir, av, instIdx)) {
+      emit("\tli\ta0, " + to_string(*ic));
+    } else {
+      emitIrLoadVreg(av, false);
+      emit("\tsext.w\ta0, a0");
+    }
+  };
+
+  loadArg(in.args[0]);
+  emit("\tmv\tt4, a0");
+  loadArg(in.args[1]);
+  emit("\tsext.w\ta0, a0");
+
+  if (opc) {
+    emit("\t" + string(opc) + "\ta0, t4, a0");
+    emit("\tsext.w\ta0, a0");
+  } else {
+    const string identity = newLabel("ir_rot_id");
+    const string done = newLabel("ir_rot_done");
+    emit("\tmv\tt2, a0");
+    emit("\tli\tt1, 8");
+    emit("\tbgt\tt2, t1, " + identity);
+    if (isLeft) {
+      emit("\tsllw\ta0, t4, t2");
+    } else {
+      emit("\tsrlw\ta0, t4, t2");
+    }
+    emit("\tj\t" + done);
+    emit(identity + ":");
+    emit("\tmv\ta0, t4");
+    emit(done + ":");
+  }
+
+  irVFloat_[static_cast<size_t>(in.dst)] = 0;
+  irVPtr_[static_cast<size_t>(in.dst)] = 0;
+  emitIrStoreVreg(in.dst, false);
+  irLastVregInA0_ = in.dst;
+  return true;
+}
+
 bool CodeGen::tryEmitInlineCall(CallExpr *expr) {
     if (!optO1_ || !inlineArgMap_.empty()) {
       return false;
@@ -3421,7 +4155,39 @@ bool CodeGen::tryEmitInlineCall(CallExpr *expr) {
     return true;
   }
 
+bool CodeGen::tryEmitIdxCall(CallExpr *expr) {
+  Function *fn = expr->function;
+  if (!optO1_ || !fn || fn->runtime || fn->name != "idx" || expr->args.size() != 3) {
+    return false;
+  }
+  for (size_t i = 0; i < 3; ++i) {
+    if (!expr->args[i]->type.isIntScalar()) {
+      return false;
+    }
+  }
+  emitExpr(expr->args[0].get());
+  emitConvert(expr->args[0]->type, Type::scalar(BaseType::Int));
+  emit("\tmv\tt2, a0");
+  emitExpr(expr->args[2].get());
+  emitConvert(expr->args[2]->type, Type::scalar(BaseType::Int));
+  emit("\tmv\tt1, a0");
+  emit("\tmulw\tt2, t2, t1");
+  emitExpr(expr->args[1].get());
+  emitConvert(expr->args[1]->type, Type::scalar(BaseType::Int));
+  emit("\taddw\ta0, t2, a0");
+  return true;
+}
+
 void CodeGen::emitCall(CallExpr *expr) {
+    if (tryEmitBuiltinBitwiseCall(expr)) {
+      return;
+    }
+    if (tryEmitBuiltinRotCall(expr)) {
+      return;
+    }
+    if (tryEmitIdxCall(expr)) {
+      return;
+    }
     if (tryEmitInlineCall(expr)) {
       return;
     }

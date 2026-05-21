@@ -2,6 +2,7 @@
 
 #include "ast.h"
 #include "ir.h"
+#include "ir_regalloc.h"
 #include "opt_config.h"
 #include "semantic.h"
 
@@ -44,6 +45,7 @@ private:
 
   int irVregCount_ = 0;
   int irSpillBase_ = 0;
+  int irCalleeSaveBase_ = 24; // s 寄存器保存区起点（相对 s0 正偏移，实际 asm 为负偏移）
   int irTotalFrame_ = 0;
   vector<char> irVFloat_;
   /// IR 整型 vreg 是否为 XLEN 指针（与 irVFloat_ 互斥）
@@ -61,6 +63,40 @@ private:
   int irSkippedVreg_ = -1;
   std::unordered_map<Symbol *, std::string> irParamCache_;
   std::unordered_map<Symbol *, Expr *> inlineArgMap_;
+  // 标量局部变量当前由哪个 vreg 持有（配合 regalloc 避免 LoadLocal 读陈旧栈）
+  std::unordered_map<Symbol *, int> irLocalSymVreg_;
+  // regalloc 下：vreg 若由 LoadLocal 产生，读时以栈上局部槽为准（避免 LICM/转发 后读陈旧 spill）
+  std::unordered_map<int, Symbol *> irVregLocalSym_;
+  Symbol *irFreshLocalSym_ = nullptr; // a0 已含该局部标量，避免连续 lw 同一栈槽
+  IRRegallocSummary irRegalloc_{};
+  bool irRegallocLeaf_ = false;
+
+  std::string irVregIntPhysReg(int vid) const;
+  std::string irVregFloatPhysReg(int vid) const;
+  void emitIrSaveCalleeSavedRegs(uint32_t mask);
+  void emitIrRestoreCalleeSavedRegs(uint32_t mask);
+  void emitIrSyncVregStackSlot(int vid, const std::string &valReg, bool asFloat);
+  void irBindVregLocalSym(int vid, Symbol *sym);
+  bool irTryLoadVregFromLocalStack(int vid, const std::string &reg, bool asFloat);
+
+  /// 内层循环行指针：sym + outerIv → 持有行基址的寄存器名
+  struct RowBaseCache {
+    Symbol *sym = nullptr;
+    string outerIv;
+    string innerIv;
+    string reg;
+  };
+  vector<string> loopIvStack_;
+  vector<RowBaseCache> rowBaseCache_;
+
+  bool extractWhileLtIv(const Expr *cond, string *iv) const;
+
+  void collectRowBaseSyms(Stmt *body, const string &outerIv, const string &innerIv,
+                          vector<Symbol *> &out) const;
+
+  void emitRowBaseSetups(const vector<Symbol *> &syms, const string &outerIv);
+
+  bool tryEmitRowBaseLValAddress(LValExpr *expr);
 
   int irVregSlotOffset(int vid) const;
 
@@ -156,7 +192,14 @@ private:
 
   void emitCall(CallExpr *expr);
 
+  bool tryEmitBuiltinBitwiseCall(CallExpr *expr);
+
+  bool tryEmitBuiltinRotCall(CallExpr *expr);
+
+  bool tryEmitIrBuiltinCall(const IRFunction &ir, const IRInst &in, size_t instIdx);
+
   bool tryEmitInlineCall(CallExpr *expr);
+  bool tryEmitIdxCall(CallExpr *expr);
 
   bool tryEmitTailCallReturn(ReturnStmt &stmt);
 

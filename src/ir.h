@@ -1,6 +1,6 @@
 #pragma once
 
-// 中端 IR：用于 -O1 下可走 IR 的函数体（无局部数组声明，表达式无 && / ||）。
+// 中端 IR：用于 -O1 下可走 IR 的函数体（局部数组总元素数有上限；表达式无 && / ||）。
 // 控制流用 Label / J / Beqz 插在 flat insts 中；irRefreshCFG 按 leader 划分基本块并填 succ，
 // 供活跃变量与槽位分配；发射仍遍历 insts。
 
@@ -108,7 +108,8 @@ void irBuildFunction(FuncDef &def, const Semantic &semantic, IRFunction &out);
 // 由 insts 划分 leaders、填充 blocks[].begin/end/succ；insts 为空则 blocks 清空
 void irRefreshCFG(IRFunction &fn);
 
-void irOptimizeBlock(IRFunction &fn, const O1Profile &profile);
+void irOptimizeBlock(IRFunction &fn, const O1Profile &profile,
+                     const Semantic *semantic = nullptr);
 
 void irAssignSlots(IRFunction &fn);
 

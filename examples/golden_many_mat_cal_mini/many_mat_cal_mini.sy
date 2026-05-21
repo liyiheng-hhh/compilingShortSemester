@@ -1,0 +1,73 @@
+// 缩小版 many_mat_cal：覆盖 i-j 赋值、val 变换、i-j-k 累加与 R 次规约
+int A[32][32];
+int B[32][32];
+int C[32][32];
+
+int main() {
+    int T = 32;
+    int R = 2;
+    int i = 0;
+    while (i < T) {
+        int j = 0;
+        while (j < T) {
+            A[i][j] = i + j;
+            B[i][j] = j;
+            C[i][j] = 0;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < T) {
+        int j = 0;
+        while (j < T) {
+            C[i][j] = A[i][j] * 2 + B[i][j] * 3;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < T) {
+        int j = 0;
+        while (j < T) {
+            int val = C[i][j];
+            val = val * val + 7;
+            val = val / 3;
+            C[i][j] = val;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < T) {
+        int j = 0;
+        while (j < T) {
+            int k = 0;
+            int sum = 0;
+            while (k < T) {
+                sum = sum + C[i][k] * A[k][j];
+                k = k + 1;
+            }
+            A[i][j] = sum;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    int total = 0;
+    int r = 0;
+    while (r < R) {
+        i = 0;
+        while (i < T) {
+            int j = 0;
+            while (j < T) {
+                total = total + A[i][j] * A[i][j];
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        r = r + 1;
+    }
+    putint(total);
+    putch(10);
+    return 0;
+}

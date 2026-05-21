@@ -12,7 +12,7 @@
   - 推荐仅通过本仓库根目录 **`Makefile`** 所列 **`SRCS`** 参与构建；Docker 内编译请使用 **`BUILD_DIR=/tmp/compiler-build`**（或任意**未跟踪**目录），勿把构建副本提交进 Git。
 - **功能测试命令**：`compiler -S -o testcase.s testcase.sy`（路径在评测机上为绝对路径）。
 - **性能测试命令**：`compiler -S -o testcase.s testcase.sy -O1`
-- **`-O1` 分层（`src/opt_config.h`）**：平台提交默认 **档 B**（`SYSY_O1_DEFAULT_TIER=2`：IR + 常量折叠/DCE）。本地试档：`SYSY_O1_TIER=A|C|D`；回退仅 Codegen：`CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=1 make`。全开 D：`CXXFLAGS_EXTRA=-DSYSY_O1_FULL=1`。升档记录见 **`EVAL_BUGLOG.md`**。
+- **`-O1` 分层（`src/opt_config.h`）**：平台提交默认 **档 D**（`SYSY_O1_DEFAULT_TIER=4`：含 C 的 LICM/CSE + CFG LICM + store→load + 转置交换）。本地回退：`SYSY_O1_TIER=B` 或 `CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=2 make`。记录见 **`EVAL_BUGLOG.md`**。
 
 生成汇编为 **64 位 RISC-V**，需能与官方 SysY 运行时一并汇编、链接并在指定 RISC-V Linux 环境运行；地址空间上需满足 **`-mcmodel=medany`**（或等价）的大地址模型约定。
 
@@ -71,6 +71,176 @@ make check
 | `make sytest-o0` / `make sytest-o1` | 固定 `USE_O1=0/1` 的 qemu 比对 |
 | `make size-report` | 对每个用例输出 O0/O1 汇编行数及差值（默认扫描 `SY_DIRS`） |
 
+## 本地性能测试（runtime-eval）
+
+在 **QEMU + RISC-V 交叉工具链** 下批量测 **运行时间中位数** 与 **输出正确性**，结果写入 CSV，便于改优化后对比。与 `make sytest` / `docker-test-performance`（只测 AC/WA）互补。
+
+**不需要 Docker**：本机已安装 `riscv64-linux-gnu-gcc`、`qemu-riscv64-static`（或 `qemu-riscv64`）、`timeout` 时，在仓库根直接执行下列命令即可。仅当本机没有工具链时，再用文末 Docker 的 `docker-runtime-*` 目标。
+
+### 完整流程（一步步）
+
+在仓库根目录执行。性能题需事先放在 **`performance/`**（每题有 `.sy`，多数还有 `.in` / `.out`）。
+
+**① 准备（每次改代码后都要做）**
+
+```sh
+make && make libsysy.a
+```
+
+**② 跑性能 + 看结果（最常用）**
+
+```sh
+make runtime-eval SUITE=performance OPT=O1
+make runtime-summary
+```
+
+- 数据文件：`tests/.out/runtime/sysy-performance-O1.csv`
+- `runtime-summary` 会列出最慢的题、哪些 WA/超时。
+
+**③ 改优化前后对比（旧 vs 新）**
+
+改 **compiler 之前**先存一份 baseline：
+
+```sh
+make && make libsysy.a
+RUNTIME_CSV=tests/.out/runtime/before-O1.csv \
+  make runtime-eval SUITE=performance OPT=O1
+```
+
+改 IR/codegen 等并 **`make`** 之后，再跑 candidate：
+
+```sh
+RUNTIME_CSV=tests/.out/runtime/after-O1.csv \
+  make runtime-eval SUITE=performance OPT=O1
+```
+
+对比谁变快/变慢：
+
+```sh
+./scripts/eval-vs-baseline.sh \
+  tests/.out/runtime/before-O1.csv \
+  tests/.out/runtime/after-O1.csv
+```
+
+**④ 提交希冀前（功能必过 + 性能粗测）**
+
+```sh
+make runtime-gate PERF_TIMEOUT=20
+```
+
+功能集有错会失败；性能集超时只记 CSV，不拦脚本。
+
+**IR 通用优化（档 D，`-O1`）**  
+`src/ir_loop_opt.cpp`：基本块内标量 `LoadLocal`/`StoreLocal` → `Copy`（简易 mem2reg）。关闭：`SYSY_CC_NO_IR_LOOP_OPT=1`。  
+指纹式 AST pass（`knapsack_dp` / `mm_hoist`）可用 `SYSY_CC_DISABLE_PATTERN_PASSES=1` 关掉，便于对比通用路线。
+
+**⑤ 没有本机工具链时**
+
+```sh
+make docker-init
+make docker-runtime-perf    # 等同容器里 performance O1
+```
+
+---
+
+### 准备（每次改完编译器建议执行）
+
+```sh
+make && make libsysy.a
+```
+
+- `make libsysy.a` 用 `runtime/sysy_runtime.c` 交叉编译静态库（含 `starttime` / `stoptime` 的 `gettimeofday` 计时，与赛方习惯一致）。
+- 性能用例默认目录为仓库根下 **`performance/`**（`.gitignore`，需自行放入官方或本地 perf 包）。其它路径见下节 `SUITE`。
+
+### O0 与 O1 的区别
+
+| 档位 | 命令 | 含义 |
+|------|------|------|
+| **O0** | 不加 `-O1` | 几乎不做优化，作对照 baseline |
+| **O1** | `-O1` | 开启 `src/opt_config.h` 分层优化（提交默认 **档 D**：IR LICM/CSE、CFG LICM、store→load、AST 循环交换/分块等） |
+
+官方性能评测使用 **`compiler … -O1`**。本地 `runtime-compare` 在同一套题上先跑 O0 再跑 O1，对比每题 **median** 是否变快。
+
+### 日常命令（推荐）
+
+```sh
+# 1. 跑一整包性能题，生成 CSV（warmup + 3 次取中位数）
+make runtime-eval SUITE=performance OPT=O1
+
+# 2. 看汇总：通过率、最慢题、失败列表
+make runtime-summary
+
+# 3. 可选：O0 vs O1 整体对比（报告在 tests/.out/runtime/compare/）
+make runtime-compare SUITE=performance PERF_TIMEOUT=20
+```
+
+用例不在 `performance/` 时：
+
+```sh
+make runtime-eval SUITE=/path/to/cases OPT=O1
+```
+
+只测名称含某关键字（如 matmul）：
+
+```sh
+RUNTIME_CASE_FILTER=matmul make runtime-eval SUITE=performance OPT=O1
+```
+
+改优化前后对比见上文 **③**（`before-O1.csv` / `after-O1.csv`）。
+
+提交前功能 + 性能门禁见上文 **④**：
+
+```sh
+make runtime-gate PERF_TIMEOUT=20
+```
+
+### Make 与脚本对照
+
+| 目标 / 脚本 | 说明 |
+|-------------|------|
+| `make runtime-eval` | 主入口；等价 `./scripts/eval-runtime.sh <suite> <O0\|O1>` |
+| `make runtime-summary` | 汇总 `tests/.out/runtime/` 或指定 `RUNTIME_CSV=` |
+| `make runtime-compare` | O0 与 O1 两套 CSV + 回归/改进列表 |
+| `make runtime-hotspots` | 按 matmul、fft、sort 等子串分批测 |
+| `make runtime-gate` | functional O1（硬）+ performance O1（软） |
+| `make perf-eval` / `make perf-summary` | 兼容旧名，行为同上 |
+| `scripts/eval-hotspots.sh` | 热点子集（`O1`、超时秒数） |
+| `scripts/eval-vs-baseline.sh` | 两份 CSV 或 `--run suite opt /path/to/other/compiler` |
+
+默认 CSV 路径示例：`tests/.out/runtime/sysy-performance-O1.csv`（列含 `suite,case_id,opt,median_ms,run1_ms…,pass` 等）。
+
+### 环境变量（常用）
+
+| 变量 | 默认 | 含义 |
+|------|------|------|
+| `RUNTIME_PERF_DIR` | `performance/` | 性能用例根目录 |
+| `RUNTIME_FUNCTIONAL_DIR` | `2026初赛RISCV赛道功能用例/functional` | 功能用例根目录 |
+| `RUNTIME_CSV` | 自动 | 指定输出 CSV 路径 |
+| `RUNTIME_SOFT_PERF` | perf 为 `1` | `1` 时性能失败不令脚本 exit 1 |
+| `RUNTIME_TIMEOUT_SEC` | `10` | 功能集单题超时（秒） |
+| `RUNTIME_PERF_TIMEOUT_SEC` | `20` | 性能集单题超时（秒） |
+| `RUNTIME_CASE_FILTER` | 空 | 只跑 `case_id` 含该子串的题 |
+| `RUNTIME_CASE_LIMIT` | `0` | `>0` 时最多跑 N 题（调试） |
+
+### 单题 Profiling（调试用）
+
+```sh
+make perf-profile PERF_SY=performance/matmul1.sy LIBSYSY=$(pwd)/libsysy.a
+```
+
+### Docker（可选，无本机工具链时）
+
+```sh
+make docker-init
+make docker-runtime-perf          # 容器内 performance + O1 + CSV
+make docker-runtime-gate          # 容器内功能 + 性能门禁
+# 或：
+./scripts/docker-test-container.sh perf performance O1
+./scripts/docker-test-container.sh gate 20
+```
+
+`docker-test-performance` 仍只做 **功能回归**（AC/WA），不测 median；测性能请用 **`runtime-eval`** / **`docker-runtime-perf`**。
+
 **Docker 常驻容器**（`scripts/docker-test-container.sh`）：先 `make docker-init`，再对容器内路径跑批测（仓库根挂载为 **`/work`**）。本地若把官方树放在仓库根下，默认路径为下表 `DOCKER_*`；否则自行改 `DOCKER_FUNC` / `DOCKER_PERF` 或直接用 `test` 子命令传目录。
 
 | 目标 | 说明 |
@@ -78,7 +248,9 @@ make check
 | `make docker-init` | 创建/启动容器并安装 RISC-V 工具链与 qemu（同 `e2e-docker.sh`） |
 | `make docker-local-eval` | 容器内 `local_eval_cases` + O0/O1 对拍；自动编 `libsysy.a`（需 `runtime/sysy_runtime.c`） |
 | `make docker-test-functional` | `SY_TEST_DIR=$(DOCKER_FUNC)`，`USE_O1` 默认 0，可覆盖 |
-| `make docker-test-performance` | `SY_TEST_DIR=$(DOCKER_PERF)`，`USE_O1` 默认 1，可覆盖 |
+| `make docker-test-performance` | `SY_TEST_DIR=$(DOCKER_PERF)`，`USE_O1` 默认 1；**只测 AC/WA**，不测运行时间 |
+| `make docker-runtime-perf` | 容器内 `runtime-eval`（performance + O1，输出 CSV） |
+| `make docker-runtime-gate` | 容器内 `runtime-gate`（功能硬门 + 性能软门） |
 | `make docker-test-dirs` | 需设 **`SY_TEST_DIRS="dir1 dir2..."`**（容器内路径），走 `e2e-docker.sh` 多目录逻辑 |
 
 日常基线示例：
@@ -141,7 +313,7 @@ make docker-test-functional
 | 路径 | 内容 |
 |------|------|
 | `src/` | 编译器 C++ 源码（唯一 `main` 在 `src/main.cpp`） |
-| `scripts/` | 批测、Docker 内 `e2e-docker`、`run_sy_tests` 等 |
+| `scripts/` | 批测、`eval-runtime` 性能评测、`runtime-summary`、`e2e-docker`、`run_sy_tests` 等 |
 | `runtime/` | Docker 内用于生成 `libsysy.a` 的 `sysy_runtime.c` |
 | `examples/` | 冒烟与小型 golden |
 | `tools/` | 辅助脚本（如 `split_compiler.py`） |
@@ -197,7 +369,7 @@ make docker-test-functional
 
 1. **IR：固定点多轮块优化（已实现）**：`irOptimizeBlock` 外层按 **`irInstructionFingerprint`** 迭代（最多 16 轮）；每轮仍含 hoist、单遍扫描 + CSE/常量折叠、DCE（实现于 `irOptimizeBlockOneRound`）。**`codegen.cpp` 中只对 IR 函数调用一次 `irOptimizeBlock`**。
 2. **窥孔 / 强度削弱（部分落地）**：IR 内需已含 **2 的幂乘法→`Sll`**、**/±1、`0 / c`、`0 % c`** 常量折叠、`Rem`/`Div`/`Mul`/`Add`/`Sub`/`Neg`/`F*` 等对 `codegen.cpp`/`emitIr*` 的补充请继续按热点加；汇编侧 **magic 有符号除常数** 仍在发射阶段。
-3. **Profiling（已实现脚本与 Make 入口）**：`make perf-profile PERF_SY=performance/matmul1.sy`（可选 `LIBSYSY=…` 做 qemu 限时）；批量对比仍用 **`make size-report SY_DIRS=performance`**；希冀以官方 `starttime/stoptime` 为准。
+3. **Profiling（已实现）**：日常批量测性能用 **`make runtime-eval` + `make runtime-summary`**（见上文「本地性能测试」）；单题用 **`make perf-profile`**；改优化前后用 **`make runtime-compare`** 或 **`eval-vs-baseline.sh`**。汇编行数粗筛仍可用 **`make size-report`**。
 
 **阶段 B — 中端（1～2 周）**
 
