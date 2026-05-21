@@ -92,9 +92,17 @@ perf-profile: compiler
 #   make runtime-gate PERF_TIMEOUT=20
 #   make docker-runtime-perf
 #   make docker-runtime-gate
-libsysy.a: runtime/sysy_runtime.c
-	riscv64-linux-gnu-gcc -Wall -O3 -c -o runtime/sysy_runtime.o runtime/sysy_runtime.c
-	riscv64-linux-gnu-ar rcs $@ runtime/sysy_runtime.o
+# Sisyphus 风格：支持直接链接 runtime .c 或预编译的 libsysy.a
+RUNTIME_C ?= runtime/sysy_runtime.c
+RUNTIME_O ?= runtime/sysy_runtime.o
+
+libsysy.a: $(RUNTIME_C)
+	riscv64-linux-gnu-gcc -Wall -O3 -c -o $(RUNTIME_O) $(RUNTIME_C)
+	riscv64-linux-gnu-ar rcs $@ $(RUNTIME_O)
+
+# 直接链接 runtime .c（Sisyphus 风格，避免静态库兼容性问题）
+link-runtime-c: $(RUNTIME_C)
+	@echo "$(RUNTIME_C)"
 	riscv64-linux-gnu-ranlib $@
 
 SUITE ?= performance
