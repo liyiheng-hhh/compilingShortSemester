@@ -4,6 +4,7 @@
 #include "ir_expr_gvn.h"
 #include "ir_loop_opt.h"
 #include "ir_mem2reg.h"
+#include "ir_schedule.h"
 #include "opt_config.h"
 #include "semantic.h"
 
@@ -2168,6 +2169,14 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
   if (prof.irLoopOpt) {
     irOptimizeLoopsAndScalars(fn, prof);
   }
+  // 指令调度：重排指令减少流水线停顿
+  // TODO: 当前实现有性能问题，暂时禁用
+  // if (!envFlagTruthy("SYSY_CC_ENABLE_IR_SCHEDULE")) {
+  //   irScheduleInstructions(fn);
+  //   irRefreshCFG(fn);
+  //   irHoistLoadsEarly(fn);
+  //   irRefreshCFG(fn);
+  // }
 }
 
 static void irAugmentLastUseWithCFG(IRFunction &fn, vector<size_t> &lastUse) {
