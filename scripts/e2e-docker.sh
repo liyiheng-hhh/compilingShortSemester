@@ -93,8 +93,10 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/src"
 cp /work/Makefile "$BUILD_DIR/"
 cp /work/src/*.cpp /work/src/*.h "$BUILD_DIR/src/"
-make -C "$BUILD_DIR" clean
-make -C "$BUILD_DIR"
+# 确保目录存在（防御性），并禁用并行编译避免竞争
+mkdir -p "$BUILD_DIR/src"
+make -C "$BUILD_DIR" -j1 clean
+make -C "$BUILD_DIR" -j1
 export COMPILER="$BUILD_DIR/compiler"
 
 echo "=== smoke.sy -> smoke.s ==="
