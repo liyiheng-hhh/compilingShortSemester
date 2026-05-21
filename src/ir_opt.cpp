@@ -2416,6 +2416,15 @@ void irAssignSlots(IRFunction &fn) {
   }
 
   fn.vregSlots = allocated;
+
+  // 确保所有 vreg 都有有效槽号（Phi 节点等可能没有 dst）
+  for (int v = 0; v < nv; ++v) {
+    if (fn.vregSlots[static_cast<size_t>(v)] < 0) {
+      // 分配新槽
+      fn.vregSlots[static_cast<size_t>(v)] = static_cast<int>(slotFreeAt.size());
+      slotFreeAt.push_back(-1);
+    }
+  }
 }
 
 int irSlotCount(const IRFunction &fn) {
