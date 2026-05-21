@@ -960,7 +960,7 @@ void CodeGen::emitIrSaveCalleeSavedRegs(uint32_t mask) {
   int off = -irCalleeSaveBase_;
   for (int s = 1; s <= 11; ++s) {
     if (mask & (1u << static_cast<unsigned>(s - 1))) {
-      emit("\tsd\ts" + to_string(s) + ", " + to_string(off) + "(s0)");
+      emitStoreMem("sd", "s" + to_string(s), "s0", off);
       off -= 8;
     }
   }
@@ -976,7 +976,7 @@ void CodeGen::emitIrRestoreCalleeSavedRegs(uint32_t mask) {
     }
   }
   for (auto it = slots.rbegin(); it != slots.rend(); ++it) {
-    emit("\tld\ts" + to_string(it->first) + ", " + to_string(it->second) + "(s0)");
+    emitLoadMem("ld", "s" + to_string(it->first), "s0", it->second);
   }
 }
 
