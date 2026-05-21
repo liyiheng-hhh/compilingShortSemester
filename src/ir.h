@@ -28,6 +28,8 @@ enum class IROp {
   StoreMem,
   LoadLocal,
   StoreLocal,
+  // SSA Mem2Reg support
+  Phi,  // 合并来自不同前驱的值
   Add,
   Sub,
   Mul,
