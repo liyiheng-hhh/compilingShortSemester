@@ -1,6 +1,7 @@
 #include "ir.h"
 
 #include "common.h"
+#include "ir_expr_gvn.h"
 #include "ir_loop_opt.h"
 #include "ir_mem2reg.h"
 #include "opt_config.h"
@@ -903,6 +904,13 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     irHoistLoopInvariantCFG(fn);
   }
   irRefreshCFG(fn);
+
+  // 跨块 GVN：消除冗余表达式
+  if (!envFlagTruthy("SYSY_CC_NO_IR_EXPR_GVN")) {
+    irExprGvnAcrossBlocks(fn);
+    irRefreshCFG(fn);
+  }
+
   if (fn.insts.empty()) {
     return;
   }

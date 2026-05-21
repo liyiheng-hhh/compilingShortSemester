@@ -5,6 +5,7 @@
 #include "mm_hoist.h"
 #include "land_lor_split.h"
 #include "loop_interchange.h"
+#include "loop_unroll.h"
 #include "opt_config.h"
 #include "parser.h"
 #include "semantic.h"
@@ -32,6 +33,10 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   if (optO1 && !envFlagTruthy("SYSY_CC_DISABLE_PATTERN_PASSES")) {
     applyKnapsackDpPass(program);
     applyMmAikHoistPass(program);
+  }
+  // AST 级小循环展开
+  if (optO1 && !envFlagTruthy("SYSY_CC_NO_LOOP_UNROLL")) {
+    applySmallLoopUnrollPass(program);
   }
   if (o1AstLoopInterchangeEffective(o1Prof)) {
     loopInterchangePass(program);
