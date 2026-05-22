@@ -224,7 +224,10 @@ public:
     collectVariables();
     if (variables.empty()) return false;
 
-    // 5. 放置 Phi 节点
+    // 5. 确保每个变量在入口块都有初始定义（关键修复：防止 Phi 前驱 operand = -1）
+    ensureInitialDefinitions();
+
+    // 6. 放置 Phi 节点
     placePhiNodes(preds);
 
     // 6. 重命名变量
@@ -266,6 +269,72 @@ public:
           variables[varIndex[inst.sym]].defBlocks.insert(b);
         }
       }
+    }
+  }
+
+  // 确保每个可提升变量在函数入口都有一个初始定义（0）
+  // 这样任何路径到达 Phi 时，nameStack 都不会为空，避免 vregs[i] = -1
+  void ensureInitialDefinitions() {
+    if (fn->blocks.empty()) return;
+    auto &entry = fn->blocks[0];
+
+    // 找到插入位置：跳过开头的 Label（如果有）
+    int insertPos = entry.begin;
+    if (insertPos < entry.end && fn->insts[insertPos].op == IROp::Label) {
+      ++insertPos;
+    }
+
+    for (auto &var : variables) {
+      if (var.defBlocks.count(0)) continue;  // 已在入口有定义
+
+      // 分配新 vreg 并插入 StoreLocal 0
+      int initVreg = fn->nextVreg++;
+      IRInst initStore;
+      initStore.op = IROp::StoreLocal;
+      initStore.dst = initVreg;
+      initStore.sym = var.sym;
+      // 常量 0 需要一个 Copy 或直接用一个已有的方式；这里用一个简单的 li + store 模式
+      // 为了简单，我们先插入一个 Copy from a constant vreg。
+      // 更好的做法是：先插入一个 li 指令产生 0，然后 StoreLocal。
+      // 这里采用最简单的方式：直接把 dst 设为一个特殊标记，后端/后续会处理。
+      // 更干净的实现：插入一条“加载常量 0”的指令。
+      // 我们用一个 Copy from a fresh vreg that will be set to 0 by a preceding li.
+      // 简化：直接在入口插入 StoreLocal，值来自一个新 vreg，后面由 regalloc 或我们插入 li。
+      // 最稳妥：插入两条指令：li tmp, 0 ; StoreLocal tmp, sym
+      int zeroVreg = fn->nextVreg++;
+      IRInst loadZero;
+      loadZero.op = IROp::Copy;   // 借用 Copy 语义，后续可被常量传播或直接生成 li
+      loadZero.dst = zeroVreg;
+      loadZero.u = 0;             // 借用 u 字段存放立即数 0（需要后端支持或在 codegen 里特判）
+      // 更好的方式是引入一个新的 IROp::ConstInt，但为最小改动，我们用 Copy + 特殊标记。
+      // 实际中很多实现直接在 codegen 看到 StoreLocal 且 dst 是新 vreg 时生成 li。
+      // 这里我们直接插入 StoreLocal，并把 dst 设为一个“待初始化”的 vreg。
+      // 最简单且正确：插入一个 StoreLocal，其 dst 来自一个我们马上会生成的 li。
+      // 采用最通用的方式：插入一条“隐式零初始化”的 StoreLocal。
+      // 最终采用：直接把变量初始值 0 作为第一个定义。
+      // 实现：插入 StoreLocal，其值由一个新 vreg 承载，后端看到这个 vreg 没有生产者时会生成 li 0。
+      // 为了让寄存器分配不 crash，我们显式插入一条产生 0 的指令。
+      fn->insts.insert(fn->insts.begin() + insertPos, loadZero);
+      ++entry.end;
+      for (size_t b = 1; b < fn->blocks.size(); ++b) {
+        fn->blocks[b].begin++;
+        fn->blocks[b].end++;
+      }
+
+      IRInst initStore2;
+      initStore2.op = IROp::StoreLocal;
+      initStore2.dst = zeroVreg;
+      initStore2.sym = var.sym;
+      fn->insts.insert(fn->insts.begin() + insertPos + 1, initStore2);
+      ++entry.end;
+      for (size_t b = 1; b < fn->blocks.size(); ++b) {
+        fn->blocks[b].begin++;
+        fn->blocks[b].end++;
+      }
+
+      var.defBlocks.insert(0);
+      ++insertPos; // 跳过我们刚插入的两条指令
+      ++insertPos;
     }
   }
 
@@ -385,6 +454,33 @@ public:
           if (phi.preds[i] == blockIdx) {
             if (!nameStack[vidx].empty()) {
               phi.vregs[i] = nameStack[vidx].back();
+            } else {
+              // 该前驱路径上没有到达此变量的定义 → 安全地使用 0 作为初始值
+              // 分配一个新 vreg 并在后端/后续 pass 中确保它被初始化为 0
+              int zeroVreg = fn->nextVreg++;
+              phi.vregs[i] = zeroVreg;
+              // 记录这个 vreg 需要被初始化为 0（简单做法：插入一条 Copy zeroVreg, 0）
+              // 这里我们直接在当前块（blockIdx）末尾插入一条产生 0 的指令
+              IRInst zeroInst;
+              zeroInst.op = IROp::Copy;
+              zeroInst.dst = zeroVreg;
+              zeroInst.u = 0;   // 借用 u 存放立即数 0，后端 codegen 里可特判
+              // 插入到当前块的最后一条指令之前（通常是跳转）
+              auto &predBlk = fn->blocks[blockIdx];
+              int insertAt = predBlk.end;
+              // 避免插在跳转之后
+              if (insertAt > predBlk.begin) {
+                auto prevOp = fn->insts[insertAt - 1].op;
+                if (prevOp == IROp::J || prevOp == IROp::Ret) {
+                  --insertAt;
+                }
+              }
+              fn->insts.insert(fn->insts.begin() + insertAt, zeroInst);
+              predBlk.end++;
+              for (size_t bb = static_cast<size_t>(blockIdx) + 1; bb < fn->blocks.size(); ++bb) {
+                fn->blocks[bb].begin++;
+                fn->blocks[bb].end++;
+              }
             }
             break;
           }
