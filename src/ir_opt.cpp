@@ -2144,9 +2144,9 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
     irCanonicalizeLoadGlobalInBlocks(fn);
     irRefreshCFG(fn);
   }
-  // SSA Mem2Reg：完整版带 Phi 节点（当前默认关闭，避免复杂循环语义破坏）
+  // SSA Mem2Reg：完整版带 Phi 节点（默认开启，设 SYSY_CC_NO_MEM2REG=1 可关闭）
   // 实现 Cytron et al. 1991 算法（支配树 + 支配前沿 + Phi 插入 + 变量重命名）
-  if (envFlagTruthy("SYSY_CC_ENABLE_MEM2REG")) {
+  if (!envFlagTruthy("SYSY_CC_NO_MEM2REG")) {
     irMem2Reg(fn);
     irRefreshCFG(fn);
   }
