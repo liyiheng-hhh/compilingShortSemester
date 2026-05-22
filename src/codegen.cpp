@@ -2207,6 +2207,15 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     emitIrLoadVreg(in.u, false);
     emit("\tbeqz\ta0, " + in.ext);
     return;
+  case IROp::Phi: {
+    // 回退：取第一个前驱操作数（仅用于调试；正常应走 lowerPhisToCopies）
+    if (!in.args.empty() && in.args[0] >= 0) {
+      emitIrLoadVreg(in.args[0], false);
+      emitIrStoreVreg(in.dst, false);
+      markInt(in.dst);
+    }
+    return;
+  }
   case IROp::Ret:
     if (def.ret == BaseType::Void) {
       emit("\tj\t" + currentFunction_->returnLabel);

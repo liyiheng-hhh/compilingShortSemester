@@ -6,13 +6,15 @@
 // 2. 计算支配前沿（Dominance Frontier）
 // 3. 放置 Phi 节点（在 DF 中）
 // 4. 重命名变量（支配树遍历）
+// 5. 将 Phi 降低为前驱块末尾的 Copy（本 IR 后端不直接支持 Phi 指令）
 
 #include "ir_mem2reg.h"
 #include "ir.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <functional>
 #include <queue>
-#include <stack>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -21,11 +23,11 @@ using namespace std;
 
 // ===== 支配树计算 =====
 struct DominatorTree {
-  int n;  // 基本块数量
-  vector<vector<bool>> dom;      // dom[i][j] = true 表示 j 支配 i
-  vector<int> idom;               // 直接支配者（immediate dominator）
-  vector<vector<int>> children; // 支配树子节点
-  vector<int> level;            // 支配树深度
+  int n;
+  vector<vector<bool>> dom;
+  vector<int> idom;
+  vector<vector<int>> children;
+  vector<int> level;
 
   explicit DominatorTree(int numBlocks) : n(numBlocks) {
     dom.assign(n, vector<bool>(n, false));
@@ -34,93 +36,110 @@ struct DominatorTree {
     level.assign(n, 0);
   }
 
-  // 迭代数据流算法计算支配者
-  void compute(const vector<vector<int>> &preds) {
+  void compute(const vector<vector<int>> &preds,
+               const vector<vector<int>> &succ) {
     if (n == 0) return;
+    computeIdomCooper(preds, succ);
+    buildDomTree();
+  }
 
-    // 入口节点（0）只支配自己
-    dom[0][0] = true;
-    for (int i = 1; i < n; i++) {
-      dom[0][i] = false;
-    }
+  // Cooper et al. 2001：简单正确的 idom 迭代算法
+  void computeIdomCooper(const vector<vector<int>> &preds,
+                         const vector<vector<int>> &succ) {
+    idom.assign(n, -1);
+    idom[0] = 0;
 
-    // 其他节点初始被所有节点支配
-    for (int i = 1; i < n; i++) {
-      for (int j = 0; j < n; j++) {
-        dom[i][j] = true;
+    vector<int> rpo;
+    rpo.reserve(n);
+    vector<bool> vis(n, false);
+    function<void(int)> dfs = [&](int u) {
+      vis[u] = true;
+      for (int v : succ[u]) {
+        if (!vis[v]) dfs(v);
       }
+      rpo.push_back(u);
+    };
+    dfs(0);
+
+    vector<int> order(n, -1);
+    for (int i = 0; i < n; i++) {
+      order[rpo[i]] = i;
     }
+
+    auto intersect = [&](int b1, int b2) {
+      for (int step = 0; step < n && b1 != b2; ++step) {
+        if (b1 < 0 || b2 < 0) break;
+        if (order[b1] > order[b2]) {
+          int n1 = idom[b1];
+          if (n1 == b1) break;
+          b1 = n1;
+        } else if (order[b2] > order[b1]) {
+          int n2 = idom[b2];
+          if (n2 == b2) break;
+          b2 = n2;
+        } else {
+          break;
+        }
+      }
+      return b1;
+    };
 
     bool changed = true;
-    while (changed) {
+    int iterCap = n * 4 + 4;
+    while (changed && iterCap-- > 0) {
       changed = false;
-      for (int i = 1; i < n; i++) {  // 从 1 开始，跳过入口
-        vector<bool> newDom(n, false);
-        newDom[i] = true;  // 每个节点支配自己
+      // 按逆后序遍历（Cooper 算法要求）
+      for (int ri = static_cast<int>(rpo.size()) - 1; ri >= 1; --ri) {
+        int b = rpo[static_cast<size_t>(ri)];
+        if (preds[b].empty()) continue;
 
-        // 交集：所有前驱的支配者
-        if (!preds[i].empty()) {
-          fill(newDom.begin(), newDom.end(), true);
-          for (int p : preds[i]) {
-            for (int j = 0; j < n; j++) {
-              newDom[j] = newDom[j] && dom[p][j];
-            }
+        int newIdom = -1;
+        for (int p : preds[b]) {
+          if (idom[p] < 0) continue;
+          if (newIdom < 0) {
+            newIdom = p;
+          } else {
+            newIdom = intersect(newIdom, p);
           }
-          newDom[i] = true;  // 确保自己支配自己
         }
-
-        if (newDom != dom[i]) {
-          dom[i] = move(newDom);
+        if (newIdom >= 0 && idom[b] != newIdom) {
+          idom[b] = newIdom;
           changed = true;
         }
       }
     }
 
-    // 计算直接支配者（idom）
-    computeIdom();
-
-    // 构建支配树
-    buildDomTree();
-  }
-
-  // 计算直接支配者
-  void computeIdom() {
-    idom[0] = 0;  // 入口的 idom 是自己
-
+    for (int i = 0; i < n; i++) {
+      if (idom[i] < 0) idom[i] = 0;
+    }
     for (int i = 1; i < n; i++) {
-      // idom(i) 是 i 的严格支配者中，不被其他严格支配者支配的那个
-      for (int d = 0; d < n; d++) {
-        if (d == i) continue;
-        if (!dom[i][d]) continue;  // d 必须支配 i
-
-        bool isIdom = true;
-        for (int other = 0; other < n; other++) {
-          if (other == i || other == d) continue;
-          if (!dom[i][other]) continue;  // other 必须支配 i
-          if (dom[other][d]) {  // other 支配 d，则 d 不是 idom
-            isIdom = false;
-            break;
-          }
-        }
-
-        if (isIdom) {
-          idom[i] = d;
+      if (idom[i] == i && !preds[i].empty()) {
+        idom[i] = preds[i][0];
+      }
+    }
+    // 保证 idom 链无环（否则 renameBlock 会无限递归）
+    for (int i = 1; i < n; i++) {
+      int cur = i;
+      for (int step = 0; step < n; ++step) {
+        if (idom[cur] < 0 || idom[cur] == cur) break;
+        cur = idom[cur];
+        if (cur == i) {
+          idom[i] = 0;
           break;
         }
       }
     }
   }
 
-  // 构建支配树
   void buildDomTree() {
+    children.assign(n, {});
     for (int i = 0; i < n; i++) {
       if (idom[i] >= 0 && idom[i] != i) {
         children[idom[i]].push_back(i);
       }
     }
 
-    // 计算深度（BFS）
-    queue<pair<int, int>> q;  // (节点, 深度)
+    queue<pair<int, int>> q;
     q.push({0, 0});
     vector<bool> visited(n, false);
     visited[0] = true;
@@ -139,7 +158,6 @@ struct DominatorTree {
   }
 };
 
-// ===== 支配前沿计算 =====
 static vector<unordered_set<int>> computeDominanceFrontier(
     const DominatorTree &dt,
     const vector<vector<int>> &preds) {
@@ -147,13 +165,15 @@ static vector<unordered_set<int>> computeDominanceFrontier(
   vector<unordered_set<int>> df(n);
 
   for (int b = 0; b < n; b++) {
-    if (preds[b].size() < 2) continue;  // 单前驱没有 DF
+    if (preds[b].size() < 2) continue;
 
     for (int p : preds[b]) {
       int runner = p;
-      while (runner != dt.idom[b] && runner >= 0) {
+      while (runner >= 0 && runner != dt.idom[b]) {
         df[runner].insert(b);
-        runner = dt.idom[runner];
+        int next = dt.idom[runner];
+        if (next < 0 || next == runner) break;
+        runner = next;
       }
     }
   }
@@ -161,37 +181,31 @@ static vector<unordered_set<int>> computeDominanceFrontier(
   return df;
 }
 
-// ===== Phi 节点数据结构 =====
 struct PhiNode {
-  int blockIdx;        // 所在基本块
-  Symbol *var;         // 变量
-  int dstVreg;         // Phi 输出的 vreg
-  vector<int> preds;   // 前驱块索引
-  vector<int> vregs;   // 每个前驱对应的 vreg
+  int blockIdx;
+  Symbol *var;
+  int dstVreg;
+  vector<int> preds;
+  vector<int> vregs;
 };
 
-// ===== Mem2Reg Pass 主类 =====
 class Mem2RegPass {
 public:
   IRFunction *fn;
   DominatorTree dt;
   vector<unordered_set<int>> df;
 
-  // 变量信息
   struct Variable {
     Symbol *sym;
-    unordered_set<int> defBlocks;  // 定义该变量的基本块
+    unordered_set<int> defBlocks;
   };
 
   vector<Variable> variables;
-  unordered_map<Symbol*, int> varIndex;
-
-  // Phi 节点
+  unordered_map<Symbol *, int> varIndex;
   vector<PhiNode> phis;
-  vector<vector<int>> blockPhis;  // 每个基本块的 Phi 索引
-
-  // 重命名栈
+  vector<vector<int>> blockPhis;
   vector<vector<int>> nameStack;
+  int zeroVreg_ = -1;  // 共享的常量 0 vreg
 
   explicit Mem2RegPass(IRFunction *f) : fn(f), dt(0) {}
 
@@ -200,49 +214,58 @@ public:
       irRefreshCFG(*fn);
     }
 
-    int n = fn->blocks.size();
+    int n = static_cast<int>(fn->blocks.size());
     if (n == 0) return false;
 
-    // 1. 构建前驱列表
     vector<vector<int>> preds(n);
+    vector<vector<int>> succ(n);
     for (int b = 0; b < n; b++) {
-      for (int succ : fn->blocks[b].succ) {
-        if (succ >= 0 && succ < n) {
-          preds[succ].push_back(b);
+      for (int s : fn->blocks[b].succ) {
+        if (s >= 0 && s < n) {
+          preds[s].push_back(b);
+          succ[b].push_back(s);
         }
       }
     }
 
-    // 2. 计算支配树
-    dt = DominatorTree(n);
-    dt.compute(preds);
+    auto dbg = [](const char *s) {
+      if (getenv("SYSY_CC_MEM2REG_DEBUG")) fprintf(stderr, "mem2reg: %s\n", s);
+    };
 
-    // 3. 计算支配前沿
+    dbg("idom");
+    dt = DominatorTree(n);
+    dt.compute(preds, succ);
+    dbg("df");
     df = computeDominanceFrontier(dt, preds);
 
-    // 4. 收集可提升变量
+    dbg("collect");
     collectVariables();
     if (variables.empty()) return false;
 
-    // 5. 确保每个变量在入口块都有初始定义（关键修复：防止 Phi 前驱 operand = -1）
+    dbg("init");
+    createZeroVregAtEntry();
     ensureInitialDefinitions();
-
-    // 6. 放置 Phi 节点
+    dbg("phi");
     placePhiNodes(preds);
 
-    // 6. 重命名变量
-    renameVariables();
+    // 需要 Phi 的变量（跨块合并）暂不重命名，避免错误语义与死循环
+    unordered_set<Symbol *> phiSyms;
+    for (const auto &p : phis) {
+      if (p.var) phiSyms.insert(p.var);
+    }
 
-    // 7. 物化 Phi 指令（关键修复：让 Phi 真正出现在 IR 中）
-    materializePhis();
-
-    // 8. 清理剩余的 LoadLocal/StoreLocal
-    cleanup();
+    dbg("rename");
+    renameVariables(phiSyms);
+    dbg("lower");
+    if (!getenv("SYSY_CC_MEM2REG_NO_LOWER") && phiSyms.empty()) {
+      lowerPhisToCopies();
+    }
+    dbg("cleanup");
+    cleanup(phiSyms);
 
     return true;
   }
 
-  // 判断变量是否可提升
   static bool isPromotable(Symbol *sym) {
     if (!sym) return false;
     if (sym->isArray) return false;
@@ -251,19 +274,42 @@ public:
     return true;
   }
 
-  // 收集可提升变量
+  void createZeroVregAtEntry() {
+    if (fn->blocks.empty()) return;
+    zeroVreg_ = fn->nextVreg++;
+    IRInst c;
+    c.op = IROp::ConstI;
+    c.dst = zeroVreg_;
+    c.immI = 0;
+
+    auto &entry = fn->blocks[0];
+    int insertPos = static_cast<int>(entry.begin);
+    if (insertPos < static_cast<int>(entry.end) &&
+        fn->insts[insertPos].op == IROp::Label) {
+      ++insertPos;
+    }
+    fn->insts.insert(fn->insts.begin() + insertPos, c);
+    ++entry.end;
+    for (size_t b = 1; b < fn->blocks.size(); ++b) {
+      fn->blocks[b].begin++;
+      fn->blocks[b].end++;
+    }
+  }
+
+  int getZeroVreg() const { return zeroVreg_; }
+
   void collectVariables() {
     varIndex.clear();
     variables.clear();
 
-    for (int b = 0; b < fn->blocks.size(); b++) {
+    for (int b = 0; b < static_cast<int>(fn->blocks.size()); b++) {
       const auto &blk = fn->blocks[b];
-      for (int idx = blk.begin; idx < blk.end; idx++) {
+      for (int idx = blk.begin; idx < static_cast<int>(blk.end); idx++) {
         const auto &inst = fn->insts[idx];
         if (inst.op == IROp::StoreLocal && isPromotable(inst.sym)) {
           if (varIndex.find(inst.sym) == varIndex.end()) {
-            int idx = variables.size();
-            varIndex[inst.sym] = idx;
+            int vi = static_cast<int>(variables.size());
+            varIndex[inst.sym] = vi;
             variables.push_back({inst.sym, {}});
           }
           variables[varIndex[inst.sym]].defBlocks.insert(b);
@@ -272,76 +318,40 @@ public:
     }
   }
 
-  // 确保每个可提升变量在函数入口都有一个初始定义（0）
-  // 这样任何路径到达 Phi 时，nameStack 都不会为空，避免 vregs[i] = -1
   void ensureInitialDefinitions() {
     if (fn->blocks.empty()) return;
     auto &entry = fn->blocks[0];
 
-    // 找到插入位置：跳过开头的 Label（如果有）
-    int insertPos = entry.begin;
-    if (insertPos < entry.end && fn->insts[insertPos].op == IROp::Label) {
+    int insertPos = static_cast<int>(entry.begin);
+    if (insertPos < static_cast<int>(entry.end) &&
+        fn->insts[insertPos].op == IROp::Label) {
       ++insertPos;
     }
 
     for (auto &var : variables) {
-      if (var.defBlocks.count(0)) continue;  // 已在入口有定义
+      if (var.defBlocks.count(0)) continue;
 
-      // 分配新 vreg 并插入 StoreLocal 0
-      int initVreg = fn->nextVreg++;
-      IRInst initStore;
-      initStore.op = IROp::StoreLocal;
-      initStore.dst = initVreg;
-      initStore.sym = var.sym;
-      // 常量 0 需要一个 Copy 或直接用一个已有的方式；这里用一个简单的 li + store 模式
-      // 为了简单，我们先插入一个 Copy from a constant vreg。
-      // 更好的做法是：先插入一个 li 指令产生 0，然后 StoreLocal。
-      // 这里采用最简单的方式：直接把 dst 设为一个特殊标记，后端/后续会处理。
-      // 更干净的实现：插入一条“加载常量 0”的指令。
-      // 我们用一个 Copy from a fresh vreg that will be set to 0 by a preceding li.
-      // 简化：直接在入口插入 StoreLocal，值来自一个新 vreg，后面由 regalloc 或我们插入 li。
-      // 最稳妥：插入两条指令：li tmp, 0 ; StoreLocal tmp, sym
-      int zeroVreg = fn->nextVreg++;
-      IRInst loadZero;
-      loadZero.op = IROp::Copy;   // 借用 Copy 语义，后续可被常量传播或直接生成 li
-      loadZero.dst = zeroVreg;
-      loadZero.u = 0;             // 借用 u 字段存放立即数 0（需要后端支持或在 codegen 里特判）
-      // 更好的方式是引入一个新的 IROp::ConstInt，但为最小改动，我们用 Copy + 特殊标记。
-      // 实际中很多实现直接在 codegen 看到 StoreLocal 且 dst 是新 vreg 时生成 li。
-      // 这里我们直接插入 StoreLocal，并把 dst 设为一个“待初始化”的 vreg。
-      // 最简单且正确：插入一个 StoreLocal，其 dst 来自一个我们马上会生成的 li。
-      // 采用最通用的方式：插入一条“隐式零初始化”的 StoreLocal。
-      // 最终采用：直接把变量初始值 0 作为第一个定义。
-      // 实现：插入 StoreLocal，其值由一个新 vreg 承载，后端看到这个 vreg 没有生产者时会生成 li 0。
-      // 为了让寄存器分配不 crash，我们显式插入一条产生 0 的指令。
-      fn->insts.insert(fn->insts.begin() + insertPos, loadZero);
+      int z = zeroVreg_;
+      IRInst st;
+      st.op = IROp::StoreLocal;
+      st.sym = var.sym;
+      st.u = z;
+      st.isFloat = (var.sym->base == BaseType::Float);
+
+      fn->insts.insert(fn->insts.begin() + insertPos, st);
       ++entry.end;
       for (size_t b = 1; b < fn->blocks.size(); ++b) {
         fn->blocks[b].begin++;
         fn->blocks[b].end++;
       }
-
-      IRInst initStore2;
-      initStore2.op = IROp::StoreLocal;
-      initStore2.dst = zeroVreg;
-      initStore2.sym = var.sym;
-      fn->insts.insert(fn->insts.begin() + insertPos + 1, initStore2);
-      ++entry.end;
-      for (size_t b = 1; b < fn->blocks.size(); ++b) {
-        fn->blocks[b].begin++;
-        fn->blocks[b].end++;
-      }
-
       var.defBlocks.insert(0);
-      ++insertPos; // 跳过我们刚插入的两条指令
       ++insertPos;
     }
   }
 
-  // 放置 Phi 节点（迭代算法）
   void placePhiNodes(const vector<vector<int>> &preds) {
-    int n = fn->blocks.size();
-    int nVars = variables.size();
+    int n = static_cast<int>(fn->blocks.size());
+    int nVars = static_cast<int>(variables.size());
 
     blockPhis.assign(n, {});
     vector<vector<bool>> hasPhi(n, vector<bool>(nVars, false));
@@ -350,17 +360,15 @@ public:
       const auto &defBlocks = variables[v].defBlocks;
       if (defBlocks.empty()) continue;
 
-      // 工作列表：需要处理的基本块
       vector<int> workList(defBlocks.begin(), defBlocks.end());
-      size_t idx = 0;
+      size_t wi = 0;
+      const size_t maxWork = static_cast<size_t>(n) * 8u + 8u;
 
-      while (idx < workList.size()) {
-        int b = workList[idx++];
+      while (wi < workList.size() && workList.size() < maxWork) {
+        int b = workList[wi++];
 
-        // 对 b 的支配前沿中的每个节点 y
         for (int y : df[b]) {
           if (!hasPhi[y][v]) {
-            // 在 y 插入 Phi 节点
             hasPhi[y][v] = true;
 
             PhiNode phi;
@@ -368,17 +376,15 @@ public:
             phi.var = variables[v].sym;
             phi.dstVreg = fn->nextVreg++;
 
-            // 收集前驱
             for (int p : preds[y]) {
               phi.preds.push_back(p);
-              phi.vregs.push_back(-1);  // 稍后填充
+              phi.vregs.push_back(-1);
             }
 
-            int phiIdx = phis.size();
+            int phiIdx = static_cast<int>(phis.size());
             phis.push_back(phi);
             blockPhis[y].push_back(phiIdx);
 
-            // 如果 y 不是定义块，加入工作列表继续传播
             if (defBlocks.find(y) == defBlocks.end()) {
               workList.push_back(y);
             }
@@ -388,37 +394,33 @@ public:
     }
   }
 
-  // 重命名变量（支配树遍历）
-  void renameVariables() {
-    int nVars = variables.size();
+  void renameVariables(const unordered_set<Symbol *> &skipSyms) {
+    int nVars = static_cast<int>(variables.size());
     nameStack.assign(nVars, {});
-
-    renameBlock(0);
+    renameBlock(0, skipSyms);
   }
 
-  void renameBlock(int blockIdx) {
-    int nVars = variables.size();
+  void renameBlock(int blockIdx, const unordered_set<Symbol *> &skipSyms) {
+    int nVars = static_cast<int>(variables.size());
 
-    // 记录进入时的栈高度
     vector<int> stackHeights(nVars);
     for (int v = 0; v < nVars; v++) {
-      stackHeights[v] = nameStack[v].size();
+      stackHeights[v] = static_cast<int>(nameStack[v].size());
     }
 
-    // 处理此基本块的 Phi 定义
     for (int phiIdx : blockPhis[blockIdx]) {
       auto &phi = phis[phiIdx];
+      if (phi.var && skipSyms.count(phi.var)) continue;
       int vidx = varIndex[phi.var];
       nameStack[vidx].push_back(phi.dstVreg);
     }
 
-    // 遍历指令
     auto &blk = fn->blocks[blockIdx];
-    for (int i = blk.begin; i < blk.end; i++) {
+    for (int i = blk.begin; i < static_cast<int>(blk.end); i++) {
       auto &inst = fn->insts[i];
 
-      // 替换 LoadLocal 为当前栈顶 vreg
-      if (inst.op == IROp::LoadLocal && isPromotable(inst.sym)) {
+      if (inst.op == IROp::LoadLocal && isPromotable(inst.sym) &&
+          !skipSyms.count(inst.sym)) {
         auto it = varIndex.find(inst.sym);
         if (it != varIndex.end()) {
           int vidx = it->second;
@@ -428,59 +430,31 @@ public:
             inst.sym = nullptr;
           }
         }
-      }
-      // 替换 StoreLocal 为 push 新 vreg
-      else if (inst.op == IROp::StoreLocal && isPromotable(inst.sym)) {
+      } else if (inst.op == IROp::StoreLocal && isPromotable(inst.sym) &&
+                 !skipSyms.count(inst.sym)) {
         auto it = varIndex.find(inst.sym);
         if (it != varIndex.end()) {
           int vidx = it->second;
-          // Store 的值成为新的当前定义
-          // inst.dst 已经有存储的值
-          nameStack[vidx].push_back(inst.dst);
-          // 标记为删除（稍后处理）
+          if (inst.u >= 0) {
+            nameStack[vidx].push_back(inst.u);
+          }
           inst.op = IROp::Nop;
         }
       }
     }
 
-    // 填充后继 Phi 的前驱 vreg
     for (int succ : fn->blocks[blockIdx].succ) {
       for (int phiIdx : blockPhis[succ]) {
         auto &phi = phis[phiIdx];
+        if (phi.var && skipSyms.count(phi.var)) continue;
         int vidx = varIndex[phi.var];
 
-        // 找到当前块在 phi.preds 中的位置
         for (size_t i = 0; i < phi.preds.size(); i++) {
           if (phi.preds[i] == blockIdx) {
             if (!nameStack[vidx].empty()) {
               phi.vregs[i] = nameStack[vidx].back();
             } else {
-              // 该前驱路径上没有到达此变量的定义 → 安全地使用 0 作为初始值
-              // 分配一个新 vreg 并在后端/后续 pass 中确保它被初始化为 0
-              int zeroVreg = fn->nextVreg++;
-              phi.vregs[i] = zeroVreg;
-              // 记录这个 vreg 需要被初始化为 0（简单做法：插入一条 Copy zeroVreg, 0）
-              // 这里我们直接在当前块（blockIdx）末尾插入一条产生 0 的指令
-              IRInst zeroInst;
-              zeroInst.op = IROp::Copy;
-              zeroInst.dst = zeroVreg;
-              zeroInst.u = 0;   // 借用 u 存放立即数 0，后端 codegen 里可特判
-              // 插入到当前块的最后一条指令之前（通常是跳转）
-              auto &predBlk = fn->blocks[blockIdx];
-              int insertAt = predBlk.end;
-              // 避免插在跳转之后
-              if (insertAt > predBlk.begin) {
-                auto prevOp = fn->insts[insertAt - 1].op;
-                if (prevOp == IROp::J || prevOp == IROp::Ret) {
-                  --insertAt;
-                }
-              }
-              fn->insts.insert(fn->insts.begin() + insertAt, zeroInst);
-              predBlk.end++;
-              for (size_t bb = static_cast<size_t>(blockIdx) + 1; bb < fn->blocks.size(); ++bb) {
-                fn->blocks[bb].begin++;
-                fn->blocks[bb].end++;
-              }
+              phi.vregs[i] = zeroVreg_;
             }
             break;
           }
@@ -488,80 +462,85 @@ public:
       }
     }
 
-    // 递归处理支配树子节点
     for (int child : dt.children[blockIdx]) {
-      renameBlock(child);
+      renameBlock(child, skipSyms);
     }
 
-    // 恢复栈高度
     for (int v = 0; v < nVars; v++) {
-      while ((int)nameStack[v].size() > stackHeights[v]) {
+      while (static_cast<int>(nameStack[v].size()) > stackHeights[v]) {
         nameStack[v].pop_back();
       }
     }
   }
 
-  // 物化 Phi 节点：在基本块开头插入真正的 IROp::Phi 指令
-  void materializePhis() {
+  // 将 Phi 降低为各前驱块末尾的 Copy（codegen 不处理 IROp::Phi）
+  void lowerPhisToCopies() {
     if (phis.empty()) return;
 
-    // 按 block 分组已有的 Phi
-    vector<vector<int>> phisByBlock(fn->blocks.size());
-    for (size_t i = 0; i < phis.size(); ++i) {
-      phisByBlock[phis[i].blockIdx].push_back(static_cast<int>(i));
+    // 从后往前插入，避免索引偏移
+    struct EdgeCopy {
+      int predBlock;
+      IRInst inst;
+    };
+    vector<EdgeCopy> pending;
+
+    for (const auto &phi : phis) {
+      for (size_t i = 0; i < phi.preds.size(); i++) {
+        int src = phi.vregs[i];
+        if (src < 0) src = getZeroVreg();
+
+        IRInst c;
+        c.op = IROp::Copy;
+        c.dst = phi.dstVreg;
+        c.u = src;
+
+        pending.push_back({phi.preds[i], c});
+      }
     }
 
-    // 从后往前处理块，避免插入后索引偏移
-    for (int b = static_cast<int>(fn->blocks.size()) - 1; b >= 0; --b) {
-      const auto &phiIdxs = phisByBlock[b];
-      if (phiIdxs.empty()) continue;
+    // 按 predBlock 从大到小排序，同块内多条按顺序插入
+    sort(pending.begin(), pending.end(),
+         [](const EdgeCopy &a, const EdgeCopy &b) {
+           return a.predBlock > b.predBlock;
+         });
 
-      auto &blk = fn->blocks[b];
-      // 找到插入点：跳过开头的 Label
-      int insertPos = blk.begin;
-      if (insertPos < blk.end && fn->insts[insertPos].op == IROp::Label) {
-        ++insertPos;
+    for (const auto &ec : pending) {
+      auto &blk = fn->blocks[ec.predBlock];
+      int insertAt = static_cast<int>(blk.end);
+      for (int i = static_cast<int>(blk.end) - 1; i >= static_cast<int>(blk.begin);
+           --i) {
+        IROp op = fn->insts[i].op;
+        if (op == IROp::J || op == IROp::Ret || op == IROp::Beqz) {
+          insertAt = i;
+        } else if (op != IROp::Label) {
+          break;
+        }
       }
 
-      // 为每个 Phi 构造指令并插入
-      for (int phiIdx : phiIdxs) {
-        const auto &p = phis[phiIdx];
-        IRInst phiInst;
-        phiInst.op = IROp::Phi;
-        phiInst.dst = p.dstVreg;
-        phiInst.sym = p.var;  // 保留符号信息供调试/分配使用
+      fn->insts.insert(fn->insts.begin() + insertAt, ec.inst);
+      blk.end++;
 
-        // 把前驱 vreg 存到 args 里（Phi 的操作数）
-        phiInst.args.clear();
-        for (int v : p.vregs) {
-          phiInst.args.push_back(v);
-        }
-
-        fn->insts.insert(fn->insts.begin() + insertPos, phiInst);
-        ++blk.end;  // 当前块范围扩大
-        ++insertPos;
-
-        // 更新后续所有块的 begin/end
-        for (size_t bb = static_cast<size_t>(b) + 1; bb < fn->blocks.size(); ++bb) {
-          fn->blocks[bb].begin++;
-          fn->blocks[bb].end++;
-        }
+      for (size_t bb = static_cast<size_t>(ec.predBlock) + 1; bb < fn->blocks.size();
+           ++bb) {
+        fn->blocks[bb].begin++;
+        fn->blocks[bb].end++;
       }
     }
   }
 
-  // 清理剩余的 LoadLocal/StoreLocal
-  void cleanup() {
+  void cleanup(const unordered_set<Symbol *> &skipSyms) {
     for (auto &inst : fn->insts) {
       if ((inst.op == IROp::LoadLocal || inst.op == IROp::StoreLocal) &&
-          isPromotable(inst.sym)) {
+          isPromotable(inst.sym) && !skipSyms.count(inst.sym)) {
+        inst.op = IROp::Nop;
+      }
+      if (inst.op == IROp::Phi) {
         inst.op = IROp::Nop;
       }
     }
   }
 };
 
-// 外部接口
 bool irMem2Reg(IRFunction &fn) {
   Mem2RegPass pass(&fn);
   return pass.run();
