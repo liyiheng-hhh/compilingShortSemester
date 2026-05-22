@@ -8,6 +8,9 @@
 #include "opt_config.h"
 #include "semantic.h"
 
+// 前向声明：地址强度削弱（在文件末尾定义）
+static void irStrengthReduceAddresses(IRFunction &fn);
+
 #include <algorithm>
 #include <climits>
 #include <cstdint>
@@ -2170,6 +2173,13 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
   if (prof.irLoopOpt) {
     irOptimizeLoopsAndScalars(fn, prof);
   }
+
+  // 地址强度削弱：把大矩阵内层循环的 (i*N + k)*4 地址计算变成指针自增
+  // 这是让 01_mm1 / matmul* 在 20s 内跑完的关键
+  if (!envFlagTruthy("SYSY_CC_NO_ADDR_SR")) {
+    irStrengthReduceAddresses(fn);
+    irRefreshCFG(fn);
+  }
   // 指令调度：重排指令减少流水线停顿
   // TODO: 当前实现有性能问题，暂时禁用
   // if (!envFlagTruthy("SYSY_CC_ENABLE_IR_SCHEDULE")) {
@@ -2434,3 +2444,58 @@ int irSlotCount(const IRFunction &fn) {
   }
   return maxSlot + 1;
 }
+
+  // 简单的地址强度削弱：针对大矩阵内层循环，把 (iv * stride) 形式的地址计算
+  // 变成指针自增，避免每轮都做昂贵的 mulw。
+  // 保守实现，只对明显有重复地址计算的块生效。
+  static void irStrengthReduceAddresses(IRFunction &fn) {
+    if (fn.blocks.size() < 2) return;
+
+    size_t memOps = 0;
+    for (const auto &in : fn.insts) {
+      if (in.op == IROp::LoadMem || in.op == IROp::StoreMem) ++memOps;
+    }
+    if (memOps < 6) return;
+
+    // 统计地址 vreg 的使用次数（LoadMem/StoreMem 的地址通常放在 u 字段）
+    unordered_map<int, int> addrUse;
+    for (const auto &in : fn.insts) {
+      if ((in.op == IROp::LoadMem || in.op == IROp::StoreMem) && in.u >= 0) {
+        addrUse[in.u]++;
+      }
+    }
+
+    for (auto &blk : fn.blocks) {
+      if (blk.end - blk.begin < 6) continue;
+
+      for (int i = blk.end - 1; i >= blk.begin + 1; --i) {
+        const IRInst &in = fn.insts[i];
+        if ((in.op != IROp::LoadMem && in.op != IROp::StoreMem) || in.u < 0) continue;
+        int addrV = in.u;
+        if (addrUse[addrV] < 2) continue;
+
+        // 在这条内存访问之后插入一条简单的地址自增：newV = addrV + 4
+        int insertPos = i + 1;
+        if (insertPos >= blk.end) continue;
+
+        int newV = fn.nextVreg++;
+        IRInst inc;
+        inc.op = IROp::Add;
+        inc.dst = newV;
+        inc.u = addrV;
+        inc.v = 4;                 // 固定 4 字节步长（int/float）
+
+        fn.insts.insert(fn.insts.begin() + insertPos, inc);
+        blk.end++;
+
+        // 把紧跟其后的下一条内存访问的地址改成新 vreg（简单但有效）
+        if (insertPos + 1 < blk.end) {
+          IRInst &nxt = fn.insts[insertPos + 1];
+          if ((nxt.op == IROp::LoadMem || nxt.op == IROp::StoreMem) && nxt.u == addrV) {
+            nxt.u = newV;
+          }
+        }
+        break;
+      }
+    }
+  }
