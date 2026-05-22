@@ -21,6 +21,9 @@ class CodeGen {
 public:
   CodeGen(Program &program, const Semantic &semantic, const O1Profile &o1 = O1Profile{});
 
+  // Accept pre-lowered IRFunctions coming from HIR (Stage 2 integration)
+  void setHirLoweredIRFunctions(const std::vector<IRFunction>& fns);
+
   string run();
 
   /// Tier A+：Codegen 层 -O1 捷径（除常 magic、stride 等）
@@ -70,6 +73,10 @@ private:
   Symbol *irFreshLocalSym_ = nullptr; // a0 已含该局部标量，避免连续 lw 同一栈槽
   IRRegallocSummary irRegalloc_{};
   bool irRegallocLeaf_ = false;
+
+  // HIR-lowered IRFunctions (Stage 2). When non-empty, we prefer these
+  // over rebuilding from AST in the IR backend path.
+  std::vector<IRFunction> hirLowered_;
 
   std::string irVregIntPhysReg(int vid) const;
   std::string irVregFloatPhysReg(int vid) const;

@@ -135,7 +135,22 @@ static bool emitSDivByConstPow2Trunc(CodeGen &cg, int lg) {
   return true;
 }
 
+// Enhanced power-of-2 signed division for common small exponents (O1)
+static bool emitSDivByConstPow2Enhanced(CodeGen &cg, int lg) {
+  if (lg < 1 || lg > 30) return false;
+  // For /2 and /4 we use a slightly more efficient sequence when possible
+  if (lg == 1) {
+    cg.emit("\tsraiw\tt1, a0, 31");
+    cg.emit("\tandi\tt1, t1, 1");
+    cg.emit("\taddw\ta0, a0, t1");
+    cg.emit("\tsraiw\ta0, a0, 1");
+    return true;
+  }
+  return emitSDivByConstPow2Trunc(cg, lg);
+}
+
 // -O1: exact SysY 32-bit signed division by known constant.
+// Sisyphus-style: more 2^n special cases + small constant fast paths.
 static bool emitSDivByConst(CodeGen &cg, int32_t d) {
   if (!cg.optO1() || d == 0 || d == 1 || d == -1) {
     return false;
@@ -144,7 +159,68 @@ static bool emitSDivByConst(CodeGen &cg, int32_t d) {
   if (d > 0) {
     const int lg = intLog2Positive32(d);
     if (lg >= 0 && (static_cast<int32_t>(1) << lg) == d) {
+      if (lg <= 4) {
+        return emitSDivByConstPow2Enhanced(cg, lg);
+      }
       return emitSDivByConstPow2Trunc(cg, lg);
+    }
+    // Sisyphus-style fast paths for very common small divisors
+    // (these often appear in crypto / hash / sort / matrix code)
+    if (d == 3) {
+      // n/3 using magic 0x55555556
+      cg.emit("\tli\tt1, 0x55555556");
+      cg.emit("\tmul\tt2, a0, t1");
+      cg.emit("\tsrli\tt2, t2, 32");
+      cg.emit("\tsext.w\tt2, t2");
+      cg.emit("\tsraiw\tt3, a0, 31");
+      cg.emit("\tsubw\ta0, t2, t3");
+      return true;
+    }
+    if (d == 5) {
+      cg.emit("\tli\tt1, 0x66666667");
+      cg.emit("\tmul\tt2, a0, t1");
+      cg.emit("\tsrli\tt2, t2, 32");
+      cg.emit("\tsext.w\tt2, t2");
+      cg.emit("\tsraiw\tt3, a0, 31");
+      cg.emit("\tsubw\ta0, t2, t3");
+      return true;
+    }
+    if (d == 6) {
+      // 6 = 2*3, first /2 then /3
+      cg.emit("\tsraiw\tt1, a0, 31");
+      cg.emit("\tandi\tt1, t1, 1");
+      cg.emit("\taddw\tt2, a0, t1");
+      cg.emit("\tsraiw\tt2, t2, 1");   // t2 = n/2
+      cg.emit("\tli\tt1, 0x55555556");
+      cg.emit("\tmul\tt3, t2, t1");
+      cg.emit("\tsrli\tt3, t3, 32");
+      cg.emit("\tsext.w\tt3, t3");
+      cg.emit("\tsraiw\tt4, t2, 31");
+      cg.emit("\tsubw\ta0, t3, t4");
+      return true;
+    }
+    if (d == 7) {
+      cg.emit("\tli\tt1, 0x49249249");
+      cg.emit("\tmul\tt2, a0, t1");
+      cg.emit("\tsrli\tt2, t2, 32");
+      cg.emit("\tsext.w\tt2, t2");
+      cg.emit("\tsraiw\tt3, a0, 31");
+      cg.emit("\tsubw\ta0, t2, t3");
+      return true;
+    }
+    if (d == 10) {
+      // 10 = 2*5
+      cg.emit("\tsraiw\tt1, a0, 31");
+      cg.emit("\tandi\tt1, t1, 1");
+      cg.emit("\taddw\tt2, a0, t1");
+      cg.emit("\tsraiw\tt2, t2, 1");
+      cg.emit("\tli\tt1, 0x66666667");
+      cg.emit("\tmul\tt3, t2, t1");
+      cg.emit("\tsrli\tt3, t3, 32");
+      cg.emit("\tsext.w\tt3, t3");
+      cg.emit("\tsraiw\tt4, t2, 31");
+      cg.emit("\tsubw\ta0, t3, t4");
+      return true;
     }
   }
   return emitSigned32DivByConstMagicPayload(cg, d);
@@ -240,6 +316,58 @@ static bool emitMulByConst(CodeGen &cg, int32_t k) {
   };
   if (k > 0) return tryEmit(k, false);
   return tryEmit(-k, true);
+}
+
+// Extended constant multiplication strength reduction (popcount decomposition for larger k)
+static bool emitMulByConstExtended(CodeGen &cg, int32_t k) {
+  if (k == 0) {
+    cg.emit("\tli\ta0, 0");
+    return true;
+  }
+  if (k == 1) return true;
+  if (k == -1) {
+    cg.emit("\tnegw\ta0, a0");
+    return true;
+  }
+  int lg = intLog2Positive32(k > 0 ? k : -k);
+  if (lg >= 0) {
+    cg.emit(k > 0 ? "\tslliw\ta0, a0, " + to_string(lg)
+                  : "\tslliw\ta0, a0, " + to_string(lg) + "\n\tnegw\ta0, a0");
+    return true;
+  }
+  // Fall back to basic patterns first
+  if (emitMulByConst(cg, k)) return true;
+
+  // Popcount-based decomposition for larger constants (up to 12 bits set)
+  uint32_t u = static_cast<uint32_t>(k > 0 ? k : -k);
+  int bits = __builtin_popcount(u);
+  if (bits >= 3 && bits <= 12) {
+    std::vector<int> pos;
+    uint32_t tmp = u;
+    while (tmp) {
+      pos.push_back(__builtin_ctz(tmp));
+      tmp &= tmp - 1;
+    }
+    if (!pos.empty()) {
+      if (pos[0] == 0) {
+        cg.emit("\tmv\tt2, a0");
+      } else {
+        cg.emit("\tslliw\tt2, a0, " + to_string(pos[0]));
+      }
+      for (size_t i = 1; i < pos.size(); ++i) {
+        if (pos[i] == 0) {
+          cg.emit("\taddw\tt2, t2, a0");
+        } else {
+          cg.emit("\tslliw\tt1, a0, " + to_string(pos[i]));
+          cg.emit("\taddw\tt2, t2, t1");
+        }
+      }
+      if (k < 0) cg.emit("\tnegw\ta0, t2");
+      else cg.emit("\tmv\ta0, t2");
+      return true;
+    }
+  }
+  return false;
 }
 
 static bool exprIsLeaf(Expr *e) {
@@ -548,6 +676,10 @@ static vector<ArgLoc> computeArgLocations(const vector<ParamType> &params,
 CodeGen::CodeGen(Program &program, const Semantic &semantic, const O1Profile &o1)
     : program_(program), semantic_(semantic), o1Profile_(o1), optO1_(o1.codegen) {}
 
+void CodeGen::setHirLoweredIRFunctions(const std::vector<IRFunction>& fns) {
+  hirLowered_ = fns;
+}
+
 string CodeGen::run() {
     emitGlobals();
     emit("\t.text");
@@ -742,6 +874,7 @@ bool irContainsCall(const IRFunction &ir) {
 void CodeGen::emitFunction(FuncDef &def) {
     currentFunction_ = def.function;
     currentFunction_->returnLabel = newLabel("return_" + def.name);
+
     emit("\t.text");
     emit("\t.align\t1");
     emit("\t.globl\t" + def.name);
@@ -751,7 +884,35 @@ void CodeGen::emitFunction(FuncDef &def) {
     IRFunction irBuf;
     bool useIr = false;
     if (kEnableIrBackend && o1Profile_.irBackend && irFunctionEligible(def)) {
-      irBuildFunction(def, semantic_, irBuf);
+      // Prefer HIR-lowered IRFunction if available (Stage 2 integration)
+      // Only use it when it looks complete and safe (basic sanity check).
+      bool usedHir = false;
+      for (const auto &hirFn : hirLowered_) {
+        if (hirFn.name == def.name && !hirFn.insts.empty()) {
+          // Very conservative validity check:
+          // - must have at least one Label (entry point)
+          // - must have a reasonable number of instructions
+          bool hasLabel = false;
+          for (const auto &inst : hirFn.insts) {
+            if (inst.op == IROp::Label) { hasLabel = true; break; }
+          }
+          if (hasLabel && hirFn.insts.size() >= 2) {
+            // Extra safety: require at least one Ret so emission doesn't crash
+            bool hasRet = false;
+            for (const auto &inst : hirFn.insts) {
+              if (inst.op == IROp::Ret) { hasRet = true; break; }
+            }
+            if (hasRet) {
+              irBuf = hirFn;
+              usedHir = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!usedHir) {
+        irBuildFunction(def, semantic_, irBuf);
+      }
       irOptimizeBlock(irBuf, o1Profile_, &semantic_);
       irAssignSlots(irBuf);
       irRegalloc_ = irRegallocGraphColor(irBuf, o1Profile_.irRegalloc);
@@ -1944,7 +2105,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         return;
       }
       emitIrLoadVreg(in.v, false);
-      if (emitMulByConst(*this, k)) {
+      if (emitMulByConstExtended(*this, k)) {
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
         return;
@@ -4467,3 +4628,4 @@ void CodeGen::emitLiteralPools() {
       emit("\t.asciz\t\"" + escapeAsmString(lit.second) + "\"");
     }
   }
+
