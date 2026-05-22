@@ -54,12 +54,14 @@ static bool exprHasLandLor(Expr *e) {
 static int irMaxLocalArrayElems() {
   const char *v = getenv("SYSY_IR_MAX_LOCAL_ARRAY_ELEMS");
   if (!v || v[0] == '\0') {
-    return 2048;
+    // 默认放宽到 1M 元素（约 4MB），让 01_mm1 / matmul / conv2d 等大数组用例也能走 IR 后端
+    // 结合 emitStoreMem / emitLoadMem 的大偏移处理，栈帧安全
+    return 1 << 20;
   }
   char *end = nullptr;
   long n = std::strtol(v, &end, 10);
   if (end == v || n < 0) {
-    return 2048;
+    return 1 << 20;
   }
   if (n == 0) {
     return 0;
