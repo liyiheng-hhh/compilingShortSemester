@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <queue>
 #include <unordered_map>
@@ -216,6 +217,20 @@ public:
 
     int n = static_cast<int>(fn->blocks.size());
     if (n == 0) return false;
+
+    // 大函数上递归 rename 会栈溢出导致编译器 SIGSEGV（huffman/shuffle/fft 等）
+    const int maxBlocks = []() {
+      const char *v = getenv("SYSY_CC_MEM2REG_MAX_BLOCKS");
+      if (!v || !*v) return 128;
+      return std::max(0, static_cast<int>(std::strtol(v, nullptr, 10)));
+    }();
+    if (getenv("SYSY_CC_MEM2REG_DEBUG")) {
+      fprintf(stderr, "mem2reg: n=%d insts=%zu maxBlocks=%d\n", n,
+              fn->insts.size(), maxBlocks);
+    }
+    if (n > maxBlocks || fn->insts.size() > 50000u) {
+      return false;
+    }
 
     vector<vector<int>> preds(n);
     vector<vector<int>> succ(n);

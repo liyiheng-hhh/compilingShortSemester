@@ -2147,9 +2147,10 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
     irCanonicalizeLoadGlobalInBlocks(fn);
     irRefreshCFG(fn);
   }
-  // SSA Mem2Reg：完整版带 Phi 节点（默认开启，设 SYSY_CC_NO_MEM2REG=1 可关闭）
-  // 实现 Cytron et al. 1991 算法（支配树 + 支配前沿 + Phi 插入 + 变量重命名）
-  if (!envFlagTruthy("SYSY_CC_NO_MEM2REG")) {
+  // SSA Mem2Reg：默认关闭（部分用例如 huffman/shuffle 会在 rename 阶段触发编译器 SIGSEGV）
+  // 开启：SYSY_CC_ENABLE_MEM2REG=1；显式关闭：SYSY_CC_NO_MEM2REG=1
+  if (envFlagTruthy("SYSY_CC_ENABLE_MEM2REG") &&
+      !envFlagTruthy("SYSY_CC_NO_MEM2REG")) {
     irMem2Reg(fn);
     irRefreshCFG(fn);
   }
@@ -2174,9 +2175,8 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
     irOptimizeLoopsAndScalars(fn, prof);
   }
 
-  // 地址强度削弱：把大矩阵内层循环的 (i*N + k)*4 地址计算变成指针自增
-  // 这是让 01_mm1 / matmul* 在 20s 内跑完的关键
-  if (!envFlagTruthy("SYSY_CC_NO_ADDR_SR")) {
+  // 地址强度削弱：当前实现会破坏基本块边界，默认关闭
+  if (envFlagTruthy("SYSY_CC_ENABLE_ADDR_SR")) {
     irStrengthReduceAddresses(fn);
     irRefreshCFG(fn);
   }
