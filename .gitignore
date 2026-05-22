@@ -10,3 +10,4 @@ libsysy.a
 2026初赛RISCV赛道功能用例/
 performance/
 tests/.out/
+compiler2026-sisyphus-pure-rv/

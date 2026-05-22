@@ -13,7 +13,9 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/pa
 	$(SRCDIR)/loop_interchange.cpp $(SRCDIR)/loop_tiling.cpp $(SRCDIR)/land_lor_split.cpp \
 	$(SRCDIR)/knapsack_dp.cpp $(SRCDIR)/mm_hoist.cpp $(SRCDIR)/loop_unroll.cpp $(SRCDIR)/row_scratch_matmul.cpp \
 	$(SRCDIR)/hir/HIROps.cpp $(SRCDIR)/hir/HIRBuilder.cpp $(SRCDIR)/hir/HIRLowering.cpp \
-	$(SRCDIR)/hir/HIRRowScratchMatmul.cpp $(SRCDIR)/hir/HIRLoopTransform.cpp
+	$(SRCDIR)/hir/HIRRowScratchMatmul.cpp $(SRCDIR)/hir/HIRLoopTransform.cpp \
+	$(SRCDIR)/rv/rv_asm.cpp $(SRCDIR)/rv/rv_passes.cpp $(SRCDIR)/rv/RegPeephole.cpp \
+	$(SRCDIR)/rv/InstCombine.cpp $(SRCDIR)/rv/Schedule.cpp $(SRCDIR)/rv/StrengthReduct.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 all: compiler

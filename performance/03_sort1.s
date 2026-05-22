@@ -14,57 +14,55 @@ ans:
 	.globl	getMaxNum
 	.type	getMaxNum, @function
 getMaxNum:
-	addi	sp, sp, -240
-	addi	t0, sp, 240
+	addi	sp, sp, -272
+	li	t0, 272
+	add	t0, sp, t0
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -192(s0)
-	sd	s2, -200(s0)
-	sd	s3, -208(s0)
-	sd	s4, -216(s0)
-	sd	s5, -224(s0)
-	sd	s6, -232(s0)
 	sw	a0, -20(s0)
 	sd	a1, -32(s0)
+	mv	t4, a0
 	li	a0, 0
 	sw	a0, -56(s0)
 	addi	t1, s0, -36
-	lw	a0, -56(s0)
 	sw	a0, 0(t1)
 	li	a0, 0
 	sw	a0, -64(s0)
 	addi	t1, s0, -40
-	lw	a0, -64(s0)
 	sw	a0, 0(t1)
 .L_wh_getMaxNum_0:
-	li	a0, 1
+	mv	a0, t4
 	sw	a0, -56(s0)
 	ld	a0, -32(s0)
 	sd	a0, -64(s0)
-	lw	a0, -20(s0)
-	lw	a0, -40(s0)
-	lw	t2, -40(s0)
+	li	a0, 1
+	sw	a0, -72(s0)
+	addi	t0, s0, -40
+	lw	a0, 0(t0)
+	sw	a0, -80(s0)
+	mv	t2, a0
 	sext.w	t2, t2
-	lw	a0, -20(s0)
+	lw	a0, -56(s0)
 	sext.w	a0, a0
 	slt	a0, t2, a0
 	sw	a0, -88(s0)
 	lw	a0, -88(s0)
 	beqz	a0, .L_whe_getMaxNum_1
-	lw	a0, -40(s0)
+	addi	t0, s0, -40
+	lw	a0, 0(t0)
+	sw	a0, -96(s0)
 	slliw	a0, a0, 2
 	sw	a0, -104(s0)
 	ld	t2, -64(s0)
-	lw	a0, -104(s0)
 	add	a0, t2, a0
 	sd	a0, -112(s0)
-	ld	t2, -112(s0)
+	mv	t2, a0
 	lw	a0, 0(t2)
 	sw	a0, -120(s0)
-	lw	a0, -36(s0)
-	mv	s1, a0
-	sw	s1, -128(s0)
-	mv	t2, s1
+	addi	t0, s0, -36
+	lw	a0, 0(t0)
+	sw	a0, -128(s0)
+	mv	t2, a0
 	sext.w	t2, t2
 	lw	a0, -120(s0)
 	sext.w	a0, a0
@@ -74,50 +72,37 @@ getMaxNum:
 	beqz	a0, .L_ifend_getMaxNum_2
 	ld	a0, -32(s0)
 	sd	a0, -64(s0)
-	lw	a0, -40(s0)
+	addi	t0, s0, -40
+	lw	a0, 0(t0)
+	sw	a0, -144(s0)
 	slliw	a0, a0, 2
 	sw	a0, -152(s0)
 	ld	t2, -64(s0)
-	lw	a0, -152(s0)
 	add	a0, t2, a0
-	mv	s6, a0
-	sd	s6, -160(s0)
-	mv	t2, s6
+	sd	a0, -160(s0)
+	mv	t2, a0
 	lw	a0, 0(t2)
-	mv	s5, a0
-	sw	s5, -168(s0)
+	sw	a0, -168(s0)
 	addi	t1, s0, -36
-	mv	a0, s5
 	sw	a0, 0(t1)
-	mv	s5, a0
 .L_ifend_getMaxNum_2:
-	lw	a0, -40(s0)
-	mv	s4, a0
-	sw	s4, -176(s0)
-	mv	a0, s4
+	addi	t0, s0, -40
+	lw	a0, 0(t0)
+	sw	a0, -176(s0)
 	addiw	a0, a0, 1
-	mv	s3, a0
-	sw	s3, -184(s0)
+	sw	a0, -184(s0)
 	addi	t1, s0, -40
-	mv	a0, s3
 	sw	a0, 0(t1)
-	mv	s3, a0
 	j	.L_wh_getMaxNum_0
 .L_whe_getMaxNum_1:
-	lw	a0, -36(s0)
-	mv	s2, a0
-	sw	s2, -56(s0)
-	mv	a0, s2
+	addi	t0, s0, -36
+	lw	a0, 0(t0)
+	sw	a0, -56(s0)
+	lw	a0, -56(s0)
 	sext.w	a0, a0
 	j	.Lreturn_getMaxNum_0
 	li	a0, 0
 .Lreturn_getMaxNum_0:
-	ld	s6, -232(s0)
-	ld	s5, -224(s0)
-	ld	s4, -216(s0)
-	ld	s3, -208(s0)
-	ld	s2, -200(s0)
-	ld	s1, -192(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
 	mv	s0, t0
@@ -128,77 +113,65 @@ getMaxNum:
 	.globl	getNumPos
 	.type	getNumPos, @function
 getNumPos:
-	addi	sp, sp, -160
-	addi	t0, sp, 160
+	addi	sp, sp, -128
+	li	t0, 128
+	add	t0, sp, t0
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -112(s0)
-	sd	s2, -120(s0)
-	sd	s3, -128(s0)
-	sd	s4, -136(s0)
-	sd	s5, -144(s0)
-	sd	s6, -152(s0)
 	sw	a0, -20(s0)
 	sw	a1, -24(s0)
-	li	a0, 1
-	sw	a0, -40(s0)
-	addi	t1, s0, -28
-	lw	a0, -40(s0)
-	sw	a0, 0(t1)
+	mv	t4, a0
+	mv	t5, a1
 	li	a0, 0
+	sw	a0, -40(s0)
+	li	a0, 1
 	sw	a0, -48(s0)
 	addi	t1, s0, -32
-	lw	a0, -48(s0)
+	lw	a0, -40(s0)
 	sw	a0, 0(t1)
 .L_wh_getNumPos_0:
-	li	a0, 16
+	mv	a0, t5
 	sw	a0, -40(s0)
-	li	a0, 1
+	li	a0, 16
 	sw	a0, -48(s0)
-	lw	a0, -24(s0)
-	mv	s2, a0
-	sw	s2, -56(s0)
-	lw	a0, -32(s0)
-	mv	s1, a0
-	sw	s1, -64(s0)
-	mv	t2, s1
+	li	a0, 1
+	sw	a0, -56(s0)
+	addi	t0, s0, -32
+	lw	a0, 0(t0)
+	sw	a0, -64(s0)
+	mv	t2, a0
 	sext.w	t2, t2
-	mv	a0, s2
+	lw	a0, -40(s0)
 	sext.w	a0, a0
 	slt	a0, t2, a0
-	mv	s3, a0
-	sw	s3, -72(s0)
-	mv	a0, s3
+	sw	a0, -72(s0)
+	lw	a0, -72(s0)
 	beqz	a0, .L_whe_getNumPos_1
-	lw	a0, -20(s0)
-	mv	s4, a0
-	sw	s4, -80(s0)
-	mv	a0, s4
+	mv	a0, t4
+	sw	a0, -80(s0)
 	sext.w	a0, a0
 	sraiw	t1, a0, 31
 	andi	t1, t1, 15
 	addw	a0, a0, t1
 	sraiw	a0, a0, 4
-	mv	s5, a0
-	sw	s5, -88(s0)
+	sw	a0, -88(s0)
 	addi	t1, s0, -20
-	mv	a0, s5
 	sw	a0, 0(t1)
-	mv	s5, a0
-	lw	a0, -32(s0)
-	mv	s6, a0
-	sw	s6, -96(s0)
-	mv	a0, s6
+	mv	t4, a0
+	addi	t0, s0, -32
+	lw	a0, 0(t0)
+	sw	a0, -96(s0)
 	addiw	a0, a0, 1
 	sw	a0, -104(s0)
 	addi	t1, s0, -32
-	lw	a0, -104(s0)
 	sw	a0, 0(t1)
 	j	.L_wh_getNumPos_0
 .L_whe_getNumPos_1:
-	li	a0, 16
+	mv	a0, t4
 	sw	a0, -40(s0)
-	lw	a0, -20(s0)
+	li	a0, 16
+	sw	a0, -48(s0)
+	lw	a0, -40(s0)
 	mv	t6, a0
 	sext.w	a0, t6
 	sraiw	t1, a0, 31
@@ -214,12 +187,6 @@ getNumPos:
 	j	.Lreturn_getNumPos_1
 	li	a0, 0
 .Lreturn_getNumPos_1:
-	ld	s6, -152(s0)
-	ld	s5, -144(s0)
-	ld	s4, -136(s0)
-	ld	s3, -128(s0)
-	ld	s2, -120(s0)
-	ld	s1, -112(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
 	mv	s0, t0
@@ -231,7 +198,8 @@ getNumPos:
 	.type	radixSort, @function
 radixSort:
 	addi	sp, sp, -256
-	addi	t0, sp, 256
+	li	t0, 256
+	add	t0, sp, t0
 	sd	ra, -8(t0)
 	sd	s0, -16(t0)
 	mv	s0, t0
@@ -834,31 +802,19 @@ radixSort:
 	.globl	main
 	.type	main, @function
 main:
-	addi	sp, sp, -304
-	addi	t0, sp, 304
+	addi	sp, sp, -272
+	li	t0, 272
+	add	t0, sp, t0
 	sd	ra, -8(t0)
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -208(s0)
-	sd	s2, -216(s0)
-	sd	s3, -224(s0)
-	sd	s4, -232(s0)
-	sd	s5, -240(s0)
-	sd	s6, -248(s0)
-	sd	s7, -256(s0)
-	sd	s8, -264(s0)
-	sd	s9, -272(s0)
-	sd	s10, -280(s0)
-	sd	s11, -288(s0)
 	lla	a0, a
 	sd	a0, -40(s0)
 	ld	a0, -40(s0)
+	mv	t4, a0
 	mv	a0, t4
 	call	getarray
 	sw	a0, -48(s0)
-	addi	t1, s0, -20
-	lw	a0, -48(s0)
-	sw	a0, 0(t1)
 	li	a0, 90
 	sw	a0, -56(s0)
 	addi	sp, sp, -16
@@ -869,21 +825,20 @@ main:
 	addi	sp, sp, 16
 	li	a0, 9
 	sw	a0, -64(s0)
-	li	a0, 0
-	sw	a0, -72(s0)
 	lla	a0, a
-	sd	a0, -80(s0)
-	lw	a0, -20(s0)
+	sd	a0, -72(s0)
+	li	a0, 0
+	sw	a0, -80(s0)
 	addi	sp, sp, -32
 	li	a0, 9
 	sext.w	a0, a0
 	sd	a0, 0(sp)
-	ld	a0, -80(s0)
+	ld	a0, -72(s0)
 	sd	a0, 8(sp)
 	li	a0, 0
 	sext.w	a0, a0
 	sd	a0, 16(sp)
-	lw	a0, -88(s0)
+	lw	a0, -48(s0)
 	sext.w	a0, a0
 	sd	a0, 24(sp)
 	ld	a0, 0(sp)
@@ -893,24 +848,216 @@ main:
 	call	radixSort
 	addi	sp, sp, 32
 	li	a0, 0
-	sw	a0, -96(s0)
+	sw	a0, -88(s0)
 	addi	t1, s0, -24
-	lw	a0, -96(s0)
 	sw	a0, 0(t1)
 .L_wh_main_0:
-	li	a0, 2
-	sw	a0, -40(s0)
-	li	a0, 3
-	sw	a0, -48(s0)
-	li	a0, 1
-	sw	a0, -56(s0)
 	lla	a0, a
-	sd	a0, -64(s0)
-	lw	a0, -20(s0)
-	lw	a0, -24(s0)
-	lw	t2, -24(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	sd	a0, -40(s0)
+	li	a0, 2
+	sw	a0, -56(s0)
+	li	a0, 3
+	sw	a0, -64(s0)
+	li	a0, 1
+	sw	a0, -72(s0)
+	addi	t0, s0, -24
+	lw	a0, 0(t0)
+	sw	a0, -80(s0)
+	mv	t2, a0
 	sext.w	t2, t2
-	lw	a0, -20(s0)
+	lw	a0, -48(s0)
 	sext.w	a0, a0
 	slt	a0, t2, a0
 	sw	a0, -88(s0)
@@ -919,80 +1066,65 @@ main:
 	lla	t0, ans
 	lw	a0, 0(t0)
 	sw	a0, -96(s0)
-	lw	a0, -24(s0)
-	lw	a0, -24(s0)
+	addi	t0, s0, -24
+	lw	a0, 0(t0)
+	sw	a0, -104(s0)
+	addi	t0, s0, -24
+	lw	a0, 0(t0)
+	sw	a0, -112(s0)
 	slliw	a0, a0, 2
 	sw	a0, -120(s0)
-	ld	t2, -64(s0)
-	lw	a0, -120(s0)
+	ld	t2, -40(s0)
 	add	a0, t2, a0
-	mv	s11, a0
-	sd	s11, -128(s0)
-	mv	t2, s11
+	sd	a0, -128(s0)
+	mv	t2, a0
 	lw	a0, 0(t2)
-	mv	s10, a0
-	sw	s10, -136(s0)
-	lw	a0, -24(s0)
-	mv	s8, a0
-	sw	s8, -144(s0)
-	mv	a0, s8
+	sw	a0, -136(s0)
+	addi	t0, s0, -24
+	lw	a0, 0(t0)
+	sw	a0, -144(s0)
 	addiw	a0, a0, 2
-	mv	s7, a0
-	sw	s7, -152(s0)
-	mv	t2, s10
-	mv	a0, s7
+	sw	a0, -152(s0)
+	lw	t2, -136(s0)
 	remw	a0, t2, a0
-	mv	s6, a0
-	sw	s6, -160(s0)
+	sw	a0, -160(s0)
 	lw	t2, -104(s0)
-	mv	a0, s6
 	mulw	a0, t2, a0
-	mv	s5, a0
-	sw	s5, -168(s0)
+	sw	a0, -168(s0)
 	lw	t2, -96(s0)
-	mv	a0, s5
 	addw	a0, t2, a0
-	mv	s4, a0
-	sw	s4, -176(s0)
-	mv	a0, s4
+	sw	a0, -176(s0)
 	addiw	a0, a0, 3
-	mv	s2, a0
-	sw	s2, -184(s0)
+	sw	a0, -184(s0)
 	lla	t1, ans
-	mv	a0, s2
 	sw	a0, 0(t1)
-	lw	a0, -24(s0)
-	mv	s3, a0
-	sw	s3, -192(s0)
-	mv	a0, s3
+	addi	t0, s0, -24
+	lw	a0, 0(t0)
+	sw	a0, -192(s0)
 	addiw	a0, a0, 1
-	mv	s9, a0
-	sw	s9, -200(s0)
+	sw	a0, -200(s0)
 	addi	t1, s0, -24
-	mv	a0, s9
 	sw	a0, 0(t1)
-	mv	s9, a0
 	j	.L_wh_main_0
 .L_whe_main_1:
-	li	a0, 0
-	sw	a0, -40(s0)
 	lla	t0, ans
 	lw	a0, 0(t0)
-	mv	s1, a0
-	sw	s1, -48(s0)
-	mv	t2, s1
+	sw	a0, -40(s0)
+	li	a0, 0
+	sw	a0, -48(s0)
+	lw	t2, -40(s0)
 	sext.w	t2, t2
-	lw	a0, -40(s0)
 	sext.w	a0, a0
 	slt	a0, t2, a0
 	sw	a0, -56(s0)
 	lw	a0, -56(s0)
 	beqz	a0, .L_ifend_main_2
-	mv	a0, s1
-	negw	a0, a0
+	lla	t0, ans
+	lw	a0, 0(t0)
 	sw	a0, -40(s0)
+	negw	a0, a0
+	sw	a0, -48(s0)
 	lla	t1, ans
-	lw	a0, -40(s0)
 	sw	a0, 0(t1)
 .L_ifend_main_2:
 	li	a0, 102
@@ -1008,12 +1140,14 @@ main:
 	sw	a0, -48(s0)
 	lw	a0, -48(s0)
 	sext.w	a0, a0
+	mv	t4, a0
 	mv	a0, t4
 	call	putint
 	li	a0, 10
 	sw	a0, -56(s0)
 	li	a0, 10
 	sext.w	a0, a0
+	mv	t4, a0
 	mv	a0, t4
 	call	putch
 	li	a0, 0
@@ -1023,17 +1157,6 @@ main:
 	j	.Lreturn_main_36
 	li	a0, 0
 .Lreturn_main_36:
-	ld	s11, -288(s0)
-	ld	s10, -280(s0)
-	ld	s9, -272(s0)
-	ld	s8, -264(s0)
-	ld	s7, -256(s0)
-	ld	s6, -248(s0)
-	ld	s5, -240(s0)
-	ld	s4, -232(s0)
-	ld	s3, -224(s0)
-	ld	s2, -216(s0)
-	ld	s1, -208(s0)
 	ld	ra, -8(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0

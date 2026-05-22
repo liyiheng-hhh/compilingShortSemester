@@ -2178,14 +2178,12 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
     irStrengthReduceAddresses(fn);
     irRefreshCFG(fn);
   }
-  // 指令调度：重排指令减少流水线停顿
-  // TODO: 当前实现有性能问题，暂时禁用
-  // if (!envFlagTruthy("SYSY_CC_ENABLE_IR_SCHEDULE")) {
-  //   irScheduleInstructions(fn);
-  //   irRefreshCFG(fn);
-  //   irHoistLoadsEarly(fn);
-  //   irRefreshCFG(fn);
-  // }
+  // 指令调度：当前实现会破坏 CFG/寄存器生命周期，默认关闭。
+  // 本地实验可设 SYSY_CC_ENABLE_IR_SCHEDULE=1
+  if (envFlagTruthy("SYSY_CC_ENABLE_IR_SCHEDULE")) {
+    irScheduleInstructions(fn);
+    irRefreshCFG(fn);
+  }
 }
 
 static void irAugmentLastUseWithCFG(IRFunction &fn, vector<size_t> &lastUse) {

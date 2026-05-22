@@ -1,0 +1,195 @@
+#include "rv_asm.h"
+
+#include <algorithm>
+#include <cctype>
+
+namespace rv {
+
+namespace {
+
+std::string trim(const std::string &s) {
+  size_t b = s.find_first_not_of(" \t");
+  if (b == std::string::npos) return "";
+  size_t e = s.find_last_not_of(" \t");
+  return s.substr(b, e - b + 1);
+}
+
+std::vector<std::string> splitOperands(const std::string &ops) {
+  std::vector<std::string> parts;
+  std::string cur;
+  for (char c : ops) {
+    if (c == ',') {
+      parts.push_back(trim(cur));
+      cur.clear();
+    } else {
+      cur += c;
+    }
+  }
+  if (!cur.empty()) parts.push_back(trim(cur));
+  return parts;
+}
+
+bool isReg(const std::string &s) {
+  if (s.empty()) return false;
+  if (s[0] != 'x' && s[0] != 'f' && s[0] != 'a' && s[0] != 't' && s[0] != 's')
+    return false;
+  for (size_t i = 1; i < s.size(); ++i) {
+    if (!std::isalnum(static_cast<unsigned char>(s[i]))) return false;
+  }
+  return true;
+}
+
+std::string normalizeMemAddr(const std::string &operand) {
+  size_t lp = operand.find('(');
+  if (lp == std::string::npos) return "";
+  size_t rp = operand.find(')', lp);
+  if (rp == std::string::npos) return "";
+  return operand.substr(lp);
+}
+
+}  // namespace
+
+bool parseAsmLine(const std::string &line, AsmInst &out) {
+  out = AsmInst{};
+  out.raw = line;
+  if (line.empty()) return false;
+
+  if (line[0] != '\t' && line[0] != ' ') {
+    if (line.back() == ':') {
+      out.isLabel = true;
+      out.pinned = true;
+      out.mnemonic = "label";
+      return true;
+    }
+    out.pinned = true;
+    return true;
+  }
+
+  size_t tab = line.find('\t');
+  if (tab == std::string::npos) {
+    out.pinned = true;
+    return true;
+  }
+
+  std::string rest = line.substr(tab + 1);
+  size_t sp = rest.find(' ');
+  if (sp == std::string::npos) {
+    out.mnemonic = trim(rest);
+  } else {
+    out.mnemonic = rest.substr(0, sp);
+    std::string ops = trim(rest.substr(sp + 1));
+    auto parts = splitOperands(ops);
+
+    auto addUse = [&](const std::string &r) {
+      if (isReg(r)) out.uses.push_back(r);
+    };
+    auto addDef = [&](const std::string &r) {
+      if (isReg(r)) out.defs.push_back(r);
+    };
+
+    const std::string &m = out.mnemonic;
+    if (m == "mv" || m == "fmv.s") {
+      if (parts.size() >= 2) {
+        addDef(parts[0]);
+        addUse(parts[1]);
+        out.dst = parts[0];
+      }
+    } else if (m == "li" || m == "lui" || m == "la") {
+      if (!parts.empty()) addDef(parts[0]);
+      if (!parts.empty()) out.dst = parts[0];
+    } else if (m == "lw" || m == "ld" || m == "flw" || m == "fld") {
+      out.isLoad = true;
+      if (!parts.empty()) {
+        addDef(parts[0]);
+        out.dst = parts[0];
+        out.memAddr = normalizeMemAddr(parts.size() > 1 ? parts[1] : parts[0]);
+        if (parts.size() > 1) addUse(parts[1]);
+      }
+    } else if (m == "sw" || m == "sd" || m == "fsw" || m == "fsd") {
+      out.isStore = true;
+      if (parts.size() >= 2) {
+        addUse(parts[0]);
+        out.memAddr = normalizeMemAddr(parts[1]);
+        addUse(parts[1]);
+      }
+    } else if (m == "addi" || m == "addiw" || m == "slli" || m == "srli" ||
+               m == "srai" || m == "andi" || m == "ori" || m == "xori" ||
+               m == "slti" || m == "sltiu") {
+      if (parts.size() >= 2) {
+        addDef(parts[0]);
+        addUse(parts[1]);
+        out.dst = parts[0];
+      }
+    } else if (m == "add" || m == "addw" || m == "sub" || m == "subw" ||
+               m == "mul" || m == "mulw" || m == "and" || m == "or" ||
+               m == "xor" || m == "sll" || m == "srl" || m == "sra") {
+      if (parts.size() >= 3) {
+        addDef(parts[0]);
+        addUse(parts[1]);
+        addUse(parts[2]);
+        out.dst = parts[0];
+      }
+    } else if (m == "div" || m == "divw" || m == "rem" || m == "remw") {
+      if (parts.size() >= 3) {
+        addDef(parts[0]);
+        addUse(parts[1]);
+        addUse(parts[2]);
+        out.dst = parts[0];
+      }
+    } else {
+      for (const auto &p : parts) addUse(p);
+      if (!parts.empty() && isReg(parts[0])) {
+        addDef(parts[0]);
+        out.dst = parts[0];
+      }
+      out.pinned = true; // conservative: unknown ops may have side effects or implicit regs
+    }
+
+    if (m == "call" || m == "ret" || m == "j" || m == "jr" ||
+        m == "beqz" || m == "bnez" || m == "blt" || m == "bge" ||
+        m == "ble" || m == "bgt" || m == "beq" || m == "bne" ||
+        m.find("b.") == 0) {
+      out.pinned = true;
+    }
+    if (m == "sd" || m == "sw" || m == "fsw" || m == "fsd") {
+      out.pinned = true;  // do not reorder across stores conservatively
+    }
+  }
+
+  out.latency = instLatency(out.mnemonic);
+  return true;
+}
+
+void splitBasicBlocks(const std::vector<std::string> &lines,
+                      std::vector<std::pair<size_t, size_t>> &blocks) {
+  blocks.clear();
+  size_t start = 0;
+  for (size_t i = 0; i < lines.size(); ++i) {
+    const std::string &l = lines[i];
+    bool isLabel = !l.empty() && l[0] != '\t' && l[0] != ' ' && l.back() == ':';
+    bool isEnd = l.find("\tret") != std::string::npos ||
+                 l.find("\tj\t") != std::string::npos ||
+                 (l.find("\tb") != std::string::npos && l.find('\t') != std::string::npos);
+    if (isLabel && i > start) {
+      blocks.push_back({start, i});
+      start = i;
+    }
+    if (isEnd) {
+      blocks.push_back({start, i + 1});
+      start = i + 1;
+    }
+  }
+  if (start < lines.size()) blocks.push_back({start, lines.size()});
+}
+
+int instLatency(const std::string &mnemonic) {
+  if (mnemonic == "lw" || mnemonic == "ld" || mnemonic == "flw" || mnemonic == "fld")
+    return 3;
+  if (mnemonic == "mul" || mnemonic == "mulw" || mnemonic == "mulh")
+    return 3;
+  if (mnemonic == "div" || mnemonic == "divw" || mnemonic == "rem" || mnemonic == "remw")
+    return 12;
+  return 1;
+}
+
+}  // namespace rv

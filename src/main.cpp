@@ -15,6 +15,7 @@
 #include "hir/HIRLowering.h"
 #include "hir/HIRRowScratchMatmul.h"
 #include "hir/HIRLoopTransform.h"
+#include "rv/rv_passes.h"
 
 #include <iostream>
 #include <string>
@@ -57,8 +58,9 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   CodeGen codegen(program, semantic, o1Prof);
 
   // === HIR stage (double-layer IR) ===
-  // Controlled by SYSY_CC_ENABLE_HIR=1 (default off to avoid regression)
-  if (envFlagTruthy("SYSY_CC_ENABLE_HIR")) {
+  // Default ON for -O1 (official eval runs ./compiler -O1 without env vars).
+  // Disable for bisect: SYSY_CC_NO_HIR=1
+  if (optO1 && !envFlagTruthy("SYSY_CC_NO_HIR")) {
     auto hirModule = sys::hir::buildHIR(program);
 
     // Run HIR-level optimizations (e.g. RowScratchMatmul on structured While/For)
@@ -84,41 +86,19 @@ static int compileFile(const string &input, const string &output, bool optO1) {
   }
   std::string asmText = codegen.run();
 
-  // === Automatic backend peephole cleanup (Stage 1) ===
-  // Runs on the final assembly when O1 is enabled.
-  if (optO1) {
+  // === Stage 3: RISC-V asm passes (default ON for O1, safe baseline) ===
+  // Always-on safe peephole: removes mv x,x and addi x,0 (net positive, no correctness risk).
+  // Aggressive load-CSE / li-reuse: SYSY_CC_ENABLE_RV_AGGRESSIVE_PEEPHOLE=1
+  // List scheduling: SYSY_CC_ENABLE_RV_SCHEDULE=1
+  // To disable entirely: SYSY_CC_NO_RV_ASM_PASSES=1
+  if (optO1 && !envFlagTruthy("SYSY_CC_NO_RV_ASM_PASSES")) {
     std::vector<std::string> lines;
     std::istringstream iss(asmText);
     std::string line;
     while (std::getline(iss, line)) {
       lines.push_back(line);
     }
-
-    // Conservative peephole (Stage 1 safe cleanup)
-    // Only removes obvious self-moves (mv x, x). This is proven safe.
-    auto clean = [](std::vector<std::string> &lns) {
-      std::vector<std::string> out;
-      out.reserve(lns.size());
-      for (const auto &l : lns) {
-        if (l.find("\tmv\t") != std::string::npos) {
-          size_t p = l.find("\tmv\t");
-          size_t comma = l.find(',', p);
-          if (comma != std::string::npos) {
-            std::string dst = l.substr(p + 4, comma - (p + 4));
-            std::string src = l.substr(comma + 1);
-            dst.erase(0, dst.find_first_not_of(" \t"));
-            src.erase(0, src.find_first_not_of(" \t"));
-            size_t end = src.find_last_not_of(" \t");
-            if (end != std::string::npos) src = src.substr(0, end + 1);
-            if (dst == src) continue;
-          }
-        }
-        out.push_back(l);
-      }
-      lns.swap(out);
-    };
-    clean(lines);
-
+    rv::runRvAsmPasses(lines);
     std::ostringstream oss;
     for (const auto &l : lines) oss << l << '\n';
     asmText = oss.str();

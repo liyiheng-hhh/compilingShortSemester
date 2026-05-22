@@ -14,73 +14,48 @@ buffer:
 	.globl	get_random
 	.type	get_random, @function
 get_random:
-	addi	sp, sp, -144
-	addi	t0, sp, 144
+	addi	sp, sp, -160
+	li	t0, 160
+	add	t0, sp, t0
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -88(s0)
-	sd	s2, -96(s0)
-	sd	s3, -104(s0)
-	sd	s4, -112(s0)
-	sd	s5, -120(s0)
-	sd	s6, -128(s0)
 	lla	t0, state
 	lw	a0, 0(t0)
-	mv	s1, a0
-	sw	s1, -24(s0)
-	mv	a0, s1
+	sw	a0, -24(s0)
 	slliw	a0, a0, 13
-	mv	s2, a0
-	sw	s2, -32(s0)
-	mv	t2, s1
-	mv	a0, s2
+	sw	a0, -32(s0)
+	lw	t2, -24(s0)
 	addw	a0, t2, a0
-	mv	s3, a0
-	sw	s3, -40(s0)
+	sw	a0, -40(s0)
 	lla	t1, state
-	mv	a0, s3
 	sw	a0, 0(t1)
 	li	a0, 131072
-	mv	s4, a0
-	sw	s4, -48(s0)
-	mv	a0, s3
+	sw	a0, -48(s0)
+	lw	a0, -40(s0)
 	sext.w	a0, a0
 	sraiw	t1, a0, 31
 	li	t2, 131071
 	and	t1, t1, t2
 	addw	a0, a0, t1
 	sraiw	a0, a0, 17
-	mv	s5, a0
-	sw	s5, -56(s0)
-	mv	t2, s3
-	mv	a0, s5
+	sw	a0, -56(s0)
+	lw	t2, -40(s0)
 	addw	a0, t2, a0
-	mv	s6, a0
-	sw	s6, -64(s0)
+	sw	a0, -64(s0)
 	lla	t1, state
-	mv	a0, s6
 	sw	a0, 0(t1)
-	mv	a0, s6
 	slliw	a0, a0, 5
 	sw	a0, -72(s0)
-	mv	t2, s6
-	lw	a0, -72(s0)
+	lw	t2, -64(s0)
 	addw	a0, t2, a0
 	sw	a0, -80(s0)
 	lla	t1, state
-	lw	a0, -80(s0)
 	sw	a0, 0(t1)
 	lw	a0, -80(s0)
 	sext.w	a0, a0
 	j	.Lreturn_get_random_0
 	li	a0, 0
 .Lreturn_get_random_0:
-	ld	s6, -128(s0)
-	ld	s5, -120(s0)
-	ld	s4, -112(s0)
-	ld	s3, -104(s0)
-	ld	s2, -96(s0)
-	ld	s1, -88(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
 	mv	s0, t0
@@ -91,31 +66,22 @@ get_random:
 	.globl	rotl1
 	.type	rotl1, @function
 rotl1:
-	addi	sp, sp, -144
-	addi	t0, sp, 144
+	addi	sp, sp, -96
+	li	t0, 96
+	add	t0, sp, t0
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -88(s0)
-	sd	s2, -96(s0)
-	sd	s3, -104(s0)
-	sd	s4, -112(s0)
-	sd	s5, -120(s0)
-	sd	s6, -128(s0)
 	sw	a0, -20(s0)
+	mv	t4, a0
+	mv	a0, t4
+	sw	a0, -40(s0)
 	li	a0, 2
-	mv	s2, a0
-	sw	s2, -40(s0)
-	lw	a0, -20(s0)
-	mv	s1, a0
-	sw	s1, -48(s0)
-	mv	a0, s1
+	sw	a0, -48(s0)
+	lw	a0, -40(s0)
 	slliw	a0, a0, 1
-	mv	s3, a0
-	sw	s3, -56(s0)
-	lw	a0, -20(s0)
-	mv	s4, a0
-	sw	s4, -64(s0)
-	mv	a0, s4
+	sw	a0, -56(s0)
+	mv	a0, t4
+	sw	a0, -64(s0)
 	mv	t6, a0
 	sext.w	a0, t6
 	sraiw	t1, a0, 31
@@ -125,24 +91,15 @@ rotl1:
 	li	t1, 2
 	mulw	t1, a0, t1
 	subw	a0, t6, t1
-	mv	s5, a0
-	sw	s5, -72(s0)
-	mv	t2, s3
-	mv	a0, s5
+	sw	a0, -72(s0)
+	lw	t2, -56(s0)
 	addw	a0, t2, a0
-	mv	s6, a0
-	sw	s6, -80(s0)
-	mv	a0, s6
+	sw	a0, -80(s0)
+	lw	a0, -80(s0)
 	sext.w	a0, a0
 	j	.Lreturn_rotl1_1
 	li	a0, 0
 .Lreturn_rotl1_1:
-	ld	s6, -128(s0)
-	ld	s5, -120(s0)
-	ld	s4, -112(s0)
-	ld	s3, -104(s0)
-	ld	s2, -96(s0)
-	ld	s1, -88(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
 	mv	s0, t0
@@ -153,31 +110,22 @@ rotl1:
 	.globl	rotl5
 	.type	rotl5, @function
 rotl5:
-	addi	sp, sp, -144
-	addi	t0, sp, 144
+	addi	sp, sp, -96
+	li	t0, 96
+	add	t0, sp, t0
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -88(s0)
-	sd	s2, -96(s0)
-	sd	s3, -104(s0)
-	sd	s4, -112(s0)
-	sd	s5, -120(s0)
-	sd	s6, -128(s0)
 	sw	a0, -20(s0)
+	mv	t4, a0
+	mv	a0, t4
+	sw	a0, -40(s0)
 	li	a0, 32
-	mv	s2, a0
-	sw	s2, -40(s0)
-	lw	a0, -20(s0)
-	mv	s1, a0
-	sw	s1, -48(s0)
-	mv	a0, s1
+	sw	a0, -48(s0)
+	lw	a0, -40(s0)
 	slliw	a0, a0, 5
-	mv	s3, a0
-	sw	s3, -56(s0)
-	lw	a0, -20(s0)
-	mv	s4, a0
-	sw	s4, -64(s0)
-	mv	a0, s4
+	sw	a0, -56(s0)
+	mv	a0, t4
+	sw	a0, -64(s0)
 	mv	t6, a0
 	sext.w	a0, t6
 	sraiw	t1, a0, 31
@@ -187,24 +135,15 @@ rotl5:
 	li	t1, 32
 	mulw	t1, a0, t1
 	subw	a0, t6, t1
-	mv	s5, a0
-	sw	s5, -72(s0)
-	mv	t2, s3
-	mv	a0, s5
+	sw	a0, -72(s0)
+	lw	t2, -56(s0)
 	addw	a0, t2, a0
-	mv	s6, a0
-	sw	s6, -80(s0)
-	mv	a0, s6
+	sw	a0, -80(s0)
+	lw	a0, -80(s0)
 	sext.w	a0, a0
 	j	.Lreturn_rotl5_2
 	li	a0, 0
 .Lreturn_rotl5_2:
-	ld	s6, -128(s0)
-	ld	s5, -120(s0)
-	ld	s4, -112(s0)
-	ld	s3, -104(s0)
-	ld	s2, -96(s0)
-	ld	s1, -88(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
 	mv	s0, t0
@@ -215,31 +154,22 @@ rotl5:
 	.globl	rotl30
 	.type	rotl30, @function
 rotl30:
-	addi	sp, sp, -144
-	addi	t0, sp, 144
+	addi	sp, sp, -96
+	li	t0, 96
+	add	t0, sp, t0
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -88(s0)
-	sd	s2, -96(s0)
-	sd	s3, -104(s0)
-	sd	s4, -112(s0)
-	sd	s5, -120(s0)
-	sd	s6, -128(s0)
 	sw	a0, -20(s0)
+	mv	t4, a0
+	mv	a0, t4
+	sw	a0, -40(s0)
 	li	a0, 1073741824
-	mv	s2, a0
-	sw	s2, -40(s0)
-	lw	a0, -20(s0)
-	mv	s1, a0
-	sw	s1, -48(s0)
-	mv	a0, s1
+	sw	a0, -48(s0)
+	lw	a0, -40(s0)
 	slliw	a0, a0, 30
-	mv	s3, a0
-	sw	s3, -56(s0)
-	lw	a0, -20(s0)
-	mv	s4, a0
-	sw	s4, -64(s0)
-	mv	a0, s4
+	sw	a0, -56(s0)
+	mv	a0, t4
+	sw	a0, -64(s0)
 	mv	t6, a0
 	sext.w	a0, t6
 	sraiw	t1, a0, 31
@@ -250,24 +180,15 @@ rotl30:
 	li	t1, 1073741824
 	mulw	t1, a0, t1
 	subw	a0, t6, t1
-	mv	s5, a0
-	sw	s5, -72(s0)
-	mv	t2, s3
-	mv	a0, s5
+	sw	a0, -72(s0)
+	lw	t2, -56(s0)
 	addw	a0, t2, a0
-	mv	s6, a0
-	sw	s6, -80(s0)
-	mv	a0, s6
+	sw	a0, -80(s0)
+	lw	a0, -80(s0)
 	sext.w	a0, a0
 	j	.Lreturn_rotl30_3
 	li	a0, 0
 .Lreturn_rotl30_3:
-	ld	s6, -128(s0)
-	ld	s5, -120(s0)
-	ld	s4, -112(s0)
-	ld	s3, -104(s0)
-	ld	s2, -96(s0)
-	ld	s1, -88(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
 	mv	s0, t0
@@ -278,34 +199,27 @@ rotl30:
 	.globl	_and
 	.type	_and, @function
 _and:
-	addi	sp, sp, -96
-	addi	t0, sp, 96
+	addi	sp, sp, -64
+	li	t0, 64
+	add	t0, sp, t0
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -64(s0)
-	sd	s2, -72(s0)
-	sd	s3, -80(s0)
 	sw	a0, -20(s0)
 	sw	a1, -24(s0)
-	lw	a0, -20(s0)
-	mv	s1, a0
-	sw	s1, -40(s0)
-	lw	a0, -24(s0)
-	mv	s2, a0
-	sw	s2, -48(s0)
-	mv	t2, s1
-	mv	a0, s2
+	mv	t4, a0
+	mv	t5, a1
+	mv	a0, t4
+	sw	a0, -40(s0)
+	mv	a0, t5
+	sw	a0, -48(s0)
+	lw	t2, -40(s0)
 	addw	a0, t2, a0
-	mv	s3, a0
-	sw	s3, -56(s0)
-	mv	a0, s3
+	sw	a0, -56(s0)
+	lw	a0, -56(s0)
 	sext.w	a0, a0
 	j	.Lreturn__and_4
 	li	a0, 0
 .Lreturn__and_4:
-	ld	s3, -80(s0)
-	ld	s2, -72(s0)
-	ld	s1, -64(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
 	mv	s0, t0
@@ -316,33 +230,25 @@ _and:
 	.globl	_not
 	.type	_not, @function
 _not:
-	addi	sp, sp, -96
-	addi	t0, sp, 96
+	addi	sp, sp, -64
+	li	t0, 64
+	add	t0, sp, t0
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -64(s0)
-	sd	s2, -72(s0)
-	sd	s3, -80(s0)
 	sw	a0, -20(s0)
+	mv	t4, a0
 	li	a0, -1
-	mv	s1, a0
-	sw	s1, -40(s0)
-	lw	a0, -20(s0)
-	mv	s2, a0
-	sw	s2, -48(s0)
-	mv	t2, s1
-	mv	a0, s2
+	sw	a0, -40(s0)
+	mv	a0, t4
+	sw	a0, -48(s0)
+	lw	t2, -40(s0)
 	subw	a0, t2, a0
-	mv	s3, a0
-	sw	s3, -56(s0)
-	mv	a0, s3
+	sw	a0, -56(s0)
+	lw	a0, -56(s0)
 	sext.w	a0, a0
 	j	.Lreturn__not_5
 	li	a0, 0
 .Lreturn__not_5:
-	ld	s3, -80(s0)
-	ld	s2, -72(s0)
-	ld	s1, -64(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
 	mv	s0, t0
@@ -353,99 +259,70 @@ _not:
 	.globl	_xor
 	.type	_xor, @function
 _xor:
-	addi	sp, sp, -224
-	addi	t0, sp, 224
+	addi	sp, sp, -128
+	li	t0, 128
+	add	t0, sp, t0
 	sd	ra, -8(t0)
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -128(s0)
-	sd	s2, -136(s0)
-	sd	s3, -144(s0)
-	sd	s4, -152(s0)
-	sd	s5, -160(s0)
-	sd	s6, -168(s0)
-	sd	s7, -176(s0)
-	sd	s8, -184(s0)
-	sd	s9, -192(s0)
-	sd	s10, -200(s0)
-	sd	s11, -208(s0)
 	sw	a0, -20(s0)
 	sw	a1, -24(s0)
-	lw	a0, -20(s0)
-	mv	s1, a0
-	sw	s1, -40(s0)
-	lw	a0, -20(s0)
-	mv	s2, a0
-	sw	s2, -48(s0)
-	lw	a0, -24(s0)
-	mv	s3, a0
-	sw	s3, -56(s0)
+	addi	t0, s0, -20
+	lw	a0, 0(t0)
+	sw	a0, -40(s0)
+	addi	t0, s0, -20
+	lw	a0, 0(t0)
+	sw	a0, -48(s0)
+	addi	t0, s0, -24
+	lw	a0, 0(t0)
+	sw	a0, -56(s0)
 	addi	sp, sp, -16
-	mv	a0, s2
+	lw	a0, -48(s0)
 	sext.w	a0, a0
 	sd	a0, 0(sp)
-	mv	a0, s3
+	lw	a0, -56(s0)
 	sext.w	a0, a0
 	sd	a0, 8(sp)
 	ld	a0, 0(sp)
 	ld	a1, 8(sp)
 	call	_and
 	addi	sp, sp, 16
-	mv	s4, a0
-	sw	s4, -64(s0)
-	mv	t2, s1
-	mv	a0, s4
+	sw	a0, -64(s0)
+	lw	t2, -40(s0)
 	subw	a0, t2, a0
-	mv	s5, a0
-	sw	s5, -72(s0)
-	lw	a0, -24(s0)
-	mv	s6, a0
-	sw	s6, -80(s0)
-	mv	t2, s5
-	mv	a0, s6
+	sw	a0, -72(s0)
+	addi	t0, s0, -24
+	lw	a0, 0(t0)
+	sw	a0, -80(s0)
+	lw	t2, -72(s0)
 	addw	a0, t2, a0
-	mv	s7, a0
-	sw	s7, -88(s0)
-	lw	a0, -20(s0)
-	mv	s8, a0
-	sw	s8, -96(s0)
-	lw	a0, -24(s0)
-	mv	s9, a0
-	sw	s9, -104(s0)
+	sw	a0, -88(s0)
+	addi	t0, s0, -20
+	lw	a0, 0(t0)
+	sw	a0, -96(s0)
+	addi	t0, s0, -24
+	lw	a0, 0(t0)
+	sw	a0, -104(s0)
 	addi	sp, sp, -16
-	mv	a0, s8
+	lw	a0, -96(s0)
 	sext.w	a0, a0
 	sd	a0, 0(sp)
-	mv	a0, s9
+	lw	a0, -104(s0)
 	sext.w	a0, a0
 	sd	a0, 8(sp)
 	ld	a0, 0(sp)
 	ld	a1, 8(sp)
 	call	_and
 	addi	sp, sp, 16
-	mv	s10, a0
-	sw	s10, -112(s0)
-	mv	t2, s7
-	mv	a0, s10
+	sw	a0, -112(s0)
+	lw	t2, -88(s0)
 	subw	a0, t2, a0
-	mv	s11, a0
-	sw	s11, -120(s0)
-	mv	a0, s11
+	sw	a0, -120(s0)
+	lw	a0, -120(s0)
 	sext.w	a0, a0
 	j	.Lreturn__xor_6
 	li	a0, 0
 .Lreturn__xor_6:
-	ld	s11, -208(s0)
-	ld	s10, -200(s0)
-	ld	s9, -192(s0)
-	ld	s8, -184(s0)
-	ld	s7, -176(s0)
-	ld	s6, -168(s0)
-	ld	s5, -160(s0)
-	ld	s4, -152(s0)
-	ld	s3, -144(s0)
-	ld	s2, -136(s0)
-	ld	s1, -128(s0)
 	ld	ra, -8(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
@@ -457,83 +334,67 @@ _xor:
 	.globl	_or
 	.type	_or, @function
 _or:
-	addi	sp, sp, -160
-	addi	t0, sp, 160
+	addi	sp, sp, -96
+	li	t0, 96
+	add	t0, sp, t0
 	sd	ra, -8(t0)
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -96(s0)
-	sd	s2, -104(s0)
-	sd	s3, -112(s0)
-	sd	s4, -120(s0)
-	sd	s5, -128(s0)
-	sd	s6, -136(s0)
-	sd	s7, -144(s0)
 	sw	a0, -20(s0)
 	sw	a1, -24(s0)
-	lw	a0, -20(s0)
-	mv	s1, a0
-	sw	s1, -40(s0)
-	lw	a0, -24(s0)
-	mv	s2, a0
-	sw	s2, -48(s0)
+	addi	t0, s0, -20
+	lw	a0, 0(t0)
+	sw	a0, -40(s0)
+	addi	t0, s0, -24
+	lw	a0, 0(t0)
+	sw	a0, -48(s0)
 	addi	sp, sp, -16
-	mv	a0, s1
+	lw	a0, -40(s0)
 	sext.w	a0, a0
 	sd	a0, 0(sp)
-	mv	a0, s2
+	lw	a0, -48(s0)
 	sext.w	a0, a0
 	sd	a0, 8(sp)
 	ld	a0, 0(sp)
 	ld	a1, 8(sp)
 	call	_xor
 	addi	sp, sp, 16
-	mv	s3, a0
-	sw	s3, -56(s0)
-	lw	a0, -20(s0)
-	mv	s4, a0
-	sw	s4, -64(s0)
-	lw	a0, -24(s0)
-	mv	s5, a0
-	sw	s5, -72(s0)
+	sw	a0, -56(s0)
+	addi	t0, s0, -20
+	lw	a0, 0(t0)
+	sw	a0, -64(s0)
+	addi	t0, s0, -24
+	lw	a0, 0(t0)
+	sw	a0, -72(s0)
 	addi	sp, sp, -16
-	mv	a0, s4
+	lw	a0, -64(s0)
 	sext.w	a0, a0
 	sd	a0, 0(sp)
-	mv	a0, s5
+	lw	a0, -72(s0)
 	sext.w	a0, a0
 	sd	a0, 8(sp)
 	ld	a0, 0(sp)
 	ld	a1, 8(sp)
 	call	_and
 	addi	sp, sp, 16
-	mv	s6, a0
-	sw	s6, -80(s0)
+	sw	a0, -80(s0)
 	addi	sp, sp, -16
-	mv	a0, s3
+	lw	a0, -56(s0)
 	sext.w	a0, a0
 	sd	a0, 0(sp)
-	mv	a0, s6
+	lw	a0, -80(s0)
 	sext.w	a0, a0
 	sd	a0, 8(sp)
 	ld	a0, 0(sp)
 	ld	a1, 8(sp)
 	call	_xor
 	addi	sp, sp, 16
-	mv	s7, a0
-	sw	s7, -88(s0)
-	mv	a0, s7
+	sw	a0, -88(s0)
+	lw	a0, -88(s0)
 	sext.w	a0, a0
 	j	.Lreturn__or_7
 	li	a0, 0
 .Lreturn__or_7:
-	ld	s7, -144(s0)
-	ld	s6, -136(s0)
-	ld	s5, -128(s0)
-	ld	s4, -120(s0)
-	ld	s3, -112(s0)
-	ld	s2, -104(s0)
-	ld	s1, -96(s0)
 	ld	ra, -8(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
@@ -545,84 +406,76 @@ _or:
 	.globl	pseudo_md5
 	.type	pseudo_md5, @function
 pseudo_md5:
-	addi	sp, sp, -1808
-	addi	t0, sp, 1808
+	li	t6, -4320
+	add	sp, sp, t6
+	li	t0, 4320
+	add	t0, sp, t0
 	sd	ra, -8(t0)
 	sd	s0, -16(t0)
 	mv	s0, t0
-	sd	s1, -1720(s0)
-	sd	s2, -1728(s0)
-	sd	s3, -1736(s0)
-	sd	s4, -1744(s0)
-	sd	s5, -1752(s0)
-	sd	s6, -1760(s0)
-	sd	s7, -1768(s0)
-	sd	s8, -1776(s0)
-	sd	s9, -1784(s0)
-	sd	s10, -1792(s0)
-	sd	s11, -1800(s0)
 	sd	a0, -24(s0)
 	sw	a1, -28(s0)
 	sd	a2, -40(s0)
-	li	a0, 1732584193
-	sw	a0, -696(s0)
-	addi	t1, s0, -44
+	addi	t1, s0, -604
 	lw	a0, -696(s0)
 	sw	a0, 0(t1)
-	li	a0, -271733879
-	sw	a0, -704(s0)
-	addi	t1, s0, -48
-	lw	a0, -704(s0)
+	addi	t1, s0, -608
 	sw	a0, 0(t1)
-	li	a0, -1732584194
-	sw	a0, -712(s0)
-	addi	t1, s0, -52
-	lw	a0, -712(s0)
+	addi	t1, s0, -676
 	sw	a0, 0(t1)
-	li	a0, 271733878
-	sw	a0, -720(s0)
-	addi	t1, s0, -56
-	lw	a0, -720(s0)
+	addi	t1, s0, -680
+	sw	a0, 0(t1)
+	addi	t1, s0, -684
 	sw	a0, 0(t1)
 	li	a0, 0
+	sw	a0, -696(s0)
+	li	a0, 1732584193
+	sw	a0, -704(s0)
+	addi	t1, s0, -44
+	sw	a0, 0(t1)
+	li	a0, -271733879
+	sw	a0, -712(s0)
+	addi	t1, s0, -48
+	sw	a0, 0(t1)
+	li	a0, -1732584194
+	sw	a0, -720(s0)
+	addi	t1, s0, -52
+	sw	a0, 0(t1)
+	li	a0, 271733878
 	sw	a0, -728(s0)
-	addi	t1, s0, -60
-	lw	a0, -728(s0)
+	addi	t1, s0, -56
 	sw	a0, 0(t1)
 	li	a0, 0
 	sw	a0, -736(s0)
-	addi	t1, s0, -64
-	lw	a0, -736(s0)
+	addi	t1, s0, -60
 	sw	a0, 0(t1)
 	li	a0, 0
 	sw	a0, -744(s0)
-	addi	t1, s0, -68
-	lw	a0, -744(s0)
+	addi	t1, s0, -64
 	sw	a0, 0(t1)
 	li	a0, 0
 	sw	a0, -752(s0)
-	addi	t1, s0, -72
-	lw	a0, -752(s0)
+	addi	t1, s0, -68
 	sw	a0, 0(t1)
 	li	a0, 0
 	sw	a0, -760(s0)
-	addi	t1, s0, -76
-	lw	a0, -760(s0)
+	addi	t1, s0, -72
 	sw	a0, 0(t1)
 	li	a0, 0
 	sw	a0, -768(s0)
-	addi	t1, s0, -80
-	lw	a0, -768(s0)
+	addi	t1, s0, -76
 	sw	a0, 0(t1)
 	li	a0, 0
 	sw	a0, -776(s0)
-	addi	t1, s0, -84
-	lw	a0, -776(s0)
+	addi	t1, s0, -80
 	sw	a0, 0(t1)
 	li	a0, 0
 	sw	a0, -784(s0)
+	addi	t1, s0, -84
+	sw	a0, 0(t1)
+	li	a0, 0
+	sw	a0, -792(s0)
 	addi	t1, s0, -600
-	lw	a0, -784(s0)
 	sw	a0, 0(t1)
 .L_wh_pseudo_md5_0:
 	li	a0, 64
@@ -631,8 +484,10 @@ pseudo_md5:
 	sw	a0, -704(s0)
 	li	a0, 1
 	sw	a0, -712(s0)
-	lw	a0, -600(s0)
-	lw	t2, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -720(s0)
+	mv	t2, a0
 	sext.w	t2, t2
 	lw	a0, -696(s0)
 	sext.w	a0, a0
@@ -640,8 +495,10 @@ pseudo_md5:
 	sw	a0, -728(s0)
 	lw	a0, -728(s0)
 	beqz	a0, .L_whe_pseudo_md5_1
-	lw	a0, -600(s0)
-	lw	t2, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -736(s0)
+	mv	t2, a0
 	sext.w	t2, t2
 	lw	a0, -704(s0)
 	sext.w	a0, a0
@@ -649,9 +506,12 @@ pseudo_md5:
 	sw	a0, -744(s0)
 	lw	a0, -744(s0)
 	beqz	a0, .L_ifelse_pseudo_md5_3
-	li	a0, 4
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
 	sw	a0, -704(s0)
-	lw	a0, -600(s0)
+	li	a0, 4
+	sw	a0, -752(s0)
+	lw	a0, -704(s0)
 	mv	t6, a0
 	sext.w	a0, t6
 	sraiw	t1, a0, 31
@@ -662,7 +522,6 @@ pseudo_md5:
 	mulw	t1, a0, t1
 	subw	a0, t6, t1
 	sw	a0, -760(s0)
-	lw	a0, -760(s0)
 	sext.w	a0, a0
 	seqz	a0, a0
 	sw	a0, -768(s0)
@@ -672,23 +531,25 @@ pseudo_md5:
 	sw	a0, -776(s0)
 	addi	a0, s0, -340
 	sd	a0, -784(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -792(s0)
 	slliw	a0, a0, 2
 	sw	a0, -800(s0)
 	ld	t2, -784(s0)
-	lw	a0, -800(s0)
 	add	a0, t2, a0
 	sd	a0, -808(s0)
-	ld	t1, -808(s0)
+	mv	t1, a0
 	lw	a0, -776(s0)
 	sw	a0, 0(t1)
 	j	.L_ifend_pseudo_md5_4
 .L_ifelse_pseudo_md5_5:
-	li	a0, 4
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
 	sw	a0, -816(s0)
-	li	a0, 1
+	li	a0, 4
 	sw	a0, -824(s0)
-	lw	a0, -600(s0)
+	lw	a0, -816(s0)
 	mv	t6, a0
 	sext.w	a0, t6
 	sraiw	t1, a0, 31
@@ -698,11 +559,12 @@ pseudo_md5:
 	li	t1, 4
 	mulw	t1, a0, t1
 	subw	a0, t6, t1
+	sw	a0, -832(s0)
+	li	a0, 1
 	sw	a0, -840(s0)
-	lw	a0, -840(s0)
+	lw	a0, -832(s0)
 	addiw	a0, a0, -1
 	sw	a0, -848(s0)
-	lw	a0, -848(s0)
 	sext.w	a0, a0
 	seqz	a0, a0
 	sw	a0, -856(s0)
@@ -712,23 +574,25 @@ pseudo_md5:
 	sw	a0, -864(s0)
 	addi	a0, s0, -340
 	sd	a0, -872(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -880(s0)
 	slliw	a0, a0, 2
 	sw	a0, -888(s0)
 	ld	t2, -872(s0)
-	lw	a0, -888(s0)
 	add	a0, t2, a0
 	sd	a0, -896(s0)
-	ld	t1, -896(s0)
+	mv	t1, a0
 	lw	a0, -864(s0)
 	sw	a0, 0(t1)
 	j	.L_ifend_pseudo_md5_6
 .L_ifelse_pseudo_md5_7:
-	li	a0, 4
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
 	sw	a0, -904(s0)
-	li	a0, 2
+	li	a0, 4
 	sw	a0, -912(s0)
-	lw	a0, -600(s0)
+	lw	a0, -904(s0)
 	mv	t6, a0
 	sext.w	a0, t6
 	sraiw	t1, a0, 31
@@ -738,11 +602,12 @@ pseudo_md5:
 	li	t1, 4
 	mulw	t1, a0, t1
 	subw	a0, t6, t1
+	sw	a0, -920(s0)
+	li	a0, 2
 	sw	a0, -928(s0)
-	lw	a0, -928(s0)
+	lw	a0, -920(s0)
 	addiw	a0, a0, -2
 	sw	a0, -936(s0)
-	lw	a0, -936(s0)
 	sext.w	a0, a0
 	seqz	a0, a0
 	sw	a0, -944(s0)
@@ -752,14 +617,15 @@ pseudo_md5:
 	sw	a0, -952(s0)
 	addi	a0, s0, -340
 	sd	a0, -960(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -968(s0)
 	slliw	a0, a0, 2
 	sw	a0, -976(s0)
 	ld	t2, -960(s0)
-	lw	a0, -976(s0)
 	add	a0, t2, a0
 	sd	a0, -984(s0)
-	ld	t1, -984(s0)
+	mv	t1, a0
 	lw	a0, -952(s0)
 	sw	a0, 0(t1)
 	j	.L_ifend_pseudo_md5_8
@@ -768,14 +634,15 @@ pseudo_md5:
 	sw	a0, -992(s0)
 	addi	a0, s0, -340
 	sd	a0, -1000(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1008(s0)
 	slliw	a0, a0, 2
 	sw	a0, -1016(s0)
 	ld	t2, -1000(s0)
-	lw	a0, -1016(s0)
 	add	a0, t2, a0
 	sd	a0, -1024(s0)
-	ld	t1, -1024(s0)
+	mv	t1, a0
 	lw	a0, -992(s0)
 	sw	a0, 0(t1)
 .L_ifend_pseudo_md5_8:
@@ -785,24 +652,26 @@ pseudo_md5:
 	sw	a0, -1032(s0)
 	addi	a0, s0, -596
 	sd	a0, -1040(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1048(s0)
 	slliw	a0, a0, 2
 	sw	a0, -1056(s0)
 	ld	t2, -1040(s0)
-	lw	a0, -1056(s0)
 	add	a0, t2, a0
 	sd	a0, -1064(s0)
-	ld	t1, -1064(s0)
+	mv	t1, a0
 	lw	a0, -1032(s0)
 	sw	a0, 0(t1)
 	j	.L_ifend_pseudo_md5_2
 .L_ifelse_pseudo_md5_3:
-	li	a0, 32
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
 	sw	a0, -1072(s0)
-	lw	a0, -600(s0)
-	lw	t2, -600(s0)
+	li	a0, 32
+	sw	a0, -1080(s0)
+	lw	t2, -1072(s0)
 	sext.w	t2, t2
-	lw	a0, -1072(s0)
 	sext.w	a0, a0
 	slt	a0, t2, a0
 	sw	a0, -1088(s0)
@@ -812,38 +681,41 @@ pseudo_md5:
 	sw	a0, -1096(s0)
 	addi	a0, s0, -340
 	sd	a0, -1104(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1112(s0)
 	slliw	a0, a0, 2
 	sw	a0, -1120(s0)
 	ld	t2, -1104(s0)
-	lw	a0, -1120(s0)
 	add	a0, t2, a0
 	sd	a0, -1128(s0)
-	ld	t1, -1128(s0)
+	mv	t1, a0
 	lw	a0, -1096(s0)
 	sw	a0, 0(t1)
 	li	a0, 5
 	sw	a0, -1136(s0)
 	addi	a0, s0, -596
 	sd	a0, -1144(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1152(s0)
 	slliw	a0, a0, 2
 	sw	a0, -1160(s0)
 	ld	t2, -1144(s0)
-	lw	a0, -1160(s0)
 	add	a0, t2, a0
 	sd	a0, -1168(s0)
-	ld	t1, -1168(s0)
+	mv	t1, a0
 	lw	a0, -1136(s0)
 	sw	a0, 0(t1)
 	j	.L_ifend_pseudo_md5_10
 .L_ifelse_pseudo_md5_11:
-	li	a0, 48
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
 	sw	a0, -1176(s0)
-	lw	a0, -600(s0)
-	lw	t2, -600(s0)
+	li	a0, 48
+	sw	a0, -1184(s0)
+	lw	t2, -1176(s0)
 	sext.w	t2, t2
-	lw	a0, -1176(s0)
 	sext.w	a0, a0
 	slt	a0, t2, a0
 	sw	a0, -1192(s0)
@@ -853,28 +725,30 @@ pseudo_md5:
 	sw	a0, -1200(s0)
 	addi	a0, s0, -340
 	sd	a0, -1208(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1216(s0)
 	slliw	a0, a0, 2
 	sw	a0, -1224(s0)
 	ld	t2, -1208(s0)
-	lw	a0, -1224(s0)
 	add	a0, t2, a0
 	sd	a0, -1232(s0)
-	ld	t1, -1232(s0)
+	mv	t1, a0
 	lw	a0, -1200(s0)
 	sw	a0, 0(t1)
 	li	a0, 4
 	sw	a0, -1240(s0)
 	addi	a0, s0, -596
 	sd	a0, -1248(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1256(s0)
 	slliw	a0, a0, 2
 	sw	a0, -1264(s0)
 	ld	t2, -1248(s0)
-	lw	a0, -1264(s0)
 	add	a0, t2, a0
 	sd	a0, -1272(s0)
-	ld	t1, -1272(s0)
+	mv	t1, a0
 	lw	a0, -1240(s0)
 	sw	a0, 0(t1)
 	j	.L_ifend_pseudo_md5_12
@@ -883,68 +757,75 @@ pseudo_md5:
 	sw	a0, -1280(s0)
 	addi	a0, s0, -340
 	sd	a0, -1288(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1296(s0)
 	slliw	a0, a0, 2
 	sw	a0, -1304(s0)
 	ld	t2, -1288(s0)
-	lw	a0, -1304(s0)
 	add	a0, t2, a0
 	sd	a0, -1312(s0)
-	ld	t1, -1312(s0)
+	mv	t1, a0
 	lw	a0, -1280(s0)
 	sw	a0, 0(t1)
 	li	a0, 6
 	sw	a0, -1320(s0)
 	addi	a0, s0, -596
 	sd	a0, -1328(s0)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1336(s0)
 	slliw	a0, a0, 2
 	sw	a0, -1344(s0)
 	ld	t2, -1328(s0)
-	lw	a0, -1344(s0)
 	add	a0, t2, a0
 	sd	a0, -1352(s0)
-	ld	t1, -1352(s0)
+	mv	t1, a0
 	lw	a0, -1320(s0)
 	sw	a0, 0(t1)
 .L_ifend_pseudo_md5_12:
 .L_ifend_pseudo_md5_10:
 .L_ifend_pseudo_md5_2:
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1360(s0)
 	addiw	a0, a0, 1
 	sw	a0, -1368(s0)
 	addi	t1, s0, -600
-	lw	a0, -1368(s0)
 	sw	a0, 0(t1)
 	j	.L_wh_pseudo_md5_0
 .L_whe_pseudo_md5_1:
-	lw	a0, -28(s0)
+	addi	t0, s0, -28
+	lw	a0, 0(t0)
+	sw	a0, -696(s0)
 	slliw	a0, a0, 3
 	sw	a0, -704(s0)
 	addi	t1, s0, -604
-	lw	a0, -704(s0)
 	sw	a0, 0(t1)
 	li	a0, 128
 	sw	a0, -712(s0)
 	ld	a0, -24(s0)
 	sd	a0, -720(s0)
-	lw	a0, -28(s0)
+	addi	t0, s0, -28
+	lw	a0, 0(t0)
+	sw	a0, -728(s0)
 	slliw	a0, a0, 2
 	sw	a0, -736(s0)
 	ld	t2, -720(s0)
-	lw	a0, -736(s0)
 	add	a0, t2, a0
 	sd	a0, -744(s0)
-	ld	t1, -744(s0)
+	mv	t1, a0
 	lw	a0, -712(s0)
 	sw	a0, 0(t1)
-	li	a0, 1
+	addi	t0, s0, -28
+	lw	a0, 0(t0)
 	sw	a0, -752(s0)
-	lw	a0, -28(s0)
+	li	a0, 1
+	sw	a0, -760(s0)
+	lw	a0, -752(s0)
 	addiw	a0, a0, 1
 	sw	a0, -768(s0)
 	addi	t1, s0, -28
-	lw	a0, -768(s0)
 	sw	a0, 0(t1)
 .L_wh_pseudo_md5_14:
 	li	a0, 64
@@ -953,11 +834,13 @@ pseudo_md5:
 	sw	a0, -704(s0)
 	li	a0, 0
 	sw	a0, -712(s0)
-	li	a0, 1
-	sw	a0, -720(s0)
 	ld	a0, -24(s0)
-	sd	a0, -728(s0)
-	lw	a0, -28(s0)
+	sd	a0, -720(s0)
+	li	a0, 1
+	sw	a0, -728(s0)
+	addi	t0, s0, -28
+	lw	a0, 0(t0)
+	sw	a0, -736(s0)
 	mv	t6, a0
 	sext.w	a0, t6
 	sraiw	t1, a0, 31
@@ -968,63 +851,69 @@ pseudo_md5:
 	mulw	t1, a0, t1
 	subw	a0, t6, t1
 	sw	a0, -744(s0)
-	lw	a0, -744(s0)
 	addiw	a0, a0, -56
 	sw	a0, -752(s0)
-	lw	a0, -752(s0)
 	sext.w	a0, a0
 	snez	a0, a0
 	sw	a0, -760(s0)
 	lw	a0, -760(s0)
 	beqz	a0, .L_whe_pseudo_md5_15
-	lw	a0, -28(s0)
+	addi	t0, s0, -28
+	lw	a0, 0(t0)
+	sw	a0, -768(s0)
 	slliw	a0, a0, 2
 	sw	a0, -776(s0)
-	ld	t2, -728(s0)
-	lw	a0, -776(s0)
+	ld	t2, -720(s0)
 	add	a0, t2, a0
 	sd	a0, -784(s0)
-	ld	t1, -784(s0)
+	mv	t1, a0
 	lw	a0, -712(s0)
 	sw	a0, 0(t1)
-	lw	a0, -28(s0)
+	addi	t0, s0, -28
+	lw	a0, 0(t0)
+	sw	a0, -792(s0)
 	addiw	a0, a0, 1
 	sw	a0, -800(s0)
 	addi	t1, s0, -28
-	lw	a0, -800(s0)
 	sw	a0, 0(t1)
 	j	.L_wh_pseudo_md5_14
 .L_whe_pseudo_md5_15:
+	addi	t0, s0, -604
+	lw	a0, 0(t0)
+	sw	a0, -696(s0)
 	ld	a0, -24(s0)
-	sd	a0, -696(s0)
-	lw	a0, -604(s0)
-	lw	a0, -28(s0)
+	sd	a0, -704(s0)
+	addi	t0, s0, -28
+	lw	a0, 0(t0)
+	sw	a0, -712(s0)
 	slliw	a0, a0, 2
 	sw	a0, -720(s0)
-	ld	t2, -696(s0)
-	lw	a0, -720(s0)
+	ld	t2, -704(s0)
 	add	a0, t2, a0
 	sd	a0, -728(s0)
-	ld	t1, -728(s0)
-	lw	a0, -604(s0)
+	mv	t1, a0
+	lw	a0, -696(s0)
 	sw	a0, 0(t1)
 	li	a0, 1
 	sw	a0, -736(s0)
 	addi	t1, s0, -600
-	lw	a0, -736(s0)
 	sw	a0, 0(t1)
 .L_wh_pseudo_md5_16:
 	li	a0, 4
 	sw	a0, -696(s0)
 	li	a0, 0
 	sw	a0, -704(s0)
-	li	a0, 1
-	sw	a0, -712(s0)
 	ld	a0, -24(s0)
-	sd	a0, -720(s0)
-	lw	a0, -28(s0)
-	lw	a0, -600(s0)
-	lw	t2, -600(s0)
+	sd	a0, -712(s0)
+	addi	t0, s0, -28
+	lw	a0, 0(t0)
+	sw	a0, -720(s0)
+	li	a0, 1
+	sw	a0, -728(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -736(s0)
+	mv	t2, a0
 	sext.w	t2, t2
 	lw	a0, -696(s0)
 	sext.w	a0, a0
@@ -1032,366 +921,349 @@ pseudo_md5:
 	sw	a0, -744(s0)
 	lw	a0, -744(s0)
 	beqz	a0, .L_whe_pseudo_md5_17
-	lw	a0, -600(s0)
-	lw	t2, -28(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -752(s0)
+	lw	t2, -720(s0)
 	addw	a0, t2, a0
 	sw	a0, -760(s0)
-	lw	a0, -760(s0)
 	slliw	a0, a0, 2
 	sw	a0, -768(s0)
-	ld	t2, -720(s0)
-	lw	a0, -768(s0)
+	ld	t2, -712(s0)
 	add	a0, t2, a0
 	sd	a0, -776(s0)
-	ld	t1, -776(s0)
+	mv	t1, a0
 	lw	a0, -704(s0)
 	sw	a0, 0(t1)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -784(s0)
 	addiw	a0, a0, 1
 	sw	a0, -792(s0)
 	addi	t1, s0, -600
-	lw	a0, -792(s0)
 	sw	a0, 0(t1)
 	j	.L_wh_pseudo_md5_16
 .L_whe_pseudo_md5_17:
-	li	a0, 4
+	addi	t0, s0, -28
+	lw	a0, 0(t0)
 	sw	a0, -696(s0)
-	lw	a0, -28(s0)
+	li	a0, 4
+	sw	a0, -704(s0)
+	lw	a0, -696(s0)
 	addiw	a0, a0, 4
 	sw	a0, -712(s0)
 	addi	t1, s0, -28
-	lw	a0, -712(s0)
 	sw	a0, 0(t1)
 	li	a0, 0
 	sw	a0, -720(s0)
 	addi	t1, s0, -608
-	lw	a0, -720(s0)
 	sw	a0, 0(t1)
 .L_wh_pseudo_md5_18:
-	li	a0, 0
+	addi	t0, s0, -28
+	lw	a0, 0(t0)
 	sw	a0, -696(s0)
-	li	a0, 16
+	li	a0, 0
 	sw	a0, -704(s0)
-	li	a0, 64
+	li	a0, 16
 	sw	a0, -712(s0)
-	li	a0, 1
-	sw	a0, -720(s0)
 	ld	a0, -24(s0)
-	sd	a0, -728(s0)
+	sd	a0, -720(s0)
+	lw	a0, -704(s0)
+	sw	a0, -728(s0)
+	lw	a0, -704(s0)
+	sw	a0, -736(s0)
+	li	a0, 64
+	sw	a0, -744(s0)
+	lw	a0, -712(s0)
+	sw	a0, -752(s0)
 	addi	a0, s0, -340
-	sd	a0, -736(s0)
+	sd	a0, -760(s0)
+	lw	a0, -704(s0)
+	sw	a0, -768(s0)
+	lw	a0, -744(s0)
+	sw	a0, -776(s0)
 	addi	a0, s0, -672
-	sd	a0, -744(s0)
+	sd	a0, -784(s0)
+	lw	a0, -704(s0)
+	sw	a0, -792(s0)
+	li	a0, 1
+	sw	a0, -800(s0)
+	ld	a0, -784(s0)
+	sd	a0, -808(s0)
+	lw	a0, -704(s0)
+	sw	a0, -816(s0)
 	addi	a0, s0, -596
-	sd	a0, -752(s0)
-	lw	a0, -28(s0)
-	lw	a0, -608(s0)
-	lw	t2, -608(s0)
+	sd	a0, -824(s0)
+	lw	a0, -704(s0)
+	sw	a0, -832(s0)
+	lw	a0, -800(s0)
+	sw	a0, -840(s0)
+	lw	a0, -800(s0)
+	sw	a0, -848(s0)
+	lw	a0, -800(s0)
+	sw	a0, -856(s0)
+	lw	a0, -800(s0)
+	sw	a0, -864(s0)
+	addi	t0, s0, -608
+	lw	a0, 0(t0)
+	sw	a0, -872(s0)
+	mv	t2, a0
 	sext.w	t2, t2
-	lw	a0, -28(s0)
+	lw	a0, -696(s0)
 	sext.w	a0, a0
 	slt	a0, t2, a0
-	sw	a0, -776(s0)
-	lw	a0, -776(s0)
+	sw	a0, -880(s0)
+	lw	a0, -880(s0)
 	beqz	a0, .L_whe_pseudo_md5_19
 	addi	t1, s0, -600
-	lw	a0, -696(s0)
+	lw	a0, -704(s0)
 	sw	a0, 0(t1)
 .L_wh_pseudo_md5_20:
-	lw	a0, -608(s0)
-	lw	a0, -600(s0)
-	lw	t2, -600(s0)
-	sext.w	t2, t2
-	lw	a0, -704(s0)
-	sext.w	a0, a0
-	slt	a0, t2, a0
-	sw	a0, -800(s0)
-	lw	a0, -800(s0)
-	beqz	a0, .L_whe_pseudo_md5_21
-	lw	a0, -600(s0)
-	lw	t2, -608(s0)
-	addw	a0, t2, a0
-	sw	a0, -816(s0)
-	lw	a0, -816(s0)
-	slliw	a0, a0, 2
-	sw	a0, -824(s0)
-	lw	a0, -824(s0)
-	addiw	a0, a0, 0
-	sw	a0, -832(s0)
-	ld	t2, -728(s0)
-	lw	a0, -832(s0)
-	add	a0, t2, a0
-	sd	a0, -840(s0)
-	ld	t2, -840(s0)
-	lw	a0, 0(t2)
-	sw	a0, -848(s0)
-	lw	a0, -600(s0)
-	slliw	a0, a0, 2
-	sw	a0, -864(s0)
-	lw	a0, -864(s0)
-	addiw	a0, a0, 0
-	sw	a0, -872(s0)
-	ld	t2, -744(s0)
-	lw	a0, -872(s0)
-	add	a0, t2, a0
-	sd	a0, -880(s0)
-	ld	t1, -880(s0)
-	lw	a0, -848(s0)
-	sw	a0, 0(t1)
-	lw	a0, -600(s0)
-	addiw	a0, a0, 1
+	addi	t0, s0, -608
+	lw	a0, 0(t0)
+	sw	a0, -888(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
 	sw	a0, -896(s0)
-	addi	t1, s0, -600
-	lw	a0, -896(s0)
-	sw	a0, 0(t1)
-	j	.L_wh_pseudo_md5_20
-.L_whe_pseudo_md5_21:
-	lw	a0, -44(s0)
-	addi	t1, s0, -60
-	sw	a0, 0(t1)
-	lw	a0, -48(s0)
-	addi	t1, s0, -64
-	sw	a0, 0(t1)
-	lw	a0, -52(s0)
-	addi	t1, s0, -68
-	sw	a0, 0(t1)
-	lw	a0, -56(s0)
-	addi	t1, s0, -72
-	sw	a0, 0(t1)
-	addi	t1, s0, -600
-	lw	a0, -696(s0)
-	sw	a0, 0(t1)
-.L_wh_pseudo_md5_22:
-	lw	a0, -600(s0)
-	lw	t2, -600(s0)
+	mv	t2, a0
 	sext.w	t2, t2
 	lw	a0, -712(s0)
 	sext.w	a0, a0
 	slt	a0, t2, a0
+	sw	a0, -904(s0)
+	lw	a0, -904(s0)
+	beqz	a0, .L_whe_pseudo_md5_21
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -912(s0)
+	lw	t2, -888(s0)
+	addw	a0, t2, a0
+	sw	a0, -920(s0)
+	slliw	a0, a0, 2
 	sw	a0, -928(s0)
-	lw	a0, -928(s0)
-	beqz	a0, .L_whe_pseudo_md5_23
-	lw	a0, -600(s0)
-	lw	t2, -600(s0)
-	sext.w	t2, t2
-	lw	a0, -704(s0)
-	sext.w	a0, a0
-	slt	a0, t2, a0
-	sw	a0, -944(s0)
-	lw	a0, -944(s0)
-	beqz	a0, .L_ifelse_pseudo_md5_25
-	lw	a0, -64(s0)
-	lw	a0, -68(s0)
-	addi	sp, sp, -16
-	lw	a0, -952(s0)
-	sext.w	a0, a0
-	sd	a0, 0(sp)
-	lw	a0, -960(s0)
-	sext.w	a0, a0
-	sd	a0, 8(sp)
-	ld	a0, 0(sp)
-	ld	a1, 8(sp)
-	call	_and
-	addi	sp, sp, 16
+	addiw	a0, a0, 0
+	sw	a0, -936(s0)
+	ld	t2, -720(s0)
+	add	a0, t2, a0
+	sd	a0, -944(s0)
+	mv	t2, a0
+	lw	a0, 0(t2)
+	sw	a0, -952(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -960(s0)
+	slliw	a0, a0, 2
 	sw	a0, -968(s0)
-	lw	a0, -64(s0)
-	lw	a0, -976(s0)
+	addiw	a0, a0, 0
+	sw	a0, -976(s0)
+	ld	t2, -784(s0)
+	add	a0, t2, a0
+	sd	a0, -984(s0)
+	mv	t1, a0
+	lw	a0, -952(s0)
+	sw	a0, 0(t1)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -992(s0)
+	addiw	a0, a0, 1
+	sw	a0, -1000(s0)
+	addi	t1, s0, -600
+	sw	a0, 0(t1)
+	j	.L_wh_pseudo_md5_20
+.L_whe_pseudo_md5_21:
+	addi	t0, s0, -44
+	lw	a0, 0(t0)
+	sw	a0, -720(s0)
+	addi	t1, s0, -60
+	sw	a0, 0(t1)
+	addi	t0, s0, -48
+	lw	a0, 0(t0)
+	sw	a0, -728(s0)
+	addi	t1, s0, -64
+	sw	a0, 0(t1)
+	addi	t0, s0, -52
+	lw	a0, 0(t0)
+	sw	a0, -792(s0)
+	addi	t1, s0, -68
+	sw	a0, 0(t1)
+	addi	t0, s0, -56
+	lw	a0, 0(t0)
+	sw	a0, -888(s0)
+	addi	t1, s0, -72
+	sw	a0, 0(t1)
+	addi	t1, s0, -600
+	lw	a0, -736(s0)
+	sw	a0, 0(t1)
+.L_wh_pseudo_md5_22:
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -736(s0)
+	mv	t2, a0
+	sext.w	t2, t2
+	lw	a0, -744(s0)
 	sext.w	a0, a0
-	mv	a0, t4
-	call	_not
-	sw	a0, -984(s0)
-	lw	a0, -72(s0)
+	slt	a0, t2, a0
+	sw	a0, -1008(s0)
+	lw	a0, -1008(s0)
+	beqz	a0, .L_whe_pseudo_md5_23
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1016(s0)
+	mv	t2, a0
+	sext.w	t2, t2
+	lw	a0, -752(s0)
+	sext.w	a0, a0
+	slt	a0, t2, a0
+	sw	a0, -1024(s0)
+	lw	a0, -1024(s0)
+	beqz	a0, .L_ifelse_pseudo_md5_25
+	addi	t0, s0, -64
+	lw	a0, 0(t0)
+	sw	a0, -1032(s0)
+	addi	t0, s0, -68
+	lw	a0, 0(t0)
+	sw	a0, -1040(s0)
 	addi	sp, sp, -16
-	lw	a0, -984(s0)
+	lw	a0, -1032(s0)
 	sext.w	a0, a0
 	sd	a0, 0(sp)
-	lw	a0, -992(s0)
+	lw	a0, -1040(s0)
 	sext.w	a0, a0
 	sd	a0, 8(sp)
 	ld	a0, 0(sp)
 	ld	a1, 8(sp)
 	call	_and
 	addi	sp, sp, 16
-	sw	a0, -1000(s0)
-	addi	sp, sp, -16
-	lw	a0, -968(s0)
-	sext.w	a0, a0
-	sd	a0, 0(sp)
-	lw	a0, -1000(s0)
-	sext.w	a0, a0
-	sd	a0, 8(sp)
-	ld	a0, 0(sp)
-	ld	a1, 8(sp)
-	call	_or
-	addi	sp, sp, 16
-	sw	a0, -1008(s0)
-	addi	t1, s0, -76
-	lw	a0, -1008(s0)
-	sw	a0, 0(t1)
-	lw	a0, -600(s0)
-	addi	t1, s0, -80
-	sw	a0, 0(t1)
-	j	.L_ifend_pseudo_md5_24
-.L_ifelse_pseudo_md5_25:
-	li	a0, 32
-	sw	a0, -1024(s0)
-	lw	a0, -600(s0)
-	lw	t2, -600(s0)
-	sext.w	t2, t2
-	lw	a0, -1024(s0)
-	sext.w	a0, a0
-	slt	a0, t2, a0
-	sw	a0, -1040(s0)
-	lw	a0, -1040(s0)
-	beqz	a0, .L_ifelse_pseudo_md5_27
-	lw	a0, -72(s0)
-	lw	a0, -64(s0)
-	addi	sp, sp, -16
-	lw	a0, -1048(s0)
-	sext.w	a0, a0
-	sd	a0, 0(sp)
+	sw	a0, -1048(s0)
+	addi	t0, s0, -64
+	lw	a0, 0(t0)
+	sw	a0, -1056(s0)
 	lw	a0, -1056(s0)
 	sext.w	a0, a0
-	sd	a0, 8(sp)
-	ld	a0, 0(sp)
-	ld	a1, 8(sp)
-	call	_and
-	addi	sp, sp, 16
-	sw	a0, -1064(s0)
-	lw	a0, -72(s0)
-	lw	a0, -1072(s0)
-	sext.w	a0, a0
+	mv	t4, a0
 	mv	a0, t4
 	call	_not
-	sw	a0, -1080(s0)
-	lw	a0, -68(s0)
-	addi	sp, sp, -16
-	lw	a0, -1080(s0)
-	sext.w	a0, a0
-	sd	a0, 0(sp)
-	lw	a0, -1088(s0)
-	sext.w	a0, a0
-	sd	a0, 8(sp)
-	ld	a0, 0(sp)
-	ld	a1, 8(sp)
-	call	_and
-	addi	sp, sp, 16
-	mv	s11, a0
-	sw	s11, -1096(s0)
+	sw	a0, -1064(s0)
+	addi	t0, s0, -72
+	lw	a0, 0(t0)
+	sw	a0, -1072(s0)
 	addi	sp, sp, -16
 	lw	a0, -1064(s0)
 	sext.w	a0, a0
 	sd	a0, 0(sp)
-	mv	a0, s11
+	lw	a0, -1072(s0)
+	sext.w	a0, a0
+	sd	a0, 8(sp)
+	ld	a0, 0(sp)
+	ld	a1, 8(sp)
+	call	_and
+	addi	sp, sp, 16
+	sw	a0, -1080(s0)
+	addi	sp, sp, -16
+	lw	a0, -1048(s0)
+	sext.w	a0, a0
+	sd	a0, 0(sp)
+	lw	a0, -1080(s0)
 	sext.w	a0, a0
 	sd	a0, 8(sp)
 	ld	a0, 0(sp)
 	ld	a1, 8(sp)
 	call	_or
 	addi	sp, sp, 16
-	mv	s1, a0
-	sw	s1, -1104(s0)
+	sw	a0, -1088(s0)
 	addi	t1, s0, -76
-	mv	a0, s1
 	sw	a0, 0(t1)
-	mv	s1, a0
-	li	a0, 5
-	mv	s9, a0
-	sw	s9, -1112(s0)
-	li	a0, 1
-	mv	s6, a0
-	sw	s6, -1120(s0)
-	li	a0, 16
-	mv	s4, a0
-	sw	s4, -1128(s0)
-	lw	a0, -600(s0)
-	mv	s8, a0
-	sw	s8, -1136(s0)
-	mv	a0, s8
-	slliw	t2, a0, 2
-	addw	a0, t2, a0
-	mv	s7, a0
-	sw	s7, -1144(s0)
-	mv	a0, s7
-	addiw	a0, a0, 1
-	mv	s5, a0
-	sw	s5, -1152(s0)
-	mv	a0, s5
-	mv	t6, a0
-	sext.w	a0, t6
-	sraiw	t1, a0, 31
-	andi	t1, t1, 15
-	addw	a0, a0, t1
-	sraiw	a0, a0, 4
-	li	t1, 16
-	mulw	t1, a0, t1
-	subw	a0, t6, t1
-	mv	s3, a0
-	sw	s3, -1160(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1096(s0)
 	addi	t1, s0, -80
-	mv	a0, s3
 	sw	a0, 0(t1)
-	mv	s3, a0
-	j	.L_ifend_pseudo_md5_26
-.L_ifelse_pseudo_md5_27:
-	li	a0, 48
-	mv	s10, a0
-	sw	s10, -1168(s0)
-	lw	a0, -600(s0)
-	mv	s2, a0
-	sw	s2, -1176(s0)
-	mv	t2, s2
+	j	.L_ifend_pseudo_md5_24
+.L_ifelse_pseudo_md5_25:
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1104(s0)
+	li	a0, 32
+	sw	a0, -1112(s0)
+	lw	t2, -1104(s0)
 	sext.w	t2, t2
-	mv	a0, s10
 	sext.w	a0, a0
 	slt	a0, t2, a0
+	sw	a0, -1120(s0)
+	lw	a0, -1120(s0)
+	beqz	a0, .L_ifelse_pseudo_md5_27
+	addi	t0, s0, -72
+	lw	a0, 0(t0)
+	sw	a0, -1128(s0)
+	addi	t0, s0, -64
+	lw	a0, 0(t0)
+	sw	a0, -1136(s0)
+	addi	sp, sp, -16
+	lw	a0, -1128(s0)
+	sext.w	a0, a0
+	sd	a0, 0(sp)
+	lw	a0, -1136(s0)
+	sext.w	a0, a0
+	sd	a0, 8(sp)
+	ld	a0, 0(sp)
+	ld	a1, 8(sp)
+	call	_and
+	addi	sp, sp, 16
+	sw	a0, -1144(s0)
+	addi	t0, s0, -72
+	lw	a0, 0(t0)
+	sw	a0, -1152(s0)
+	lw	a0, -1152(s0)
+	sext.w	a0, a0
+	mv	t4, a0
+	mv	a0, t4
+	call	_not
+	sw	a0, -1160(s0)
+	addi	t0, s0, -68
+	lw	a0, 0(t0)
+	sw	a0, -1168(s0)
+	addi	sp, sp, -16
+	lw	a0, -1160(s0)
+	sext.w	a0, a0
+	sd	a0, 0(sp)
+	lw	a0, -1168(s0)
+	sext.w	a0, a0
+	sd	a0, 8(sp)
+	ld	a0, 0(sp)
+	ld	a1, 8(sp)
+	call	_and
+	addi	sp, sp, 16
+	sw	a0, -1176(s0)
+	addi	sp, sp, -16
+	lw	a0, -1144(s0)
+	sext.w	a0, a0
+	sd	a0, 0(sp)
+	lw	a0, -1176(s0)
+	sext.w	a0, a0
+	sd	a0, 8(sp)
+	ld	a0, 0(sp)
+	ld	a1, 8(sp)
+	call	_or
+	addi	sp, sp, 16
 	sw	a0, -1184(s0)
-	lw	a0, -1184(s0)
-	beqz	a0, .L_ifelse_pseudo_md5_29
-	lw	a0, -64(s0)
-	lw	a0, -68(s0)
-	lw	a0, -72(s0)
-	addi	sp, sp, -16
-	lw	a0, -1200(s0)
-	sext.w	a0, a0
-	sd	a0, 0(sp)
-	lw	a0, -1208(s0)
-	sext.w	a0, a0
-	sd	a0, 8(sp)
-	ld	a0, 0(sp)
-	ld	a1, 8(sp)
-	call	_xor
-	addi	sp, sp, 16
-	sw	a0, -1216(s0)
-	addi	sp, sp, -16
-	lw	a0, -1192(s0)
-	sext.w	a0, a0
-	sd	a0, 0(sp)
-	lw	a0, -1216(s0)
-	sext.w	a0, a0
-	sd	a0, 8(sp)
-	ld	a0, 0(sp)
-	ld	a1, 8(sp)
-	call	_xor
-	addi	sp, sp, 16
-	sw	a0, -1224(s0)
 	addi	t1, s0, -76
-	lw	a0, -1224(s0)
 	sw	a0, 0(t1)
-	li	a0, 3
-	sw	a0, -1232(s0)
 	li	a0, 5
-	sw	a0, -1240(s0)
-	li	a0, 16
-	sw	a0, -1248(s0)
-	lw	a0, -600(s0)
-	slliw	t2, a0, 1
+	sw	a0, -1192(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1200(s0)
+	slliw	t2, a0, 2
 	addw	a0, t2, a0
-	sw	a0, -1264(s0)
-	lw	a0, -1264(s0)
-	addiw	a0, a0, 5
-	sw	a0, -1272(s0)
-	lw	a0, -1272(s0)
+	sw	a0, -1208(s0)
+	li	a0, 1
+	sw	a0, -1216(s0)
+	lw	a0, -1208(s0)
+	addiw	a0, a0, 1
+	sw	a0, -1224(s0)
+	li	a0, 16
+	sw	a0, -1232(s0)
+	lw	a0, -1224(s0)
 	mv	t6, a0
 	sext.w	a0, t6
 	sraiw	t1, a0, 31
@@ -1401,56 +1273,140 @@ pseudo_md5:
 	li	t1, 16
 	mulw	t1, a0, t1
 	subw	a0, t6, t1
-	sw	a0, -1280(s0)
+	sw	a0, -1240(s0)
 	addi	t1, s0, -80
+	sw	a0, 0(t1)
+	j	.L_ifend_pseudo_md5_26
+.L_ifelse_pseudo_md5_27:
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1248(s0)
+	li	a0, 48
+	sw	a0, -1256(s0)
+	lw	t2, -1248(s0)
+	sext.w	t2, t2
+	sext.w	a0, a0
+	slt	a0, t2, a0
+	sw	a0, -1264(s0)
+	lw	a0, -1264(s0)
+	beqz	a0, .L_ifelse_pseudo_md5_29
+	addi	t0, s0, -64
+	lw	a0, 0(t0)
+	sw	a0, -1272(s0)
+	addi	t0, s0, -68
+	lw	a0, 0(t0)
+	sw	a0, -1280(s0)
+	addi	t0, s0, -72
+	lw	a0, 0(t0)
+	sw	a0, -1288(s0)
+	addi	sp, sp, -16
 	lw	a0, -1280(s0)
+	sext.w	a0, a0
+	sd	a0, 0(sp)
+	lw	a0, -1288(s0)
+	sext.w	a0, a0
+	sd	a0, 8(sp)
+	ld	a0, 0(sp)
+	ld	a1, 8(sp)
+	call	_xor
+	addi	sp, sp, 16
+	sw	a0, -1296(s0)
+	addi	sp, sp, -16
+	lw	a0, -1272(s0)
+	sext.w	a0, a0
+	sd	a0, 0(sp)
+	lw	a0, -1296(s0)
+	sext.w	a0, a0
+	sd	a0, 8(sp)
+	ld	a0, 0(sp)
+	ld	a1, 8(sp)
+	call	_xor
+	addi	sp, sp, 16
+	sw	a0, -1304(s0)
+	addi	t1, s0, -76
+	sw	a0, 0(t1)
+	li	a0, 3
+	sw	a0, -1312(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1320(s0)
+	slliw	t2, a0, 1
+	addw	a0, t2, a0
+	sw	a0, -1328(s0)
+	li	a0, 5
+	sw	a0, -1336(s0)
+	lw	a0, -1328(s0)
+	addiw	a0, a0, 5
+	sw	a0, -1344(s0)
+	li	a0, 16
+	sw	a0, -1352(s0)
+	lw	a0, -1344(s0)
+	mv	t6, a0
+	sext.w	a0, t6
+	sraiw	t1, a0, 31
+	andi	t1, t1, 15
+	addw	a0, a0, t1
+	sraiw	a0, a0, 4
+	li	t1, 16
+	mulw	t1, a0, t1
+	subw	a0, t6, t1
+	sw	a0, -1360(s0)
+	addi	t1, s0, -80
 	sw	a0, 0(t1)
 	j	.L_ifend_pseudo_md5_28
 .L_ifelse_pseudo_md5_29:
-	lw	a0, -68(s0)
-	lw	a0, -64(s0)
-	lw	a0, -72(s0)
-	lw	a0, -1304(s0)
+	addi	t0, s0, -68
+	lw	a0, 0(t0)
+	sw	a0, -1368(s0)
+	addi	t0, s0, -64
+	lw	a0, 0(t0)
+	sw	a0, -1376(s0)
+	addi	t0, s0, -72
+	lw	a0, 0(t0)
+	sw	a0, -1384(s0)
+	lw	a0, -1384(s0)
 	sext.w	a0, a0
+	mv	t4, a0
 	mv	a0, t4
 	call	_not
-	sw	a0, -1312(s0)
+	sw	a0, -1392(s0)
 	addi	sp, sp, -16
-	lw	a0, -1296(s0)
+	lw	a0, -1376(s0)
 	sext.w	a0, a0
 	sd	a0, 0(sp)
-	lw	a0, -1312(s0)
+	lw	a0, -1392(s0)
 	sext.w	a0, a0
 	sd	a0, 8(sp)
 	ld	a0, 0(sp)
 	ld	a1, 8(sp)
 	call	_or
 	addi	sp, sp, 16
-	sw	a0, -1320(s0)
+	sw	a0, -1400(s0)
 	addi	sp, sp, -16
-	lw	a0, -1288(s0)
+	lw	a0, -1368(s0)
 	sext.w	a0, a0
 	sd	a0, 0(sp)
-	lw	a0, -1320(s0)
+	lw	a0, -1400(s0)
 	sext.w	a0, a0
 	sd	a0, 8(sp)
 	ld	a0, 0(sp)
 	ld	a1, 8(sp)
 	call	_xor
 	addi	sp, sp, 16
-	sw	a0, -1328(s0)
+	sw	a0, -1408(s0)
 	addi	t1, s0, -76
-	lw	a0, -1328(s0)
 	sw	a0, 0(t1)
 	li	a0, 7
-	sw	a0, -1336(s0)
-	li	a0, 16
-	sw	a0, -1344(s0)
-	lw	a0, -600(s0)
+	sw	a0, -1416(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1424(s0)
 	slliw	t2, a0, 3
 	subw	a0, t2, a0
-	sw	a0, -1360(s0)
-	lw	a0, -1360(s0)
+	sw	a0, -1432(s0)
+	li	a0, 16
+	sw	a0, -1440(s0)
+	lw	a0, -1432(s0)
 	mv	t6, a0
 	sext.w	a0, t6
 	sraiw	t1, a0, 31
@@ -1460,221 +1416,251 @@ pseudo_md5:
 	li	t1, 16
 	mulw	t1, a0, t1
 	subw	a0, t6, t1
-	sw	a0, -1368(s0)
+	sw	a0, -1448(s0)
 	addi	t1, s0, -80
-	lw	a0, -1368(s0)
 	sw	a0, 0(t1)
 .L_ifend_pseudo_md5_28:
 .L_ifend_pseudo_md5_26:
 .L_ifend_pseudo_md5_24:
-	lw	a0, -60(s0)
-	lw	a0, -76(s0)
-	lw	t2, -60(s0)
-	addw	a0, t2, a0
-	sw	a0, -1392(s0)
-	lw	a0, -600(s0)
-	slliw	a0, a0, 2
-	sw	a0, -1408(s0)
-	lw	a0, -1408(s0)
-	addiw	a0, a0, 0
-	sw	a0, -1416(s0)
-	ld	t2, -736(s0)
-	lw	a0, -1416(s0)
-	add	a0, t2, a0
-	sd	a0, -1424(s0)
-	ld	t2, -1424(s0)
-	lw	a0, 0(t2)
-	sw	a0, -1432(s0)
-	lw	t2, -1392(s0)
-	lw	a0, -1432(s0)
-	addw	a0, t2, a0
-	sw	a0, -1440(s0)
-	lw	a0, -80(s0)
-	slliw	a0, a0, 2
+	addi	t0, s0, -60
+	lw	a0, 0(t0)
 	sw	a0, -1456(s0)
-	lw	a0, -1456(s0)
-	addiw	a0, a0, 0
+	addi	t0, s0, -76
+	lw	a0, 0(t0)
 	sw	a0, -1464(s0)
-	ld	t2, -744(s0)
-	lw	a0, -1464(s0)
-	add	a0, t2, a0
-	sd	a0, -1472(s0)
-	ld	t2, -1472(s0)
-	lw	a0, 0(t2)
-	sw	a0, -1480(s0)
-	lw	t2, -1440(s0)
-	lw	a0, -1480(s0)
+	lw	t2, -1456(s0)
 	addw	a0, t2, a0
-	sw	a0, -1488(s0)
-	addi	t1, s0, -84
-	lw	a0, -1488(s0)
-	sw	a0, 0(t1)
-	lw	a0, -600(s0)
+	sw	a0, -1472(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1480(s0)
 	slliw	a0, a0, 2
-	sw	a0, -1504(s0)
-	lw	a0, -1504(s0)
+	sw	a0, -1488(s0)
 	addiw	a0, a0, 0
-	sw	a0, -1512(s0)
-	ld	t2, -752(s0)
-	lw	a0, -1512(s0)
+	sw	a0, -1496(s0)
+	ld	t2, -760(s0)
 	add	a0, t2, a0
-	sd	a0, -1520(s0)
-	ld	t2, -1520(s0)
+	sd	a0, -1504(s0)
+	mv	t2, a0
 	lw	a0, 0(t2)
+	sw	a0, -1512(s0)
+	lw	t2, -1472(s0)
+	addw	a0, t2, a0
+	sw	a0, -1520(s0)
+	addi	t0, s0, -80
+	lw	a0, 0(t0)
 	sw	a0, -1528(s0)
-	addi	t1, s0, -676
-	lw	a0, -1528(s0)
-	sw	a0, 0(t1)
-	addi	t1, s0, -680
-	lw	a0, -720(s0)
-	sw	a0, 0(t1)
-	addi	t1, s0, -684
-	lw	a0, -680(s0)
-	sw	a0, 0(t1)
-.L_wh_pseudo_md5_30:
-	lw	a0, -676(s0)
-	lw	a0, -684(s0)
-	lw	t2, -684(s0)
-	sext.w	t2, t2
-	lw	a0, -676(s0)
-	sext.w	a0, a0
-	slt	a0, t2, a0
-	sw	a0, -1552(s0)
-	lw	a0, -1552(s0)
-	beqz	a0, .L_whe_pseudo_md5_31
-	lw	a0, -84(s0)
-	lw	a0, -1560(s0)
-	sext.w	a0, a0
-	mv	a0, t4
-	call	rotl1
+	slliw	a0, a0, 2
+	sw	a0, -1536(s0)
+	addiw	a0, a0, 0
+	sw	a0, -1544(s0)
+	ld	t2, -808(s0)
+	add	a0, t2, a0
+	sd	a0, -1552(s0)
+	mv	t2, a0
+	lw	a0, 0(t2)
+	sw	a0, -1560(s0)
+	lw	t2, -1520(s0)
+	addw	a0, t2, a0
 	sw	a0, -1568(s0)
 	addi	t1, s0, -84
-	lw	a0, -1568(s0)
 	sw	a0, 0(t1)
-	lw	a0, -684(s0)
-	addiw	a0, a0, 1
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1576(s0)
+	slliw	a0, a0, 2
 	sw	a0, -1584(s0)
+	addiw	a0, a0, 0
+	sw	a0, -1592(s0)
+	ld	t2, -824(s0)
+	add	a0, t2, a0
+	sd	a0, -1600(s0)
+	mv	t2, a0
+	lw	a0, 0(t2)
+	sw	a0, -1608(s0)
+	addi	t1, s0, -676
+	sw	a0, 0(t1)
+	addi	t1, s0, -680
+	lw	a0, -840(s0)
+	sw	a0, 0(t1)
 	addi	t1, s0, -684
-	lw	a0, -1584(s0)
+	lw	a0, -848(s0)
+	sw	a0, 0(t1)
+.L_wh_pseudo_md5_30:
+	addi	t0, s0, -676
+	lw	a0, 0(t0)
+	sw	a0, -1616(s0)
+	addi	t0, s0, -684
+	lw	a0, 0(t0)
+	sw	a0, -1624(s0)
+	mv	t2, a0
+	sext.w	t2, t2
+	lw	a0, -1616(s0)
+	sext.w	a0, a0
+	slt	a0, t2, a0
+	sw	a0, -1632(s0)
+	lw	a0, -1632(s0)
+	beqz	a0, .L_whe_pseudo_md5_31
+	addi	t0, s0, -84
+	lw	a0, 0(t0)
+	sw	a0, -1640(s0)
+	lw	a0, -1640(s0)
+	sext.w	a0, a0
+	mv	t4, a0
+	mv	a0, t4
+	call	rotl1
+	sw	a0, -1648(s0)
+	addi	t1, s0, -84
+	sw	a0, 0(t1)
+	addi	t0, s0, -684
+	lw	a0, 0(t0)
+	sw	a0, -1656(s0)
+	addiw	a0, a0, 1
+	sw	a0, -1664(s0)
+	addi	t1, s0, -684
 	sw	a0, 0(t1)
 	j	.L_wh_pseudo_md5_30
 .L_whe_pseudo_md5_31:
-	lw	a0, -84(s0)
-	lw	a0, -64(s0)
-	lw	t2, -84(s0)
+	addi	t0, s0, -84
+	lw	a0, 0(t0)
+	sw	a0, -1672(s0)
+	addi	t0, s0, -64
+	lw	a0, 0(t0)
+	sw	a0, -1680(s0)
+	lw	t2, -1672(s0)
 	addw	a0, t2, a0
-	sw	a0, -1608(s0)
+	sw	a0, -1688(s0)
 	addi	t1, s0, -84
-	lw	a0, -1608(s0)
 	sw	a0, 0(t1)
-	lw	a0, -72(s0)
+	addi	t0, s0, -72
+	lw	a0, 0(t0)
+	sw	a0, -1696(s0)
 	addi	t1, s0, -60
 	sw	a0, 0(t1)
-	lw	a0, -68(s0)
+	addi	t0, s0, -68
+	lw	a0, 0(t0)
+	sw	a0, -1704(s0)
 	addi	t1, s0, -72
 	sw	a0, 0(t1)
-	lw	a0, -64(s0)
+	addi	t0, s0, -64
+	lw	a0, 0(t0)
+	sw	a0, -1712(s0)
 	addi	t1, s0, -68
 	sw	a0, 0(t1)
 	addi	t1, s0, -64
-	lw	a0, -84(s0)
+	lw	a0, -1688(s0)
 	sw	a0, 0(t1)
-	lw	a0, -600(s0)
+	addi	t0, s0, -600
+	lw	a0, 0(t0)
+	sw	a0, -1720(s0)
 	addiw	a0, a0, 1
-	sw	a0, -1648(s0)
+	sw	a0, -1728(s0)
 	addi	t1, s0, -600
-	lw	a0, -1648(s0)
 	sw	a0, 0(t1)
 	j	.L_wh_pseudo_md5_22
 .L_whe_pseudo_md5_23:
-	lw	a0, -44(s0)
-	lw	a0, -60(s0)
-	lw	t2, -44(s0)
-	addw	a0, t2, a0
-	sw	a0, -720(s0)
-	addi	t1, s0, -44
-	lw	a0, -720(s0)
-	sw	a0, 0(t1)
-	lw	a0, -48(s0)
-	lw	a0, -64(s0)
-	lw	t2, -48(s0)
-	addw	a0, t2, a0
+	addi	t0, s0, -44
+	lw	a0, 0(t0)
 	sw	a0, -752(s0)
+	addi	t0, s0, -60
+	lw	a0, 0(t0)
+	sw	a0, -760(s0)
+	lw	t2, -752(s0)
+	addw	a0, t2, a0
+	sw	a0, -768(s0)
+	addi	t1, s0, -44
+	sw	a0, 0(t1)
+	addi	t0, s0, -48
+	lw	a0, 0(t0)
+	sw	a0, -808(s0)
+	addi	t0, s0, -64
+	lw	a0, 0(t0)
+	sw	a0, -816(s0)
+	lw	t2, -808(s0)
+	addw	a0, t2, a0
+	sw	a0, -824(s0)
 	addi	t1, s0, -48
-	lw	a0, -752(s0)
 	sw	a0, 0(t1)
-	lw	a0, -52(s0)
-	lw	a0, -68(s0)
-	lw	t2, -52(s0)
+	addi	t0, s0, -52
+	lw	a0, 0(t0)
+	sw	a0, -832(s0)
+	addi	t0, s0, -68
+	lw	a0, 0(t0)
+	sw	a0, -840(s0)
+	lw	t2, -832(s0)
 	addw	a0, t2, a0
-	sw	a0, -1672(s0)
+	sw	a0, -848(s0)
 	addi	t1, s0, -52
-	lw	a0, -1672(s0)
 	sw	a0, 0(t1)
-	lw	a0, -56(s0)
-	lw	a0, -72(s0)
-	lw	t2, -56(s0)
+	addi	t0, s0, -56
+	lw	a0, 0(t0)
+	sw	a0, -856(s0)
+	addi	t0, s0, -72
+	lw	a0, 0(t0)
+	sw	a0, -864(s0)
+	lw	t2, -856(s0)
 	addw	a0, t2, a0
-	sw	a0, -1696(s0)
+	sw	a0, -1736(s0)
 	addi	t1, s0, -56
-	lw	a0, -1696(s0)
 	sw	a0, 0(t1)
-	lw	a0, -608(s0)
+	addi	t0, s0, -608
+	lw	a0, 0(t0)
+	sw	a0, -1744(s0)
 	addiw	a0, a0, 64
-	sw	a0, -1712(s0)
+	sw	a0, -1752(s0)
 	addi	t1, s0, -608
-	lw	a0, -1712(s0)
 	sw	a0, 0(t1)
 	j	.L_wh_pseudo_md5_18
 .L_whe_pseudo_md5_19:
+	addi	t0, s0, -44
+	lw	a0, 0(t0)
+	sw	a0, -696(s0)
 	ld	a0, -40(s0)
-	sd	a0, -696(s0)
-	lw	a0, -44(s0)
-	ld	t1, -696(s0)
+	sd	a0, -704(s0)
+	mv	t1, a0
+	lw	a0, -696(s0)
 	sw	a0, 0(t1)
-	li	a0, 4
+	addi	t0, s0, -48
+	lw	a0, 0(t0)
 	sw	a0, -712(s0)
 	ld	a0, -40(s0)
 	sd	a0, -720(s0)
+	li	a0, 4
+	sw	a0, -728(s0)
 	ld	a0, -720(s0)
 	addi	a0, a0, 4
-	sd	a0, -728(s0)
-	lw	a0, -48(s0)
-	ld	t1, -728(s0)
+	sd	a0, -736(s0)
+	mv	t1, a0
+	lw	a0, -712(s0)
 	sw	a0, 0(t1)
-	li	a0, 8
+	addi	t0, s0, -52
+	lw	a0, 0(t0)
 	sw	a0, -744(s0)
 	ld	a0, -40(s0)
 	sd	a0, -752(s0)
+	li	a0, 8
+	sw	a0, -760(s0)
 	ld	a0, -752(s0)
 	addi	a0, a0, 8
-	sd	a0, -760(s0)
-	lw	a0, -52(s0)
-	ld	t1, -760(s0)
+	sd	a0, -768(s0)
+	mv	t1, a0
+	lw	a0, -744(s0)
 	sw	a0, 0(t1)
-	li	a0, 12
+	addi	t0, s0, -56
+	lw	a0, 0(t0)
 	sw	a0, -776(s0)
 	ld	a0, -40(s0)
 	sd	a0, -784(s0)
+	li	a0, 12
+	sw	a0, -792(s0)
 	ld	a0, -784(s0)
 	addi	a0, a0, 12
-	sd	a0, -792(s0)
-	lw	a0, -56(s0)
-	ld	t1, -792(s0)
+	sd	a0, -800(s0)
+	mv	t1, a0
+	lw	a0, -776(s0)
 	sw	a0, 0(t1)
 	j	.Lreturn_pseudo_md5_8
 .Lreturn_pseudo_md5_8:
-	ld	s11, -1800(s0)
-	ld	s10, -1792(s0)
-	ld	s9, -1784(s0)
-	ld	s8, -1776(s0)
-	ld	s7, -1768(s0)
-	ld	s6, -1760(s0)
-	ld	s5, -1752(s0)
-	ld	s4, -1744(s0)
-	ld	s3, -1736(s0)
-	ld	s2, -1728(s0)
-	ld	s1, -1720(s0)
 	ld	ra, -8(s0)
 	ld	t0, -16(s0)
 	mv	sp, s0
@@ -1687,7 +1673,8 @@ pseudo_md5:
 	.type	pseudo_sha1, @function
 pseudo_sha1:
 	addi	sp, sp, -432
-	addi	t0, sp, 432
+	li	t0, 432
+	add	t0, sp, t0
 	sd	ra, -8(t0)
 	sd	s0, -16(t0)
 	mv	s0, t0
@@ -2374,7 +2361,8 @@ pseudo_sha1:
 	.type	main, @function
 main:
 	addi	sp, sp, -80
-	addi	t0, sp, 80
+	li	t0, 80
+	add	t0, sp, t0
 	sd	ra, -8(t0)
 	sd	s0, -16(t0)
 	mv	s0, t0
