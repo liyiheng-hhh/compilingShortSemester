@@ -230,7 +230,10 @@ public:
     // 6. 重命名变量
     renameVariables();
 
-    // 7. 清理原 StoreLocal/LoadLocal
+    // 7. 物化 Phi 指令（关键修复：让 Phi 真正出现在 IR 中）
+    materializePhis();
+
+    // 8. 清理剩余的 LoadLocal/StoreLocal
     cleanup();
 
     return true;
@@ -402,13 +405,57 @@ public:
     }
   }
 
-  // 清理并插入 Phi 指令
-  void cleanup() {
-    // 将 Phi 节点插入到基本块开头
-    // 简化：我们不实际插入 Phi 指令到 IR，而是依赖寄存器分配处理
-    // 实际实现中，这里应该将 Phi 转换为 Copy 或并行移动
+  // 物化 Phi 节点：在基本块开头插入真正的 IROp::Phi 指令
+  void materializePhis() {
+    if (phis.empty()) return;
 
-    // 清理剩余的 LoadLocal/StoreLocal
+    // 按 block 分组已有的 Phi
+    vector<vector<int>> phisByBlock(fn->blocks.size());
+    for (size_t i = 0; i < phis.size(); ++i) {
+      phisByBlock[phis[i].blockIdx].push_back(static_cast<int>(i));
+    }
+
+    // 从后往前处理块，避免插入后索引偏移
+    for (int b = static_cast<int>(fn->blocks.size()) - 1; b >= 0; --b) {
+      const auto &phiIdxs = phisByBlock[b];
+      if (phiIdxs.empty()) continue;
+
+      auto &blk = fn->blocks[b];
+      // 找到插入点：跳过开头的 Label
+      int insertPos = blk.begin;
+      if (insertPos < blk.end && fn->insts[insertPos].op == IROp::Label) {
+        ++insertPos;
+      }
+
+      // 为每个 Phi 构造指令并插入
+      for (int phiIdx : phiIdxs) {
+        const auto &p = phis[phiIdx];
+        IRInst phiInst;
+        phiInst.op = IROp::Phi;
+        phiInst.dst = p.dstVreg;
+        phiInst.sym = p.var;  // 保留符号信息供调试/分配使用
+
+        // 把前驱 vreg 存到 args 里（Phi 的操作数）
+        phiInst.args.clear();
+        for (int v : p.vregs) {
+          phiInst.args.push_back(v);
+        }
+
+        fn->insts.insert(fn->insts.begin() + insertPos, phiInst);
+        ++blk.end;  // 当前块范围扩大
+        ++insertPos;
+
+        // 更新后续所有块的 begin/end
+        for (size_t bb = static_cast<size_t>(b) + 1; bb < fn->blocks.size(); ++bb) {
+          fn->blocks[bb].begin++;
+          fn->blocks[bb].end++;
+        }
+      }
+    }
+  }
+
+  // 清理剩余的 LoadLocal/StoreLocal
+  void cleanup() {
     for (auto &inst : fn->insts) {
       if ((inst.op == IROp::LoadLocal || inst.op == IROp::StoreLocal) &&
           isPromotable(inst.sym)) {
