@@ -2147,10 +2147,8 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
     irCanonicalizeLoadGlobalInBlocks(fn);
     irRefreshCFG(fn);
   }
-  // SSA Mem2Reg：默认关闭（部分用例如 huffman/shuffle 会在 rename 阶段触发编译器 SIGSEGV）
-  // 开启：SYSY_CC_ENABLE_MEM2REG=1；显式关闭：SYSY_CC_NO_MEM2REG=1
-  if (envFlagTruthy("SYSY_CC_ENABLE_MEM2REG") &&
-      !envFlagTruthy("SYSY_CC_NO_MEM2REG")) {
+  // SSA Mem2Reg：默认开启；显式关闭：SYSY_CC_NO_MEM2REG=1
+  if (!envFlagTruthy("SYSY_CC_NO_MEM2REG")) {
     irMem2Reg(fn);
     irRefreshCFG(fn);
   }

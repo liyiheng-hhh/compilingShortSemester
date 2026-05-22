@@ -54,17 +54,19 @@ struct DominatorTree {
     rpo.reserve(n);
     vector<bool> vis(n, false);
     function<void(int)> dfs = [&](int u) {
+      if (u < 0 || u >= n || vis[u]) return;
       vis[u] = true;
       for (int v : succ[u]) {
-        if (!vis[v]) dfs(v);
+        if (v >= 0 && v < n && !vis[v]) dfs(v);
       }
       rpo.push_back(u);
     };
     dfs(0);
 
     vector<int> order(n, -1);
-    for (int i = 0; i < n; i++) {
-      order[rpo[i]] = i;
+    for (int i = 0; i < static_cast<int>(rpo.size()); i++) {
+      int b = rpo[i];
+      if (b >= 0 && b < n) order[b] = i;
     }
 
     auto intersect = [&](int b1, int b2) {
@@ -92,6 +94,7 @@ struct DominatorTree {
       // 按逆后序遍历（Cooper 算法要求）
       for (int ri = static_cast<int>(rpo.size()) - 1; ri >= 1; --ri) {
         int b = rpo[static_cast<size_t>(ri)];
+        if (b == 0) continue; // 入口块 idom 恒为自身，勿被回边前驱改写
         if (preds[b].empty()) continue;
 
         int newIdom = -1;
@@ -110,7 +113,8 @@ struct DominatorTree {
       }
     }
 
-    for (int i = 0; i < n; i++) {
+    idom[0] = 0;
+    for (int i = 1; i < n; i++) {
       if (idom[i] < 0) idom[i] = 0;
     }
     for (int i = 1; i < n; i++) {
@@ -412,10 +416,18 @@ public:
   void renameVariables(const unordered_set<Symbol *> &skipSyms) {
     int nVars = static_cast<int>(variables.size());
     nameStack.assign(nVars, {});
-    renameBlock(0, skipSyms);
+    vector<uint8_t> onStack(static_cast<size_t>(fn->blocks.size()), 0);
+    renameBlock(0, skipSyms, onStack);
   }
 
-  void renameBlock(int blockIdx, const unordered_set<Symbol *> &skipSyms) {
+  void renameBlock(int blockIdx, const unordered_set<Symbol *> &skipSyms,
+                   vector<uint8_t> &onStack) {
+    if (blockIdx < 0 || blockIdx >= static_cast<int>(onStack.size()) ||
+        onStack[static_cast<size_t>(blockIdx)]) {
+      return;
+    }
+    onStack[static_cast<size_t>(blockIdx)] = 1;
+
     int nVars = static_cast<int>(variables.size());
 
     vector<int> stackHeights(nVars);
@@ -426,7 +438,9 @@ public:
     for (int phiIdx : blockPhis[blockIdx]) {
       auto &phi = phis[phiIdx];
       if (phi.var && skipSyms.count(phi.var)) continue;
-      int vidx = varIndex[phi.var];
+      auto vit = varIndex.find(phi.var);
+      if (vit == varIndex.end()) continue;
+      int vidx = vit->second;
       nameStack[vidx].push_back(phi.dstVreg);
     }
 
@@ -462,7 +476,9 @@ public:
       for (int phiIdx : blockPhis[succ]) {
         auto &phi = phis[phiIdx];
         if (phi.var && skipSyms.count(phi.var)) continue;
-        int vidx = varIndex[phi.var];
+        auto vit = varIndex.find(phi.var);
+        if (vit == varIndex.end()) continue;
+        int vidx = vit->second;
 
         for (size_t i = 0; i < phi.preds.size(); i++) {
           if (phi.preds[i] == blockIdx) {
@@ -478,7 +494,7 @@ public:
     }
 
     for (int child : dt.children[blockIdx]) {
-      renameBlock(child, skipSyms);
+      renameBlock(child, skipSyms, onStack);
     }
 
     for (int v = 0; v < nVars; v++) {
@@ -486,6 +502,7 @@ public:
         nameStack[v].pop_back();
       }
     }
+    onStack[static_cast<size_t>(blockIdx)] = 0;
   }
 
   // 将 Phi 降低为各前驱块末尾的 Copy（codegen 不处理 IROp::Phi）
