@@ -1,5 +1,4 @@
 #include "RvPasses.h"
-#include "../opt/LoopPasses.h"
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -49,23 +48,6 @@ bool envEnabled(const char *name, bool fallback) {
   if (std::strcmp(v, "0") == 0 || std::strcmp(v, "false") == 0)
     return false;
   return true;
-}
-
-void hoistLi(LoopInfo *loop) {
-  for (auto subloop : loop->subloops)
-    hoistLi(subloop);
-
-  if (!loop->preheader)
-    return;
-  auto term = loop->preheader->getLastOp();
-
-  for (auto bb : loop->bbs) {
-    auto ops = bb->getOps();
-    for (auto op : ops) {
-      if (isa<LiOp>(op))
-        op->moveBefore(term);
-    }
-  }
 }
 
 }
@@ -244,6 +226,9 @@ int StrengthReduct::runImpl() {
     }
     return false;
   });
+
+  if (!envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_DIV", false))
+    return converted;
 
   // ===================
   // Rewrite DivOp.
@@ -471,16 +456,4 @@ void StrengthReduct::run() {
     converted = runImpl();
     convertedTotal += converted;
   } while (converted);
-
-  // After conversion, we might produce more `li`s.
-  // We can pull them out of loop.
-  LoopAnalysis analysis(module);
-  analysis.run();
-  auto forests = analysis.getResult();
-  for (const auto &[func, forest] : forests) {
-    for (auto loop : forest.getLoops()) {
-      if (!loop->getParent())
-        hoistLi(loop);
-    }
-  }
 }
