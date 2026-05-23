@@ -16,8 +16,10 @@
 #include "hir/HIRRowScratchMatmul.h"
 #include "hir/HIRLoopTransform.h"
 #include "rv/rv_passes.h"
+#include "dialect_pipeline.h"
 
 #include <iostream>
+#include <sstream>
 #include <string>
 
 using namespace std;
@@ -33,6 +35,32 @@ static bool endsWithSy(const string &path) {
 
 static int compileFile(const string &input, const string &output, bool optO1) {
   string source = readFile(input);
+  if (optO1 && sys::dialectPipelineEnabled()) {
+    vector<string> errors;
+    auto mod = sys::buildDialectModuleFromSource(source, errors);
+    if (!mod) {
+      for (const auto &e : errors)
+        cerr << "compiler: " << e << "\n";
+      return 1;
+    }
+    const bool sched = !envFlagTruthy("SYSY_RV_DISABLE_SCHEDULE");
+    string asmText = sys::emitDialectModuleAsm(mod.get(), sched);
+    if (optO1 && !envFlagTruthy("SYSY_CC_NO_RV_ASM_PASSES")) {
+      vector<string> lines;
+      istringstream iss(asmText);
+      string line;
+      while (getline(iss, line))
+        lines.push_back(line);
+      rv::runRvAsmPasses(lines);
+      ostringstream oss;
+      for (const auto &l : lines)
+        oss << l << '\n';
+      asmText = oss.str();
+    }
+    writeFile(output, asmText);
+    return 0;
+  }
+
   Lexer lexer(source);
   Parser parser(lexer.run());
   Program program = parser.parseProgram();

@@ -15,7 +15,22 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/pa
 	$(SRCDIR)/hir/HIROps.cpp $(SRCDIR)/hir/HIRBuilder.cpp $(SRCDIR)/hir/HIRLowering.cpp \
 	$(SRCDIR)/hir/HIRRowScratchMatmul.cpp $(SRCDIR)/hir/HIRLoopTransform.cpp \
 	$(SRCDIR)/rv/rv_asm.cpp $(SRCDIR)/rv/rv_passes.cpp $(SRCDIR)/rv/RegPeephole.cpp \
-	$(SRCDIR)/rv/InstCombine.cpp $(SRCDIR)/rv/Schedule.cpp $(SRCDIR)/rv/StrengthReduct.cpp
+	$(SRCDIR)/rv/InstCombine.cpp $(SRCDIR)/rv/Schedule.cpp $(SRCDIR)/rv/StrengthReduct.cpp \
+	$(SRCDIR)/codegen/OpBase.cpp $(SRCDIR)/codegen/Attrs.cpp $(SRCDIR)/codegen/CodeGen.cpp \
+	$(SRCDIR)/opt/Pass.cpp $(SRCDIR)/opt/GVN.cpp \
+	$(SRCDIR)/mlir_rv/Lower.cpp $(SRCDIR)/mlir_rv/InstCombine.cpp $(SRCDIR)/mlir_rv/RvDCE.cpp \
+	$(SRCDIR)/mlir_rv/Schedule.cpp $(SRCDIR)/mlir_rv/RegAlloc.cpp $(SRCDIR)/mlir_rv/RegPeephole.cpp \
+	$(SRCDIR)/mlir_rv/Dump.cpp \
+	$(SRCDIR)/rv_mlir_pipeline.cpp \
+	$(SRCDIR)/dialect_pipeline.cpp \
+	$(SRCDIR)/dialect_parse/Lexer.cpp $(SRCDIR)/dialect_parse/Parser.cpp \
+	$(SRCDIR)/dialect_parse/Sema.cpp $(SRCDIR)/dialect_parse/Type.cpp \
+	$(SRCDIR)/dialect_hir/DhirOps.cpp $(SRCDIR)/dialect_hir/DhirBuilder.cpp \
+	$(SRCDIR)/cfg/HIRToCFG.cpp $(SRCDIR)/cfg/CFGOps.cpp $(SRCDIR)/cfg/CFGToLegacy.cpp \
+	$(SRCDIR)/cfg/CFGLegality.cpp $(SRCDIR)/cfg/CFGVerifier.cpp \
+	$(SRCDIR)/opt/PassManager.cpp $(SRCDIR)/opt/Mem2Reg.cpp $(SRCDIR)/opt/RegularFold.cpp \
+	$(SRCDIR)/opt/DCE.cpp $(SRCDIR)/opt/SimplifyCFG.cpp $(SRCDIR)/opt/CallGraph.cpp \
+	$(SRCDIR)/utils/Matcher.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 all: compiler
@@ -96,7 +111,7 @@ perf-profile: compiler
 #   make runtime-gate PERF_TIMEOUT=20
 #   make docker-runtime-perf
 #   make docker-runtime-gate
-# Sisyphus 风格：支持直接链接 runtime .c 或预编译的 libsysy.a
+# 支持直接链接 runtime .c 或预编译 libsysy.a
 RUNTIME_C ?= runtime/sysy_runtime.c
 RUNTIME_O ?= runtime/sysy_runtime.o
 
@@ -104,7 +119,7 @@ libsysy.a: $(RUNTIME_C)
 	riscv64-linux-gnu-gcc -Wall -O3 -c -o $(RUNTIME_O) $(RUNTIME_C)
 	riscv64-linux-gnu-ar rcs $@ $(RUNTIME_O)
 
-# 直接链接 runtime .c（Sisyphus 风格，避免静态库兼容性问题）
+# 直接链接 runtime .c（避免部分环境下静态库兼容问题）
 link-runtime-c: $(RUNTIME_C)
 	@echo "$(RUNTIME_C)"
 	riscv64-linux-gnu-ranlib $@

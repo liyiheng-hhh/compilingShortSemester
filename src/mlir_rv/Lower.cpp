@@ -1,0 +1,474 @@
+#include "RvPasses.h"
+#include "RvOps.h"
+#include "RvAttrs.h"
+#include "../codegen/CodeGen.h"
+#include "../codegen/Attrs.h"
+
+using namespace sys::rv;
+using namespace sys;
+
+static void remapAliasAttrBases(FuncOp *func, const std::map<Op *, Op *> &repl) {
+  if (repl.empty()) return;
+  for (auto *bb : func->getRegion()->getBlocks()) {
+    for (auto *op : bb->getOps()) {
+      auto *aa = op->find<AliasAttr>();
+      if (!aa || aa->unknown) continue;
+      std::map<Op *, std::vector<int>> next;
+      for (auto &[base, offs] : aa->location) {
+        Op *nb = base;
+        if (auto it = repl.find(base); it != repl.end()) nb = it->second;
+        auto &vec = next[nb];
+        vec.insert(vec.end(), offs.begin(), offs.end());
+      }
+      aa->location = std::move(next);
+    }
+  }
+}
+
+// Combines all alloca's into a SubSpOp.
+// Also rewrites load/stores with sp-offset.
+static void rewriteAlloca(FuncOp *func) {
+  Builder builder;
+
+  auto region = func->getRegion();
+  auto block = region->getFirstBlock();
+
+  // All alloca's are in the first block.
+  size_t offset = 0; // Offset from sp.
+  size_t total = 0; // Total stack frame size
+  std::vector<AllocaOp *> allocas;
+  for (auto op : block->getOps()) {
+    if (!isa<AllocaOp>(op))
+      continue;
+
+    size_t size = SIZE(op);
+    total += size;
+    allocas.push_back(cast<AllocaOp>(op));
+  }
+
+  std::map<Op *, Op *> aliasBaseRemap;
+  Op *stackSp = nullptr;
+
+  for (auto op : allocas) {
+    // Translate itself into `sp + offset`.
+    builder.setBeforeOp(op);
+    auto spValue = builder.create<ReadRegOp>(Value::i32, { new RegAttr(Reg::sp) });
+    if (!stackSp) stackSp = spValue;
+    aliasBaseRemap[op] = stackSp;
+    auto offsetValue = builder.create<LiOp>({ new IntAttr(static_cast<int>(offset)) });
+    auto add = builder.create<AddOp>({ spValue, offsetValue });
+    op->replaceAllUsesWith(add);
+
+    size_t size = SIZE(op);
+    offset += size;
+    op->erase();
+  }
+
+  remapAliasAttrBases(func, aliasBaseRemap);
+  func->add<StackOffsetAttr>(total);
+}
+
+// Move block-local constants before their first use (fixes latch-defined loop constants).
+static void hoistBlockConstants(FuncOp *func) {
+  for (auto *bb : func->getRegion()->getBlocks()) {
+    for (;;) {
+      std::vector<Op *> order;
+      for (auto *op : bb->getOps()) order.push_back(op);
+      bool moved = false;
+      for (size_t di = 0; di < order.size(); ++di) {
+        Op *def = order[di];
+        if (!isa<LiOp>(def) && !isa<IntOp>(def)) continue;
+        size_t firstUse = order.size();
+        for (size_t ui = 0; ui < order.size(); ++ui) {
+          for (auto v : order[ui]->getOperands()) {
+            if (v.defining == def && ui < firstUse) firstUse = ui;
+          }
+        }
+        if (firstUse < di) {
+          def->moveBefore(order[firstUse]);
+          moved = true;
+          break;
+        }
+      }
+      if (!moved) break;
+    }
+  }
+}
+
+#define REPLACE(BeforeTy, AfterTy) \
+  runRewriter([&](BeforeTy *op) { \
+    builder.replace<AfterTy>(op, op->getOperands(), op->getAttrs()); \
+    return true; \
+  });
+
+
+void Lower::run() {
+  Builder builder;
+
+  // First fix type of phi's.
+  // If a phi has an operand of float type, then itself must also be of float type.
+  runRewriter([&](PhiOp *op) {
+    if (op->getResultType() == Value::f32)
+      return false;
+
+    for (auto operand : op->getOperands()) {
+      if (operand.defining->getResultType() == Value::f32) {
+        op->setResultType(Value::f32);
+        return true;
+      }
+    }
+
+    return false;
+  });
+
+  // When `x` is 0 or 1, we have:
+  //   x ? y : z = (-x & y) | ((x - 1) & z)
+  //
+  // It's 7 ops though, so I strongly suspect branches will be better.
+  // Here I'll use branches.
+  runRewriter([&](SelectOp *op) {
+    auto x = op->DEF(0), y = op->DEF(1), z = op->DEF(2);
+    auto parent = op->getParent();
+    auto region = parent->getParent();
+    auto tgt = region->appendBlock();
+    auto bb1 = region->appendBlock();
+    auto bb2 = region->appendBlock();
+
+    parent->splitOpsAfter(tgt, op);
+    tgt->moveAfter(parent);
+    bb1->moveBefore(tgt);
+    bb2->moveBefore(tgt);
+
+    // Create a branch at the end of `parent`.
+    builder.setToBlockEnd(parent);
+    builder.create<BranchOp>({ x }, { new TargetAttr(bb1), new ElseAttr(bb2) });
+
+    // Create goto's.
+    builder.setToBlockEnd(bb1);
+    builder.create<GotoOp>({ new TargetAttr(tgt) });
+
+    builder.setToBlockEnd(bb2);
+    builder.create<GotoOp>({ new TargetAttr(tgt) });
+
+    // Replace with a phi.
+    builder.replace<PhiOp>(op, { y, z }, { new FromAttr(bb1), new FromAttr(bb2) });
+
+    // For every successor after `parent`, their operand now come from `tgt`.
+    for (auto succ : parent->succs) {
+      auto phis = succ->getPhis();
+      for (auto phi : phis) {
+        for (auto attr : phi->getAttrs()) {
+          if (FROM(attr) == parent)
+            FROM(attr) = tgt;
+        }
+      }
+      succ->preds.erase(parent);
+      succ->preds.insert(tgt);
+    }
+    // Update successors/predecessors
+    tgt->succs = parent->succs;
+    parent->succs = { bb1, bb2 };
+    return false;
+  });
+  
+  REPLACE(IntOp, LiOp);
+  REPLACE(AddIOp, AddwOp);
+  REPLACE(AddLOp, AddOp);
+  REPLACE(SubIOp, SubwOp);
+  REPLACE(SubLOp, SubOp);
+  REPLACE(MulIOp, MulwOp);
+  REPLACE(MulLOp, MulOp);
+  REPLACE(MulshOp, MulhOp);
+  REPLACE(MuluhOp, MulhuOp);
+  REPLACE(DivIOp, DivwOp);
+  REPLACE(DivLOp, DivOp);
+  REPLACE(ModIOp, RemwOp);
+  REPLACE(ModLOp, RemOp);
+  REPLACE(LShiftOp, SllwOp);
+  REPLACE(LShiftLOp, SllOp);
+  REPLACE(RShiftOp, SrawOp);
+  REPLACE(RShiftLOp, SraOp);
+  REPLACE(GotoOp, JOp);
+  REPLACE(GetGlobalOp, LaOp);
+  REPLACE(AndIOp, AndOp);
+  REPLACE(OrIOp, OrOp);
+  REPLACE(XorIOp, XorOp);
+  REPLACE(AddFOp, FaddOp);
+  REPLACE(SubFOp, FsubOp);
+  REPLACE(MulFOp, FmulOp);
+  REPLACE(DivFOp, FdivOp);
+  REPLACE(LtFOp, FltOp);
+  REPLACE(EqFOp, FeqOp);
+  REPLACE(LeFOp, FleOp);
+  REPLACE(F2IOp, FcvtwsRtzOp);
+  REPLACE(I2FOp, FcvtswOp);
+  
+  runRewriter([&](FloatOp *op) {
+    float value = F(op);
+    
+    builder.setBeforeOp(op);
+    // Strict aliasing? Don't know.
+    auto li = builder.create<LiOp>({ new IntAttr(*(int*) &value) });
+    builder.replace<FmvwxOp>(op, { li });
+    return true;
+  });
+
+  runRewriter([&](MinusOp *op) {
+    auto value = op->getOperand();
+    
+    builder.setBeforeOp(op);
+    auto zero = builder.create<LiOp>({ new IntAttr(0) });
+    builder.replace<SubOp>(op, { zero, value }, op->getAttrs());
+    return true;
+  });
+
+  runRewriter([&](MinusFOp *op) {
+    auto value = op->getOperand();
+    
+    builder.setBeforeOp(op);
+    auto zero = builder.create<LiOp>({ new IntAttr(0) });
+    auto zerof = builder.create<FmvwxOp>({ zero });
+    builder.replace<FsubOp>(op, { zerof, value }, op->getAttrs());
+    return true;
+  });
+
+  runRewriter([&](ModIOp *op) {
+    auto denom = op->getOperand(0);
+    auto nom = op->getOperand(1);
+
+    builder.setBeforeOp(op);
+    auto quot = builder.create<DivwOp>(op->getOperands(), op->getAttrs());
+    auto mul = builder.create<MulwOp>({ quot, nom });
+    builder.replace<SubOp>(op, { denom, mul });
+    return true;
+  });
+  
+  runRewriter([&](ModFOp *op) {
+    auto denom = op->getOperand(0);
+    auto nom = op->getOperand(1);
+
+    builder.setBeforeOp(op);
+    auto quot = builder.create<FdivOp>(op->getOperands(), op->getAttrs());
+    auto mul = builder.create<FmulOp>({ quot, nom });
+    builder.replace<FsubOp>(op, { denom, mul });
+    return true;
+  });
+
+  runRewriter([&](SetNotZeroOp *op) {
+    if (op->DEF()->getResultType() == Value::f32) {
+      builder.setBeforeOp(op);
+      auto zero = builder.create<LiOp>({ new IntAttr(0) });
+      auto zerof = builder.create<FmvwxOp>({ zero });
+      auto iszero = builder.create<FeqOp>({ op->getOperand(), zerof });
+      builder.replace<SeqzOp>(op, { iszero });
+      return true;
+    }
+
+    builder.replace<SnezOp>(op, op->getOperands(), op->getAttrs());
+    return true;
+  });
+
+  runRewriter([&](NotOp *op) {
+    if (op->DEF()->getResultType() == Value::f32) {
+      builder.setBeforeOp(op);
+      auto zero = builder.create<LiOp>({ new IntAttr(0) });
+      auto zerof = builder.create<FmvwxOp>({ zero });
+      builder.replace<FeqOp>(op, { op->getOperand(), zerof });
+      return true;
+    }
+
+    builder.replace<SeqzOp>(op, op->getOperands(), op->getAttrs());
+    return true;
+  });
+
+  runRewriter([&](BranchOp *op) {
+    auto cond = op->getOperand().defining;
+
+    if (isa<EqOp>(cond)) {
+      builder.replace<BeqOp>(op, cond->getOperands(), op->getAttrs());
+      return true;
+    }
+
+    if (isa<NeOp>(cond)) {
+      builder.replace<BneOp>(op, cond->getOperands(), op->getAttrs());
+      return true;
+    }
+
+    // Note RISC-V only has `bge`. Switch operand order for this.
+    if (isa<LeOp>(cond)) {
+      auto v1 = cond->getOperand(0);
+      auto v2 = cond->getOperand(1);
+      builder.replace<BgeOp>(op, { v2, v1 }, op->getAttrs());
+      return true;
+    }
+
+    if (isa<LtOp>(cond)) {
+      builder.replace<BltOp>(op, cond->getOperands(), op->getAttrs());
+      return true;
+    }
+
+    builder.setBeforeOp(op);
+    auto zero = builder.create<ReadRegOp>(Value::i32, { new RegAttr(Reg::zero) });
+    builder.replace<BneOp>(op, { cond, zero }, op->getAttrs());
+    return true;
+  });
+
+  // Delay these after selection of BranchOp.
+  REPLACE(LtOp, SltOp);
+
+  runRewriter([&](EqOp *op) {
+    builder.setBeforeOp(op);
+    // 'xor' is a keyword of C++.
+    auto xorOp = builder.create<XorOp>(op->getOperands(), op->getAttrs());
+    builder.replace<SeqzOp>(op,{ xorOp });
+    return true;
+  });
+
+  runRewriter([&](NeOp *op) {
+    builder.setBeforeOp(op);
+    // 'xor' is a keyword of C++.
+    auto xorOp = builder.create<XorOp>(op->getOperands(), op->getAttrs());
+    builder.replace<SnezOp>(op,{ xorOp });
+    return true;
+  });
+
+  runRewriter([&](NeFOp *op) {
+    builder.setBeforeOp(op);
+    auto feq = builder.create<FeqOp>(op->getOperands(), op->getAttrs());
+    builder.replace<SeqzOp>(op, { feq });
+    return true;
+  });
+
+  runRewriter([&](LeOp *op) {
+    builder.setBeforeOp(op);
+    auto l = op->getOperand(0);
+    auto r = op->getOperand(1);
+    // Turn (l <= r) into !(r < l).
+    auto xorOp = builder.create<SltOp>({ r, l }, op->getAttrs());
+    builder.replace<SeqzOp>(op,{ xorOp });
+    return true;
+  });
+
+  runRewriter([&](sys::LoadOp *op) {
+    auto load = builder.replace<sys::rv::LoadOp>(op, op->getResultType(), op->getOperands(), op->getAttrs());
+    load->add<IntAttr>(0);
+    return true;
+  });
+
+  runRewriter([&](sys::StoreOp *op) {
+    auto store = builder.replace<sys::rv::StoreOp>(op, op->getOperands(), op->getAttrs());
+    store->add<IntAttr>(0);
+    return true;
+  });
+
+  runRewriter([&](ReturnOp *op) {
+    builder.setBeforeOp(op);
+
+    if (op->getOperands().size()) {
+      auto fp = op->DEF(0)->getResultType() == Value::f32;
+      auto virt = builder.create<WriteRegOp>(op->getOperands(), {
+        new RegAttr(fp ? Reg::fa0 : Reg::a0)
+      });
+      builder.replace<RetOp>(op, { virt });
+      return true;
+    }
+    
+    builder.replace<RetOp>(op);
+    return true;
+  });
+
+  const static Reg regs[] = {
+    Reg::a0, Reg::a1, Reg::a2, Reg::a3,
+    Reg::a4, Reg::a5, Reg::a6, Reg::a7,
+  };
+  const static Reg fregs[] = {
+    Reg::fa0, Reg::fa1, Reg::fa2, Reg::fa3,
+    Reg::fa4, Reg::fa5, Reg::fa6, Reg::fa7,
+  };
+
+  runRewriter([&](sys::CallOp *op) {
+    builder.setBeforeOp(op);
+    const auto &args = op->getOperands();
+
+    auto freezeArgIfSp = [&](Value arg) -> Value {
+      auto *def = arg.defining;
+      if (!def || !isa<ReadRegOp>(def) || REG(def) != Reg::sp)
+        return arg;
+      // Snapshot stack-pointer based arguments before call-frame adjustment.
+      auto zero = builder.create<ReadRegOp>(Value::i32, { new RegAttr(Reg::zero) });
+      return builder.create<AddOp>({ arg, zero });
+    };
+
+    std::vector<std::pair<Value, Reg>> argRegWrites;
+    std::vector<std::pair<Value, Reg>> fargRegWrites;
+    std::vector<Value> argsNew;
+    std::vector<Value> fargsNew;
+    std::vector<std::pair<Value, int>> spilled;
+    int cnt = 0;
+    int fcnt = 0;
+    for (size_t i = 0; i < args.size(); i++) {
+      Value arg = freezeArgIfSp(args[i]);
+      auto ty = arg.defining->getResultType();
+      if (ty == Value::f32 && fcnt < 8) {
+        fargRegWrites.push_back({ arg, fregs[fcnt] });
+        fcnt++;
+        continue;
+      }
+      if (ty != Value::f32 && cnt < 8) {
+        argRegWrites.push_back({ arg, regs[cnt] });
+        cnt++;
+        continue;
+      }
+      spilled.push_back({ arg, ty == Value::i64 ? 8 : 4 });
+    }
+
+    // More registers must get spilled to stack.
+    int stackOffset = spilled.size() * 8;
+    // Align to 16 bytes.
+    if (stackOffset % 16 != 0)
+      stackOffset = stackOffset / 16 * 16 + 16;
+    if (stackOffset > 0)
+      builder.create<SubSpOp>({ new IntAttr(stackOffset) });
+    
+    for (int i = 0; i < spilled.size(); i++) {
+      auto sp = builder.create<ReadRegOp>(Value::i32, { new RegAttr(Reg::sp) });
+      builder.create<StoreOp>({ spilled[i].first, sp }, {
+        new SizeAttr(spilled[i].second),
+        new IntAttr(i * 8)
+      });
+    }
+
+    argsNew.reserve(argRegWrites.size());
+    for (auto &[arg, reg] : argRegWrites)
+      argsNew.push_back(builder.create<WriteRegOp>({ arg }, { new RegAttr(reg) }));
+    fargsNew.reserve(fargRegWrites.size());
+    for (auto &[arg, reg] : fargRegWrites)
+      fargsNew.push_back(builder.create<WriteRegOp>({ arg }, { new RegAttr(reg) }));
+
+    std::vector<Value> callArgs;
+    callArgs.reserve(argsNew.size() + fargsNew.size());
+    callArgs.insert(callArgs.end(), argsNew.begin(), argsNew.end());
+    callArgs.insert(callArgs.end(), fargsNew.begin(), fargsNew.end());
+    builder.create<sys::rv::CallOp>(callArgs, {
+      op->get<NameAttr>(),
+      new ArgCountAttr(args.size())
+    });
+
+    // Restore stack pointer.
+    if (stackOffset > 0)
+      builder.create<SubSpOp>({ new IntAttr(-stackOffset) });
+
+    // Read result from a0.
+    if (op->getResultType() == Value::f32)
+      builder.replace<ReadRegOp>(op, Value::f32, { new RegAttr(Reg::fa0) });
+    else
+      builder.replace<ReadRegOp>(op, Value::i32, { new RegAttr(Reg::a0) });
+    return true;
+  });
+
+  auto funcs = collectFuncs();
+  for (auto func : funcs) {
+    rewriteAlloca(func);
+    hoistBlockConstants(func);
+  }
+}
