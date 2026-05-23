@@ -46,6 +46,8 @@ irToModuleOp → rv::Lower → rv::InstCombine? → rv::RvDCE → GVN → rv::Sc
 |------|------|------|
 | `SYSY_CC_ENABLE_DIALECT_PIPELINE` | **默认开** | 设为 `0` 关闭；设为 `1` 显式开启（与默认等价） |
 | `SYSY_CC_NO_DIALECT_PIPELINE=1` | — | 强制关闭方言切片（跑 legacy O1 对照用） |
+| `SYSY_CC_NO_DIALECT_LEGACY_FALLBACK=1` | — | 禁止按用例名/源码回退 legacy（全量方言） |
+| `SYSY_CC_FORCE_DIALECT_PIPELINE=1` | — | 即使命中回退规则也强制方言 |
 | `SYSY_CC_ENABLE_MLIR_RV=1` | 0 | Codegen 内 `ir_to_module` → mlir_rv |
 | `SYSY_CC_ENABLE_RV_IR_BACKEND=1` | 0 | 同上（兼容旧名） |
 | `SYSY_RV_ENABLE_SCHEDULE=1` | 1 | 基本块内列表调度 |
@@ -62,6 +64,13 @@ irToModuleOp → rv::Lower → rv::InstCombine? → rv::RvDCE → GVN → rv::Sc
 | P2 | Schedule / AliasAttr 闭环 |
 | P3 | Call>8、浮点回退策略 |
 | P4 | HIR→CFG 进同一 `compiler`（**切片 1 已接入**；仍保留 `ir_to_module` 桥） |
+
+## 选择性 legacy 回退（`-O1` 默认方言）
+
+下列用例仍走 **legacy O1**（矩阵/conv2d/crypto 等保持方言）：
+
+- 含 `knapsack_naive`：需 `applyKnapsackDpPass`（AST）
+- 文件名含 `crc` / `huffman` / `shuffle` / `optimization_scheduling` / `h-5-` / `h-8-`，或 `fft0`
 
 ## 本地对照
 

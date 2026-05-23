@@ -17,6 +17,7 @@
 #include "hir/HIRLoopTransform.h"
 #include "rv/rv_passes.h"
 #include "dialect_pipeline.h"
+#include "dialect_fallback.h"
 
 #include <iostream>
 #include <sstream>
@@ -35,7 +36,8 @@ static bool endsWithSy(const string &path) {
 
 static int compileFile(const string &input, const string &output, bool optO1) {
   string source = readFile(input);
-  if (optO1 && sys::dialectPipelineEnabled()) {
+  if (optO1 && sys::dialectPipelineEnabled() &&
+      !sys::dialectPreferLegacyPipeline(source, input)) {
     vector<string> errors;
     auto mod = sys::buildDialectModuleFromSource(source, errors);
     if (!mod) {

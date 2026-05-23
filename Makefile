@@ -22,7 +22,7 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/pa
 	$(SRCDIR)/mlir_rv/Schedule.cpp $(SRCDIR)/mlir_rv/RegAlloc.cpp $(SRCDIR)/mlir_rv/RegPeephole.cpp \
 	$(SRCDIR)/mlir_rv/Dump.cpp \
 	$(SRCDIR)/rv_mlir_pipeline.cpp \
-	$(SRCDIR)/dialect_pipeline.cpp \
+	$(SRCDIR)/dialect_pipeline.cpp $(SRCDIR)/dialect_fallback.cpp \
 	$(SRCDIR)/dialect_parse/Lexer.cpp $(SRCDIR)/dialect_parse/Parser.cpp \
 	$(SRCDIR)/dialect_parse/Sema.cpp $(SRCDIR)/dialect_parse/Type.cpp \
 	$(SRCDIR)/dialect_hir/DhirOps.cpp $(SRCDIR)/dialect_hir/DhirBuilder.cpp \
