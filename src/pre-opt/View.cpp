@@ -12,7 +12,7 @@ std::map<std::string, int> View::stats() {
 namespace {
 
 // Calculate the permutation that changes from `from` to `to`. (Bad wording.)
-std::vector<int> perm(const std::vector<int> &from, const std::vector<int> &to) {
+std::vector<int> viewBuildPerm(const std::vector<int> &from, const std::vector<int> &to) {
   // Maps value to indices.
   std::unordered_map<int, std::vector<int>> v2i;
   for (int i = 0; i < from.size(); ++i)
@@ -27,7 +27,7 @@ std::vector<int> perm(const std::vector<int> &from, const std::vector<int> &to) 
 }
 
 // Applys permutation `perm` to `data`, but only for the non-zero values.
-std::vector<int> apply(const std::vector<int> &data, const std::vector<int> &perm) {
+std::vector<int> viewApplyPerm(const std::vector<int> &data, const std::vector<int> &perm) {
   auto result = data;
   // Indices of non-zero values.
   std::vector<int> nz;
@@ -53,7 +53,7 @@ std::vector<int> apply(const std::vector<int> &data, const std::vector<int> &per
 }
 
 // Check whether `from` has been written to since `start`.
-bool writeless(Op *start, Op *from) {
+bool viewWritelessSince(Op *start, Op *from) {
   for (auto runner = start; !runner->atBack();) {
     runner = runner->nextOp();
     if (isa<StoreOp>(runner) && BASE(runner->DEF(1)) == BASE(from))
@@ -69,7 +69,7 @@ bool writeless(Op *start, Op *from) {
   }
   // Check outer regions.
   if (auto parent = start->getParentOp(); !isa<FuncOp>(parent))
-    return writeless(parent, from);
+    return viewWritelessSince(parent, from);
   return true;
 }
 
@@ -150,7 +150,7 @@ void View::runImpl(Op *func) {
       continue;
 
     // From shouldn't have been written to since this view is created.
-    if (!writeless(store, from) || !writeless(store, addr))
+    if (!viewWritelessSince(store, from) || !viewWritelessSince(store, addr))
       continue;
 
     // All subscripts must have the same size.
@@ -172,7 +172,7 @@ void View::runImpl(Op *func) {
     if (!std::is_permutation(sa.begin(), sa.end(), sf.begin()))
       continue;
 
-    auto perm = ::perm(sa, sf);
+    auto perm = ::viewBuildPerm(sa, sf);
 
     bool good = true;
     for (auto load : loads) {
@@ -214,7 +214,7 @@ void View::runImpl(Op *func) {
       if (BASE(ld) != k)
         continue;
 
-      auto sub = ::apply(SUBSCRIPT(ld), perm);
+      auto sub = ::viewApplyPerm(SUBSCRIPT(ld), perm);
 
       // Re-synthesize it.
       builder.setBeforeOp(load);

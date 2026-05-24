@@ -7,7 +7,7 @@ using namespace sys;
 
 namespace {
 
-bool parallelizable(Op *loop, std::unordered_map<Op*, Op*> &allocaMap) {
+bool parLoopParallelizable(Op *loop, std::unordered_map<Op*, Op*> &allocaMap) {
   if (!loop->has<ParallelizableAttr>())
     return false;
 
@@ -44,7 +44,7 @@ bool parallelizable(Op *loop, std::unordered_map<Op*, Op*> &allocaMap) {
 
 }
 
-int opcount(Region *region);
+int earlyOpCount(Region *region);
 
 void Parallelize::run() {
   Parallelizable(module).run();
@@ -68,9 +68,9 @@ void Parallelize::run() {
   for (auto loop : loops) {
     // Maps allocas to their value before the loop.
     std::unordered_map<Op*, Op*> allocaMap;
-    if (!parallelizable(loop, allocaMap))
+    if (!parLoopParallelizable(loop, allocaMap))
       continue;
-    if (opcount(loop->getRegion()) <= 100 && loop->findAll<CallOp>().empty() && loop->findAll<ForOp>().size() <= 1)
+    if (earlyOpCount(loop->getRegion()) <= 100 && loop->findAll<CallOp>().empty() && loop->findAll<ForOp>().size() <= 1)
       continue;
 
     // Split the loop into two halves.

@@ -4,7 +4,7 @@ using namespace sys;
 
 namespace {
 
-bool loadEscapesToCall(Op *load) {
+bool locLoadEscapesToCall(Op *load) {
   for (auto use : load->getUses()) {
     if (isa<CallOp>(use))
       return true;
@@ -12,21 +12,21 @@ bool loadEscapesToCall(Op *load) {
   return false;
 }
 
-bool globalEscapesToCall(FuncOp *user, const std::string &name) {
+bool locGlobalEscapesToCall(FuncOp *user, const std::string &name) {
   for (auto get : user->findAll<GetGlobalOp>()) {
     if (NAME(get) != name)
       continue;
     for (auto use : get->getUses()) {
       if (isa<CallOp>(use))
         return true;
-      if (isa<LoadOp>(use) && loadEscapesToCall(use))
+      if (isa<LoadOp>(use) && locLoadEscapesToCall(use))
         return true;
     }
   }
   return false;
 }
 
-bool globalHasStores(FuncOp *user, const std::string &name) {
+bool locGlobalHasStores(FuncOp *user, const std::string &name) {
   for (auto get : user->findAll<GetGlobalOp>()) {
     if (NAME(get) != name)
       continue;
@@ -75,10 +75,10 @@ void Localize::run() {
 
     auto user = *v.begin();
   // Read-only scalars are better handled by EarlyConstFold than alloca lowering.
-    if (!globalHasStores(user, name))
+    if (!locGlobalHasStores(user, name))
       continue;
 
-    if (globalEscapesToCall(user, name))
+    if (locGlobalEscapesToCall(user, name))
       continue;
 
     // Now we can replace the global with a local variable.

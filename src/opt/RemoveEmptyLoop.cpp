@@ -9,7 +9,7 @@ std::map<std::string, int> RemoveEmptyLoop::stats() {
 }
 
 #define PINNED(Ty) || isa<Ty>(op)
-static bool pinned(Op *op) {
+static bool relLoopPinned(Op *op) {
   return (isa<CallOp>(op) && op->has<ImpureAttr>())
     PINNED(StoreOp);
 }
@@ -21,7 +21,7 @@ bool RemoveEmptyLoop::runImpl(LoopInfo *info) {
   for (auto bb : info->getBlocks()) {
     for (auto op : bb->getOps()) {
       // Side-effect.
-      if (pinned(op))
+      if (relLoopPinned(op))
         return false;
 
       // Something is used outside, cannot remove.

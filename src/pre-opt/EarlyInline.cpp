@@ -4,7 +4,7 @@ using namespace sys;
 
 namespace {
 
-bool isRecursive(Op *func) {
+bool earlyIsRecursive(Op *func) {
   auto calls = func->findAll<CallOp>();
   const auto &name = NAME(func);
   for (auto call : calls) {
@@ -17,12 +17,12 @@ bool isRecursive(Op *func) {
 }
 
 // Count all ops inside a region.
-int opcount(Region *region) {
+int earlyOpCount(Region *region) {
   int total = 0;
   for (auto bb : region->getBlocks()) {
     for (auto op : bb->getOps()) {
       for (auto r : op->getRegions())
-        total += opcount(r);
+        total += earlyOpCount(r);
     }
     total += bb->getOpCount();
   }
@@ -38,11 +38,11 @@ void EarlyInline::run() {
 
     // Inline very small functions only.
     // But if the function is <once>'d, then we might also inline it.
-    if (opcount(region) >= 200 && !func->has<AtMostOnceAttr>())
+    if (earlyOpCount(region) >= 200 && !func->has<AtMostOnceAttr>())
       continue;
 
     // Don't inline recursive functions.
-    if (isRecursive(func))
+    if (earlyIsRecursive(func))
       continue;
 
     // We only have structured control flow.

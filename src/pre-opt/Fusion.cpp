@@ -12,7 +12,7 @@ std::map<std::string, int> Fusion::stats() {
 
 namespace {
 
-bool identical(Op *a, Op *b, const std::unordered_set<Op*> &written) {
+bool fusSameExpr(Op *a, Op *b, const std::unordered_set<Op*> &written) {
   if (a == b)
     return true;
 
@@ -26,7 +26,7 @@ bool identical(Op *a, Op *b, const std::unordered_set<Op*> &written) {
     return false;
 
   for (int i = 0; i < a->getOperandCount(); i++) {
-    if (!identical(a->DEF(i), b->DEF(i), written))
+    if (!fusSameExpr(a->DEF(i), b->DEF(i), written))
       return false;
   }
 
@@ -38,15 +38,15 @@ bool identical(Op *a, Op *b, const std::unordered_set<Op*> &written) {
 
 // We only combine for loops with identical start, stop and step for now.
 // We might do peeling in the future, but I don't feel like it currently.
-bool fusible(Op *a, Op *b, const std::unordered_set<Op*> &written) {
-  return identical(a->DEF(0), b->DEF(0), written)
-      && identical(a->DEF(1), b->DEF(1), written)
-      && identical(a->DEF(2), b->DEF(2), written);
+bool fusLoopsCompatible(Op *a, Op *b, const std::unordered_set<Op*> &written) {
+  return fusSameExpr(a->DEF(0), b->DEF(0), written)
+      && fusSameExpr(a->DEF(1), b->DEF(1), written)
+      && fusSameExpr(a->DEF(2), b->DEF(2), written);
 }
 
 // Ops that can't be hoisted to before the loop.
 #define PINNED(Ty) || isa<Ty>(op)
-bool pinned(Op *op) {
+bool fusPinnedOp(Op *op) {
   return (isa<CallOp>(op) && op->has<ImpureAttr>())
     PINNED(IfOp)
     PINNED(WhileOp)
@@ -99,7 +99,7 @@ void Fusion::runImpl(FuncOp *func) {
         if (isa<ForOp>(next))
           break;
 
-        BAD(pinned(next));
+        BAD(fusPinnedOp(next));
 
         // Stores and loads are hoistable when the first loop doesn't touch it.
         if (isa<StoreOp>(next)) {
@@ -128,7 +128,7 @@ void Fusion::runImpl(FuncOp *func) {
       }
 
       // Two consecutive for's. Check whether they can get combined.
-      if (!good || !fusible(next, loop, writes))
+      if (!good || !fusLoopsCompatible(next, loop, writes))
         return;
 
       // A very strict way of checking dependency:
@@ -192,7 +192,7 @@ void Fusion::runImpl(FuncOp *func) {
           if (arrays.count(base) || isa<GetGlobalOp>(base)) {
             if (!subscrOp)
               subscrOp = addr;
-            BAD(!identical(subscrOp, addr, writes));
+            BAD(!fusSameExpr(subscrOp, addr, writes));
           }
           continue;
         }

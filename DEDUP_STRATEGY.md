@@ -38,18 +38,37 @@
 | `mlir_rv/RegAlloc.cpp` | `raEmitStackLoad`, `raGetArgTypes`, `RaRegEvent` |
 | `mlir_rv/RegPeephole.cpp` | `rpRotateFallthroughLoop`, `rpSaveCalleeRegs`, … |
 
+### 批次 3
+
+| 文件 | 重命名示例 |
+|------|------------|
+| `opt/ArrayStrideAnalysis.cpp` | `AsaLinearExpr`, `asaCollectLinearOffset`, `asaBuildOffsetValue` |
+| `opt/Inline.cpp` / `LateInline.cpp` | `inlIsRecursive`, `inlDoInline` |
+| `opt/RemoveEmptyLoop.cpp` | `relLoopPinned` |
+| `opt/PassManager.cpp` | `pmSparseComparePass`, `pmShouldComparePass` |
+| `pre-opt/LoweredTCO.cpp` | `ltcIsTailSelfCall`, `ltcCollectArgSlots`, … |
+| `pre-opt/Fusion.cpp` | `fusSameExpr`, `fusLoopsCompatible`, `fusPinnedOp` |
+| `pre-opt/Localize.cpp` | `locLoadEscapesToCall`, `locGlobalHasStores` |
+| `pre-opt/View.cpp` | `viewBuildPerm`, `viewApplyPerm`, `viewWritelessSince` |
+| `pre-opt/LoopDCE.cpp` | `loopdceRegionPure` |
+| `pre-opt/ArrayAccess.cpp` / `Base.cpp` | `aaMakeAffine`, `aaClearSubscripts`, `preBaseClearSubscripts` |
+| `pre-opt/EarlyInline.cpp` / `Unroll.cpp` / `Parallelize.cpp` | `earlyIsRecursive`, `earlyOpCount`, `unrIsInnermost` |
+| `pre-opt/ColumnMajor.cpp` | `cmFindIndvar` |
+| `pre-opt/EarlyConstFold.cpp` | `ecfLoadEscapesToCall`, `ecfHasStoresTo`（仅 helper 名） |
+| `pre-opt/Parallelize.cpp` | `parLoopParallelizable` |
+
 ## 暂不动（高风险）
 
 - `mlir_rv/Schedule.cpp`, `InstCombine.cpp` — 指令/阶段顺序敏感
 - `cfg/CFGToLegacy.cpp`, `codegen/OpBase.cpp` — 结构桥接
 - `mlir_rv/StrengthReduct.cpp` — 已单独修 sort；MUL/REM 默认关
-- `pre-opt/EarlyConstFold.cpp` — 曾改 pass 顺序
+- `opt/LICM.cpp` — `variant` 与 `VariantAttr` 易误伤
 
 ## 后续可选（仍仅 helper 命名）
 
-- `mlir_rv/RegAlloc.cpp`, `RegPeephole.cpp` 内 `envEnabled` / `fitsImm12` 等
-- `opt/RowScratchMatmul.cpp` 匿名 namespace 匹配 helper
-- `dialect_parse/Lexer.cpp`, `Sema.cpp` 文件内 static helper
+- `dialect_parse/Lexer.cpp`, `Parser.cpp`, `Sema.cpp` 内 lambda/局部逻辑（无独立 helper 时收益小）
+- `opt/FlattenCFG.cpp`, `AggressiveDCE.cpp`, `Reassociate.cpp`
+- `pre-opt/TidyMemory.cpp`, `MoveAlloca.cpp`
 
 ## 评测前
 

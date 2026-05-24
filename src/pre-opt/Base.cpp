@@ -5,12 +5,12 @@ using namespace sys;
 
 namespace {
 
-void remove(Region *region) {
+void preBaseClearSubscripts(Region *region) {
   for (auto bb : region->getBlocks()) {
     for (auto op : bb->getOps()) {
       op->remove<BaseAttr>();
       for (auto r : op->getRegions())
-        remove(r);
+        preBaseClearSubscripts(r);
     }
   }
 }
@@ -53,7 +53,7 @@ void Base::run() {
   for (auto func : funcs) {
     Region *region = func->getRegion();
     // First remove all existing BaseAttrs.
-    remove(region);
+    preBaseClearSubscripts(region);
 
     // Find the place to hoist get-globals.
     auto bb = region->getFirstBlock();

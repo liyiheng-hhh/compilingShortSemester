@@ -8,7 +8,7 @@ using namespace sys;
 
 namespace {
 
-int clampToInt(long long v) {
+int asaClampToInt(long long v) {
   if (v > INT_MAX)
     return INT_MAX;
   if (v < INT_MIN)
@@ -16,13 +16,13 @@ int clampToInt(long long v) {
   return (int) v;
 }
 
-struct LinearExpr {
+struct AsaLinearExpr {
   long long constant = 0;
   std::map<Op*, long long> terms;
   bool valid = true;
 };
 
-void mergeLinear(LinearExpr &dst, const LinearExpr &src, long long scale = 1) {
+void asaMergeLinear(AsaLinearExpr &dst, const AsaLinearExpr &src, long long scale = 1) {
   if (!dst.valid || !src.valid)
     return;
   dst.constant += src.constant * scale;
@@ -30,7 +30,7 @@ void mergeLinear(LinearExpr &dst, const LinearExpr &src, long long scale = 1) {
     dst.terms[op] += coeff * scale;
 }
 
-bool collectLinearOffset(Op *op, LinearExpr &out, std::unordered_set<Op*> &visiting) {
+bool asaCollectLinearOffset(Op *op, AsaLinearExpr &out, std::unordered_set<Op*> &visiting) {
   if (!out.valid)
     return false;
   if (!op) {
@@ -56,27 +56,27 @@ bool collectLinearOffset(Op *op, LinearExpr &out, std::unordered_set<Op*> &visit
   bool ok = true;
 
   if (isa<AddIOp>(op) || isa<SubIOp>(op)) {
-    LinearExpr lhs, rhs;
-    ok &= collectLinearOffset(op->DEF(0), lhs, visiting);
-    ok &= collectLinearOffset(op->DEF(1), rhs, visiting);
+    AsaLinearExpr lhs, rhs;
+    ok &= asaCollectLinearOffset(op->DEF(0), lhs, visiting);
+    ok &= asaCollectLinearOffset(op->DEF(1), rhs, visiting);
     if (ok) {
-      mergeLinear(out, lhs, 1);
-      mergeLinear(out, rhs, isa<AddIOp>(op) ? 1 : -1);
+      asaMergeLinear(out, lhs, 1);
+      asaMergeLinear(out, rhs, isa<AddIOp>(op) ? 1 : -1);
     }
   } else if (isa<MinusOp>(op)) {
-    LinearExpr x;
-    ok &= collectLinearOffset(op->DEF(), x, visiting);
+    AsaLinearExpr x;
+    ok &= asaCollectLinearOffset(op->DEF(), x, visiting);
     if (ok)
-      mergeLinear(out, x, -1);
+      asaMergeLinear(out, x, -1);
   } else if (isa<MulIOp>(op)) {
     Op *lhs = op->DEF(0), *rhs = op->DEF(1);
     if (isa<IntOp>(lhs) || isa<IntOp>(rhs)) {
       int factor = isa<IntOp>(lhs) ? V(lhs) : V(rhs);
       Op *other = isa<IntOp>(lhs) ? rhs : lhs;
-      LinearExpr x;
-      ok &= collectLinearOffset(other, x, visiting);
+      AsaLinearExpr x;
+      ok &= asaCollectLinearOffset(other, x, visiting);
       if (ok)
-        mergeLinear(out, x, factor);
+        asaMergeLinear(out, x, factor);
     } else {
       out.terms[op] += 1;
     }
@@ -92,9 +92,9 @@ bool collectLinearOffset(Op *op, LinearExpr &out, std::unordered_set<Op*> &visit
   return out.valid;
 }
 
-bool flattenAddressExpr(Op *op,
+bool asaFlattenAddressExpr(Op *op,
                         Op *&base,
-                        LinearExpr &offset,
+                        AsaLinearExpr &offset,
                         bool &touched,
                         std::unordered_set<Op*> &visitingAddr) {
   if (!op)
@@ -108,16 +108,16 @@ bool flattenAddressExpr(Op *op,
 
   visitingAddr.insert(op);
   touched = true;
-  bool ok = flattenAddressExpr(op->DEF(0), base, offset, touched, visitingAddr);
+  bool ok = asaFlattenAddressExpr(op->DEF(0), base, offset, touched, visitingAddr);
   if (ok) {
     std::unordered_set<Op*> visiting;
-    ok = collectLinearOffset(op->DEF(1), offset, visiting);
+    ok = asaCollectLinearOffset(op->DEF(1), offset, visiting);
   }
   visitingAddr.erase(op);
   return ok && offset.valid;
 }
 
-bool hasMeaningfulRewrite(AddLOp *op, Op *base, const LinearExpr &expr, bool touched) {
+bool asaHasMeaningfulRewrite(AddLOp *op, Op *base, const AsaLinearExpr &expr, bool touched) {
   if (!touched)
     return false;
   if (base != op->DEF(0))
@@ -140,7 +140,7 @@ bool hasMeaningfulRewrite(AddLOp *op, Op *base, const LinearExpr &expr, bool tou
   return !(single == op->DEF(1) && coeff == 1);
 }
 
-Op *buildOffsetValue(Builder &builder, const LinearExpr &expr) {
+Op *asaBuildOffsetValue(Builder &builder, const AsaLinearExpr &expr) {
   Op *acc = nullptr;
   auto append = [&](Op *term) {
     if (!acc)
@@ -154,13 +154,13 @@ Op *buildOffsetValue(Builder &builder, const LinearExpr &expr) {
       continue;
     Op *scaled = term;
     if (coeff != 1) {
-      auto c = builder.create<IntOp>({ new IntAttr(clampToInt(coeff)) });
+      auto c = builder.create<IntOp>({ new IntAttr(asaClampToInt(coeff)) });
       scaled = builder.create<MulIOp>({ term, c });
     }
     append(scaled);
   }
   if (expr.constant != 0) {
-    auto c = builder.create<IntOp>({ new IntAttr(clampToInt(expr.constant)) });
+    auto c = builder.create<IntOp>({ new IntAttr(asaClampToInt(expr.constant)) });
     append(c);
   }
   if (!acc)
@@ -181,10 +181,10 @@ void ArrayStrideAnalysis::run() {
       if (!addl || !addl->getParent())
         continue;
       Op *base = nullptr;
-      LinearExpr expr;
+      AsaLinearExpr expr;
       bool touched = false;
       std::unordered_set<Op*> visitingAddr;
-      if (!flattenAddressExpr(addl, base, expr, touched, visitingAddr))
+      if (!asaFlattenAddressExpr(addl, base, expr, touched, visitingAddr))
         continue;
       if (!base || !expr.valid)
         continue;
@@ -196,7 +196,7 @@ void ArrayStrideAnalysis::run() {
           ++it;
       }
 
-      if (!hasMeaningfulRewrite(addl, base, expr, touched))
+      if (!asaHasMeaningfulRewrite(addl, base, expr, touched))
         continue;
 
       builder.setBeforeOp(addl);
@@ -204,7 +204,7 @@ void ArrayStrideAnalysis::run() {
         addl->replaceAllUsesWith(base);
         addl->erase();
       } else {
-        auto *offset = buildOffsetValue(builder, expr);
+        auto *offset = asaBuildOffsetValue(builder, expr);
         builder.replace<AddLOp>(addl, std::vector<Value> { base, offset });
       }
       rewritten++;

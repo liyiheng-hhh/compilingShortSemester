@@ -4,12 +4,12 @@ using namespace sys;
 
 namespace {
   
-AffineExpr make(const std::vector<Op*> &outer) {
+AffineExpr aaMakeAffine(const std::vector<Op*> &outer) {
   return AffineExpr(outer.size() + 1);
 }
 
 // Lengthen the affine expression to match the current depth.
-void lengthen(AffineExpr &x, const std::vector<Op*> &outer) {
+void aaLengthenExpr(AffineExpr &x, const std::vector<Op*> &outer) {
   x.reserve(outer.size() + 1);
 
   // Remove the constant.
@@ -21,18 +21,18 @@ void lengthen(AffineExpr &x, const std::vector<Op*> &outer) {
   x.push_back(back);
 }
 
-AffineExpr lengthened(Op *op, const std::vector<Op*> &outer) {
+AffineExpr aaLengthenedExpr(Op *op, const std::vector<Op*> &outer) {
   auto val = SUBSCRIPT(op);
-  lengthen(val, outer);
+  aaLengthenExpr(val, outer);
   return val;
 }
 
-void remove(Region *region) {
+void aaClearSubscripts(Region *region) {
   for (auto bb : region->getBlocks()) {
     for (auto op : bb->getOps()) {
       op->remove<SubscriptAttr>();
       for (auto r : op->getRegions())
-        remove(r);
+        aaClearSubscripts(r);
     }
   }
 }
@@ -45,7 +45,7 @@ void ArrayAccess::runImpl(Op *loop, std::vector<Op*> outer) {
 
   for (auto op : bb->getOps()) {
     if (isa<IntOp>(op)) {
-      auto val = make(outer);
+      auto val = aaMakeAffine(outer);
       val.back() = V(op);
       op->add<SubscriptAttr>(val);
       continue;
@@ -56,7 +56,7 @@ void ArrayAccess::runImpl(Op *loop, std::vector<Op*> outer) {
       k.push_back(op);
       
       // Add subscript to this loop's induction variable.
-      auto val = make(k);
+      auto val = aaMakeAffine(k);
       val[val.size() - 2] = 1;
       op->add<SubscriptAttr>(val);
 
@@ -78,8 +78,8 @@ void ArrayAccess::runImpl(Op *loop, std::vector<Op*> outer) {
       if (!x->has<SubscriptAttr>() || !y->has<SubscriptAttr>())
         continue;
 
-      auto vx = lengthened(x, outer);
-      auto vy = lengthened(y, outer);
+      auto vx = aaLengthenedExpr(x, outer);
+      auto vy = aaLengthenedExpr(y, outer);
       for (int i = 0; i < vx.size(); i++)
         vx[i] += vy[i];
       op->add<SubscriptAttr>(vx);
@@ -92,7 +92,7 @@ void ArrayAccess::runImpl(Op *loop, std::vector<Op*> outer) {
       if (!isa<IntOp>(y) || !x->has<SubscriptAttr>())
         continue;
 
-      auto val = lengthened(x, outer);
+      auto val = aaLengthenedExpr(x, outer);
       for (auto &coeff : val)
         coeff *= V(y);
       op->add<SubscriptAttr>(val);
@@ -109,9 +109,9 @@ void ArrayAccess::runImpl(Op *loop, std::vector<Op*> outer) {
         else continue;
       }
       
-      auto vx = lengthened(x, outer);
+      auto vx = aaLengthenedExpr(x, outer);
       if (y->has<SubscriptAttr>()) {
-        auto vy = lengthened(y, outer);
+        auto vy = aaLengthenedExpr(y, outer);
         for (int i = 0; i < vx.size(); i++)
           vx[i] += vy[i];
       }
@@ -128,7 +128,7 @@ void ArrayAccess::run() {
     auto region = func->getRegion();
 
     // Remove all existing subscripts first.
-    remove(region);
+    aaClearSubscripts(region);
 
     for (auto bb : region->getBlocks()) {
       for (auto op : bb->getOps()) {

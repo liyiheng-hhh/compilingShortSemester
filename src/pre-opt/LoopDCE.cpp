@@ -10,7 +10,7 @@ std::map<std::string, int> LoopDCE::stats() {
 
 namespace {
 
-bool pure(Region *region) {
+bool loopdceRegionPure(Region *region) {
   if (!region->getBlocks().size())
     return true;
 
@@ -19,7 +19,7 @@ bool pure(Region *region) {
     if (op->has<ImpureAttr>())
       return false;
     for (auto x : op->getRegions()) {
-      if (!pure(x))
+      if (!loopdceRegionPure(x))
         return false;
     }
   }
@@ -36,7 +36,7 @@ void LoopDCE::run() {
     changed = false;
     for (auto loop : loops) {
       auto region = loop->getRegion();
-      if (pure(region)) {
+      if (loopdceRegionPure(region)) {
         auto step = loop->DEF(2);
         if (!isa<IntOp>(step) || V(step) != 1)
           continue;

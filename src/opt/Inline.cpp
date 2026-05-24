@@ -9,7 +9,7 @@ std::map<std::string, int> Inline::stats() {
   };
 }
 
-bool isRecursive(Op *op) {
+bool inlIsRecursive(Op *op) {
   const auto &callers = CALLER(op);
   const auto &name = NAME(op);
   return std::find(callers.begin(), callers.end(), name) != callers.end();
@@ -17,7 +17,7 @@ bool isRecursive(Op *op) {
 
 namespace {
 
-void doInline(Op *call, Region *fnRegion) {
+void inlDoInline(Op *call, Region *fnRegion) {
   Builder builder;
 
   // Maps old Op to new Op.
@@ -146,12 +146,12 @@ void Inline::run() {
 
     // Don't inline recursive functions here, otherwise this rewriter will loop forever.
     // Deal with them later.
-    if (isRecursive(func)) {
+    if (inlIsRecursive(func)) {
       recursive.push_back(func);
       return false;
     }
 
-    doInline(call, fnRegion);
+    inlDoInline(call, fnRegion);
     return true;
   });
 

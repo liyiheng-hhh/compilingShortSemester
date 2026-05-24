@@ -10,7 +10,7 @@ std::map<std::string, int> LateInline::stats() {
 }
 
 // Defined in Inline.cpp.
-bool isRecursive(Op *op);
+bool inlIsRecursive(Op *op);
 
 // This pass runs after Mem2Reg.
 void LateInline::run() {
@@ -49,7 +49,7 @@ void LateInline::run() {
       return false;
 
     // Don't inline recursive functions here.
-    if (isRecursive(func))
+    if (inlIsRecursive(func))
       return false;
 
     // Maps old Op to new Op.

@@ -27,7 +27,7 @@ std::string envOrEmpty(const char *name) {
   return {};
 }
 
-bool sparseComparePass(const std::string &passName) {
+bool pmSparseComparePass(const std::string &passName) {
   static const char *kSparse[] = {
     "flatten-cfg", "gvn", "dce", "inline", "localize", "globalize",
     "mem2reg", "alias", "regular-fold", "dae", "dse", "dle",
@@ -43,10 +43,10 @@ bool sparseComparePass(const std::string &passName) {
   return false;
 }
 
-bool shouldCompare(const PassDebugOptions &debug, const std::string &passName) {
+bool pmShouldComparePass(const PassDebugOptions &debug, const std::string &passName) {
   if (!debug.compareOnlyPass.empty())
     return passName == debug.compareOnlyPass;
-  if (debug.compareSparse && !sparseComparePass(passName))
+  if (debug.compareSparse && !pmSparseComparePass(passName))
     return false;
   return true;
 }
@@ -137,7 +137,7 @@ void PassManager::run() {
       std::cerr << "ok\n";
     }
 
-    if (!debug.compareWith.empty() && pastFlatten && shouldCompare(debug, passName)) {
+    if (!debug.compareWith.empty() && pastFlatten && pmShouldComparePass(debug, passName)) {
       std::cerr << "compare " << passName << "... " << std::flush;
       exec::Interpreter itp(module);
       std::stringstream input(simulateInput);

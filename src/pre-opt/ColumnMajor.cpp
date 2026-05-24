@@ -8,10 +8,10 @@ namespace {
 struct NoBase {};
 
 // Finds the i'th ForOp counting from this one.
-Op *findIndvar(Op *addr, int i) {
+Op *cmFindIndvar(Op *addr, int i) {
   if (i == 0)
     return addr;
-  return findIndvar(addr->getParentOp<ForOp>(), i - 1);
+  return cmFindIndvar(addr->getParentOp<ForOp>(), i - 1);
 }
 
 }
@@ -146,7 +146,7 @@ void ColumnMajor::run() {
 
         Op *&p = outer ? inner : outer;
         int &v = outer ? v2 : v1;
-        p = findIndvar(addr, subscript.size() - 1 - i);
+        p = cmFindIndvar(addr, subscript.size() - 1 - i);
         v = subscript[i];
       }
 

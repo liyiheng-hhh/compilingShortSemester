@@ -7,7 +7,7 @@ using namespace sys;
 
 #define INT(op) isa<IntOp>(op)
 
-static bool loadEscapesToCall(Op *load) {
+static bool ecfLoadEscapesToCall(Op *load) {
   for (auto use : load->getUses()) {
     if (isa<CallOp>(use))
       return true;
@@ -15,13 +15,13 @@ static bool loadEscapesToCall(Op *load) {
   return false;
 }
 
-static bool hasStoresTo(Op *op) {
+static bool ecfHasStoresTo(Op *op) {
   for (auto use : op->getUses()) {
     if (isa<StoreOp>(use))
       return true;
 
     if (isa<AddIOp>(use) || isa<AddLOp>(use)) {
-      if (hasStoresTo(use))
+      if (ecfHasStoresTo(use))
         return true;
       continue;
     }
@@ -92,7 +92,7 @@ void EarlyConstFold::run() {
 
   for (auto op : getglobs) {
     const auto &name = NAME(op);
-    if (hasStoresTo(op)) {
+    if (ecfHasStoresTo(op)) {
       nonConst.insert(gMap[name]);
       continue;
     }
@@ -102,7 +102,7 @@ void EarlyConstFold::run() {
         nonConst.insert(gMap[name]);
         break;
       }
-      if (isa<LoadOp>(use) && loadEscapesToCall(use)) {
+      if (isa<LoadOp>(use) && ecfLoadEscapesToCall(use)) {
         nonConst.insert(gMap[name]);
         break;
       }
@@ -118,7 +118,7 @@ void EarlyConstFold::run() {
       bool good = true;
       for (auto use : uses) {
         if (isa<LoadOp>(use)) {
-          if (loadEscapesToCall(use)) {
+          if (ecfLoadEscapesToCall(use)) {
             good = false;
             break;
           }

@@ -13,26 +13,26 @@ std::map<std::string, int> LoweredTCO::stats() {
 
 namespace {
 
-bool isSupportedArgType(Value::Type ty) {
+bool ltcIsSupportedArgType(Value::Type ty) {
   return ty == Value::i32 || ty == Value::i64;
 }
 
-int valueSize(Value::Type ty) {
+int ltcValueSize(Value::Type ty) {
   return ty == Value::i64 ? 8 : 4;
 }
 
-bool hasSupportedArgs(FuncOp *func) {
+bool ltcHasSupportedArgs(FuncOp *func) {
   auto *types = func->find<ArgTypesAttr>();
   if (!types)
     return false;
   for (auto ty : types->types) {
-    if (!isSupportedArgType(ty))
+    if (!ltcIsSupportedArgType(ty))
       return false;
   }
   return true;
 }
 
-bool findReturnSlot(FuncOp *func, BasicBlock *&exitBlock, Op *&retSlot) {
+bool ltcFindReturnSlot(FuncOp *func, BasicBlock *&exitBlock, Op *&retSlot) {
   exitBlock = nullptr;
   retSlot = nullptr;
 
@@ -51,7 +51,7 @@ bool findReturnSlot(FuncOp *func, BasicBlock *&exitBlock, Op *&retSlot) {
   return false;
 }
 
-bool collectArgSlots(FuncOp *func, std::vector<Op*> &slots, std::vector<int> &slotSizes,
+bool ltcCollectArgSlots(FuncOp *func, std::vector<Op*> &slots, std::vector<int> &slotSizes,
                      std::vector<Op*> &getargs, std::vector<Op*> &stores) {
   int argc = func->get<ArgCountAttr>()->count;
   slots.assign(argc, nullptr);
@@ -70,7 +70,7 @@ bool collectArgSlots(FuncOp *func, std::vector<Op*> &slots, std::vector<int> &sl
       return false;
     if (getarg->getResultType() != types->types[index])
       return false;
-    int size = valueSize(types->types[index]);
+    int size = ltcValueSize(types->types[index]);
 
     Op *initStore = nullptr;
     Op *slot = nullptr;
@@ -102,7 +102,7 @@ bool collectArgSlots(FuncOp *func, std::vector<Op*> &slots, std::vector<int> &sl
   return true;
 }
 
-bool isTailSelfCall(FuncOp *func, Op *retSlot, BasicBlock *exitBlock, Op *call) {
+bool ltcIsTailSelfCall(FuncOp *func, Op *retSlot, BasicBlock *exitBlock, Op *call) {
   if (!isa<CallOp>(call) || NAME(call) != NAME(func))
     return false;
   if (call->getUses().size() != 1)
@@ -119,7 +119,7 @@ bool isTailSelfCall(FuncOp *func, Op *retSlot, BasicBlock *exitBlock, Op *call) 
   return true;
 }
 
-bool findVoidExitBlock(FuncOp *func, BasicBlock *&exitBlock) {
+bool ltcFindVoidExitBlock(FuncOp *func, BasicBlock *&exitBlock) {
   exitBlock = nullptr;
   for (auto *bb : func->getRegion()->getBlocks()) {
     if (bb->getOpCount() != 1)
@@ -134,7 +134,7 @@ bool findVoidExitBlock(FuncOp *func, BasicBlock *&exitBlock) {
   return exitBlock != nullptr;
 }
 
-bool reachesVoidExit(BasicBlock *bb, BasicBlock *exitBlock) {
+bool ltcReachesVoidExit(BasicBlock *bb, BasicBlock *exitBlock) {
   for (int depth = 0; bb && depth < 8; depth++) {
     if (bb == exitBlock)
       return true;
@@ -148,7 +148,7 @@ bool reachesVoidExit(BasicBlock *bb, BasicBlock *exitBlock) {
   return false;
 }
 
-bool isVoidTailSelfCall(FuncOp *func, BasicBlock *exitBlock, Op *call) {
+bool ltcIsVoidTailSelfCall(FuncOp *func, BasicBlock *exitBlock, Op *call) {
   if (!isa<CallOp>(call) || NAME(call) != NAME(func))
     return false;
   if (!call->getUses().empty())
@@ -158,15 +158,15 @@ bool isVoidTailSelfCall(FuncOp *func, BasicBlock *exitBlock, Op *call) {
   if (!go || go != call->getParent()->getLastOp())
     return false;
 
-  return reachesVoidExit(TARGET(go), exitBlock);
+  return ltcReachesVoidExit(TARGET(go), exitBlock);
 }
 
-bool isLoadFromSlot(Op *value, Op *slot) {
+bool ltcIsLoadFromSlot(Op *value, Op *slot) {
   auto *load = dyn_cast<LoadOp>(value);
   return load && load->getOperandCount() == 1 && load->DEF(0) == slot;
 }
 
-BasicBlock *makeExplicitBodyEntry(FuncOp *func, const std::vector<Op*> &stores) {
+BasicBlock *ltcMakeExplicitBodyEntry(FuncOp *func, const std::vector<Op*> &stores) {
   if (stores.empty())
     return nullptr;
 
@@ -203,7 +203,7 @@ BasicBlock *makeExplicitBodyEntry(FuncOp *func, const std::vector<Op*> &stores) 
   return bodyEntry;
 }
 
-void moveEntryState(FuncOp *func, BasicBlock *oldEntry,
+void ltcMoveEntryState(FuncOp *func, BasicBlock *oldEntry,
                     const std::vector<Op*> &getargs, const std::vector<Op*> &stores) {
   auto *region = func->getRegion();
   auto *entry = region->insert(oldEntry);
@@ -226,7 +226,7 @@ void moveEntryState(FuncOp *func, BasicBlock *oldEntry,
 
 bool LoweredTCO::runImpl(FuncOp *func) {
   int argc = func->get<ArgCountAttr>()->count;
-  if (argc <= 0 || argc >= 16 || !hasSupportedArgs(func)) {
+  if (argc <= 0 || argc >= 16 || !ltcHasSupportedArgs(func)) {
     rejected++;
     return false;
   }
@@ -240,20 +240,20 @@ bool LoweredTCO::runImpl(FuncOp *func) {
 
   std::vector<Op*> argSlots, getargs, initStores;
   std::vector<int> argSlotSizes;
-  if (!collectArgSlots(func, argSlots, argSlotSizes, getargs, initStores)) {
+  if (!ltcCollectArgSlots(func, argSlots, argSlotSizes, getargs, initStores)) {
     rejected++;
     return false;
   }
 
   BasicBlock *voidExitBlock = nullptr;
-  if (findVoidExitBlock(func, voidExitBlock)) {
+  if (ltcFindVoidExitBlock(func, voidExitBlock)) {
     std::vector<CallOp*> tailCalls;
     for (auto *call : func->findAll<CallOp>()) {
-      if (isVoidTailSelfCall(func, voidExitBlock, call))
+      if (ltcIsVoidTailSelfCall(func, voidExitBlock, call))
         tailCalls.push_back(cast<CallOp>(call));
     }
     if (!tailCalls.empty()) {
-      BasicBlock *bodyEntry = makeExplicitBodyEntry(func, initStores);
+      BasicBlock *bodyEntry = ltcMakeExplicitBodyEntry(func, initStores);
       if (!bodyEntry) {
         rejected++;
         return false;
@@ -270,7 +270,7 @@ bool LoweredTCO::runImpl(FuncOp *func) {
         auto *go = call->nextOp();
         builder.setBeforeOp(call);
         for (int i = 0; i < argc; i++) {
-          if (isLoadFromSlot(call->getOperand(i).defining, argSlots[i]))
+          if (ltcIsLoadFromSlot(call->getOperand(i).defining, argSlots[i]))
             continue;
           builder.create<StoreOp>({ call->getOperand(i), argSlots[i] },
                                   { new SizeAttr(argSlotSizes[i]) });
@@ -291,14 +291,14 @@ bool LoweredTCO::runImpl(FuncOp *func) {
 
   BasicBlock *exitBlock = nullptr;
   Op *retSlot = nullptr;
-  if (!findReturnSlot(func, exitBlock, retSlot)) {
+  if (!ltcFindReturnSlot(func, exitBlock, retSlot)) {
     rejected++;
     return false;
   }
 
   std::vector<CallOp*> tailCalls;
   for (auto *call : func->findAll<CallOp>()) {
-    if (isTailSelfCall(func, retSlot, exitBlock, call))
+    if (ltcIsTailSelfCall(func, retSlot, exitBlock, call))
       tailCalls.push_back(cast<CallOp>(call));
   }
   if (tailCalls.empty())
@@ -317,7 +317,7 @@ bool LoweredTCO::runImpl(FuncOp *func) {
 
     builder.setBeforeOp(call);
     for (int i = 0; i < argc; i++) {
-      if (isLoadFromSlot(call->getOperand(i).defining, argSlots[i]))
+      if (ltcIsLoadFromSlot(call->getOperand(i).defining, argSlots[i]))
         continue;
       builder.create<StoreOp>({ call->getOperand(i), argSlots[i] },
                               { new SizeAttr(argSlotSizes[i]) });
@@ -331,7 +331,7 @@ bool LoweredTCO::runImpl(FuncOp *func) {
   }
 
   if (localRemoved > 0) {
-    moveEntryState(func, oldEntry, getargs, initStores);
+    ltcMoveEntryState(func, oldEntry, getargs, initStores);
     region->updatePreds();
     return true;
   }

@@ -10,7 +10,7 @@ std::map<std::string, int> Unroll::stats() {
 
 namespace {
 
-bool innermost(Op *loop) {
+bool unrIsInnermost(Op *loop) {
   auto region = loop->getRegion();
   auto entry = region->getFirstBlock();
   for (auto op : entry->getOps()) {
@@ -26,18 +26,18 @@ bool innermost(Op *loop) {
 void unroll(Op *loop, int vi);
 
 // Defined in EarlyInline.cpp.
-int opcount(Region *region);
+int earlyOpCount(Region *region);
 
 void Unroll::run() {
   auto loops = module->findAll<ForOp>();
   for (auto loop : loops) {
     // Only unroll innermost loops.
-    if (!innermost(loop))
+    if (!unrIsInnermost(loop))
       continue;
 
     // Don't unroll large loops.
     auto region = loop->getRegion();
-    if (opcount(region) >= 50)
+    if (earlyOpCount(region) >= 50)
       continue;
 
     // Allow unrolling loops with calls - the call will be duplicated and later
