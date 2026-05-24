@@ -57,7 +57,7 @@ int StrengthReduct::runImpl() {
 
   int converted = 0;
   const bool enableMul =
-    envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MUL", true);
+    envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MUL", false);
   const bool enableMulwDecompose =
     envEnabled("SYSY_RV_ENABLE_MULW_DECOMPOSE", false);
 
@@ -337,7 +337,7 @@ strength_reduct_div:
   });
   }
 
-  if (envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_REM", true)) {
+  if (envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_REM", false)) {
   // ===================
   // Rewrite ModOp.
   // ===================
