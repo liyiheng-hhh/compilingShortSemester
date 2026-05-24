@@ -7,7 +7,7 @@ using namespace sys;
 
 namespace {
 
-bool normalizePhiIncoming(Region *region) {
+bool repairPhiPredecessors(Region *region) {
   bool changed = false;
 
   for (auto bb : region->getBlocks()) {
@@ -209,7 +209,7 @@ void DCE::run() {
     for (auto func : funcs) {
       auto region = func->getRegion();
       region->updatePreds();
-      if (normalizePhiIncoming(region)) {
+      if (repairPhiPredecessors(region)) {
         changed = true;
         region->updatePreds();
       }
@@ -280,7 +280,7 @@ void DCE::run() {
         bb->forceErase();
 
       region->updatePreds();
-      if (normalizePhiIncoming(region)) {
+      if (repairPhiPredecessors(region)) {
         changed = true;
         region->updatePreds();
       }

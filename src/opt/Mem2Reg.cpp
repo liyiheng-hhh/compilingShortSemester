@@ -15,14 +15,14 @@ std::map<std::string, int> Mem2Reg::stats() {
 
 namespace {
 
-bool hasTerminator(BasicBlock *bb) {
+bool bbEndsWithTerminator(BasicBlock *bb) {
   if (!bb || bb->getOpCount() == 0)
     return false;
   auto *term = bb->getLastOp();
   return term && (isa<ReturnOp>(term) || term->has<TargetAttr>() || term->has<ElseAttr>());
 }
 
-bool sanitizeForMem2Reg(Region *region) {
+bool prepareRegionForPromo(Region *region) {
   if (!region)
     return false;
   region->updateDoms();
@@ -34,7 +34,7 @@ bool sanitizeForMem2Reg(Region *region) {
     if (!bb)
       continue;
     if (bb == entry || bb->dominatedBy(entry)) {
-      if (!hasTerminator(bb))
+      if (!bbEndsWithTerminator(bb))
         ok = false;
       continue;
     }
@@ -52,22 +52,22 @@ bool sanitizeForMem2Reg(Region *region) {
   return ok;
 }
 
-struct AllocaLiveness {
+struct SlotLiveIn {
   std::map<BasicBlock*, bool> liveIn;
 };
 
-bool isLoadFromAlloca(Op *op, Op *alloca) {
+bool loadUsesAlloca(Op *op, Op *alloca) {
   auto load = dyn_cast<LoadOp>(op);
   return load && load->getOperand().defining == alloca;
 }
 
-bool isStoreToAlloca(Op *op, Op *alloca) {
+bool storeUsesAlloca(Op *op, Op *alloca) {
   auto store = dyn_cast<StoreOp>(op);
   return store && store->getOperand(1).defining == alloca;
 }
 
-AllocaLiveness computeAllocaLiveness(Region *region, Op *alloca) {
-  AllocaLiveness result;
+SlotLiveIn computeSlotLiveIn(Region *region, Op *alloca) {
+  SlotLiveIn result;
   std::map<BasicBlock*, bool> liveOut;
   std::map<BasicBlock*, bool> useBeforeDef;
   std::map<BasicBlock*, bool> def;
@@ -77,9 +77,9 @@ AllocaLiveness computeAllocaLiveness(Region *region, Op *alloca) {
   for (auto *bb : blocks) {
     bool seenDef = false;
     for (auto *op : bb->getOps()) {
-      if (isLoadFromAlloca(op, alloca) && !seenDef)
+      if (loadUsesAlloca(op, alloca) && !seenDef)
         useBeforeDef[bb] = true;
-      if (isStoreToAlloca(op, alloca)) {
+      if (storeUsesAlloca(op, alloca)) {
         seenDef = true;
         def[bb] = true;
       }
@@ -111,7 +111,7 @@ AllocaLiveness computeAllocaLiveness(Region *region, Op *alloca) {
   return result;
 }
 
-Value materializePhiIncomingOnEdge(BasicBlock *pred, BasicBlock *succ, Value value, Builder &builder) {
+Value resolvePhiOperandOnEdge(BasicBlock *pred, BasicBlock *succ, Value value, Builder &builder) {
   auto *def = value.defining;
   if (!def || def->getParent() != succ || !isa<PhiOp>(def))
     return value;
@@ -151,7 +151,7 @@ void Mem2Reg::runImpl(FuncOp *func) {
   domtree.clear();
 
   auto region = func->getRegion();
-  if (!sanitizeForMem2Reg(region))
+  if (!prepareRegionForPromo(region))
     return;
   region->updateDoms();
   region->updateDomFront();
@@ -203,7 +203,7 @@ void Mem2Reg::runImpl(FuncOp *func) {
     }
     count++;
     converted.insert(alloca);
-    auto liveness = computeAllocaLiveness(region, alloca);
+    auto liveness = computeSlotLiveIn(region, alloca);
 
     // Now find all blocks where stores reside in. Use set to de-duplicate.
     std::set<BasicBlock*> bbs;
@@ -323,7 +323,7 @@ void Mem2Reg::fillPhi(BasicBlock *bb, SymbolTable symbols) {
       } else
         value = symbols[alloca];
 
-      value = materializePhiIncomingOnEdge(bb, succ, value, builder);
+      value = resolvePhiOperandOnEdge(bb, succ, value, builder);
       op->pushOperand(value);
       op->add<FromAttr>(bb);
     }

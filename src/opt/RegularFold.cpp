@@ -14,7 +14,7 @@ using namespace sys;
 //      scalar (size == 1) integer global with a known initializer.
 //      This covers patterns like `const int base = 16;` which the frontend
 //      emits as a global variable rather than inlining the constant.
-static bool addressMentionsScalarGlobal(const std::string &name, Op *addr) {
+static bool refersToNamedGlobal(const std::string &name, Op *addr) {
   if (!addr)
     return false;
   if (isa<GetGlobalOp>(addr))
@@ -28,43 +28,43 @@ static bool addressMentionsScalarGlobal(const std::string &name, Op *addr) {
   return false;
 }
 
-static bool scalarGlobalEscapesToCall(const std::string &name, ModuleOp *module) {
+static bool globalEscapesViaCall(const std::string &name, ModuleOp *module) {
   for (auto call : module->findAll<CallOp>()) {
     for (auto operand : call->getOperands()) {
       auto def = operand.defining;
       if (!def || def->getResultType() != Value::i64)
         continue;
-      if (addressMentionsScalarGlobal(name, def))
+      if (refersToNamedGlobal(name, def))
         return true;
     }
   }
   return false;
 }
 
-static bool mayTouchScalarGlobal(const std::string &name, Op *addr, bool escaped) {
+static bool mayAliasNamedGlobal(const std::string &name, Op *addr, bool escaped) {
   if (!addr)
     return false;
-  if (addressMentionsScalarGlobal(name, addr))
+  if (refersToNamedGlobal(name, addr))
     return true;
   auto alias = addr->find<AliasAttr>();
   return escaped && (!alias || alias->unknown);
 }
 
-static bool hasStoreToScalarGlobal(
+static bool globalHasStore(
     const std::string &name,
     ModuleOp *module) {
-  bool escaped = scalarGlobalEscapesToCall(name, module);
+  bool escaped = globalEscapesViaCall(name, module);
   for (auto store : module->findAll<StoreOp>()) {
     if (store->getOperandCount() < 2)
       continue;
-    if (mayTouchScalarGlobal(name, store->DEF(1), escaped))
+    if (mayAliasNamedGlobal(name, store->DEF(1), escaped))
       return true;
   }
 
   return escaped;
 }
 
-static std::optional<int> immutableScalarGlobalValue(
+static std::optional<int> readConstGlobalScalar(
     const std::string &name,
     const std::map<std::string, GlobalOp*> &gMap,
     ModuleOp *module) {
@@ -77,14 +77,14 @@ static std::optional<int> immutableScalarGlobalValue(
   auto iarr = glob->get<IntArrayAttr>();
   if (!iarr || iarr->size != 1)
     return std::nullopt;
-  if (hasStoreToScalarGlobal(name, module))
+  if (globalHasStore(name, module))
     return std::nullopt;
   if (!iarr->vi)
     return 0;
   return iarr->vi[0];
 }
 
-static std::optional<std::string> zeroOffsetGlobalName(Op *addr) {
+static std::optional<std::string> globalAtZeroOffset(Op *addr) {
   if (!addr)
     return std::nullopt;
   if (isa<GetGlobalOp>(addr))
@@ -98,17 +98,17 @@ static std::optional<std::string> zeroOffsetGlobalName(Op *addr) {
   return NAME(base);
 }
 
-static std::optional<int> tryGetConstantValue(
+static std::optional<int> foldToConstInt(
     Op *op, const std::map<std::string, GlobalOp*> &gMap, ModuleOp *module) {
   if (isa<IntOp>(op))
     return V(op);
 
   // Pattern: load(getglobal(<name>)) or an equivalent zero-offset alias.
   if (isa<LoadOp>(op)) {
-    auto name = zeroOffsetGlobalName(op->DEF(0));
+    auto name = globalAtZeroOffset(op->DEF(0));
     if (!name)
       return std::nullopt;
-    return immutableScalarGlobalValue(*name, gMap, module);
+    return readConstGlobalScalar(*name, gMap, module);
   }
 
   return std::nullopt;
@@ -386,7 +386,7 @@ std::map<std::string, int> RegularFold::stats() {
   };
 }
 
-void removePhiOperand(Op *phi, BasicBlock *from) {
+void stripPhiEdgeFrom(Op *phi, BasicBlock *from) {
   auto ops = phi->getOperands();
   std::vector<Attr*> attrs;
   for (auto attr : phi->getAttrs())
@@ -408,10 +408,10 @@ void removePhiOperand(Op *phi, BasicBlock *from) {
   }
 }
 
-void tidyPhi(BasicBlock *bb, BasicBlock *from) {
+void normalizePhisAfterEdge(BasicBlock *bb, BasicBlock *from) {
   auto phis = bb->getPhis();
   for (auto phi : phis)
-    removePhiOperand(phi, from);
+    stripPhiEdgeFrom(phi, from);
 }
 
 // This pass works on both structured control flow and flattened cfg.
@@ -468,11 +468,11 @@ void RegularFold::run() {
       if (op->getResultType() != Value::i32 || op->getOperandCount() != 1)
         return false;
       auto addr = op->DEF(0);
-      auto name = zeroOffsetGlobalName(addr);
+      auto name = globalAtZeroOffset(addr);
       if (!name)
         return false;
 
-      auto value = immutableScalarGlobalValue(*name, gMap, module);
+      auto value = readConstGlobalScalar(*name, gMap, module);
       if (!value)
         return false;
 
@@ -506,14 +506,14 @@ void RegularFold::run() {
       
       if (V(cond) == 0) {
         folded++;
-        tidyPhi(TARGET(op), op->getParent());
+        normalizePhisAfterEdge(TARGET(op), op->getParent());
         builder.replace<GotoOp>(op, { new TargetAttr(ELSE(op)) });
         return false;
       }
 
       // V(cond) != 0
       folded++;
-      tidyPhi(ELSE(op), op->getParent());
+      normalizePhisAfterEdge(ELSE(op), op->getParent());
       builder.replace<GotoOp>(op, { new TargetAttr(TARGET(op)) });
       return false;
     });
@@ -542,7 +542,7 @@ void RegularFold::run() {
 
         // Divisor must be a compile-time integer constant (or a load from a
         // scalar const global, e.g. `const int base = 16`).
-        auto maybeDiv = tryGetConstantValue(y, gMap, module);
+        auto maybeDiv = foldToConstInt(y, gMap, module);
         if (!maybeDiv)
           return false;
 
@@ -581,7 +581,7 @@ void RegularFold::run() {
 
         // Divisor must be a compile-time integer constant (or a load from a
         // scalar const global, e.g. `const int base = 16`).
-        auto maybeMod = tryGetConstantValue(y, gMap, module);
+        auto maybeMod = foldToConstInt(y, gMap, module);
         if (!maybeMod)
           return false;
 

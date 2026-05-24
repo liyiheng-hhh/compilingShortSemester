@@ -55,7 +55,7 @@ BvRule rules[] = {
   "(change (mulmod x y -1) 0)",
 };
 
-BvExpr *rewriteRoot(BvExpr *expr, BvExprContext &ctx) {
+BvExpr *foldSpecialForms(BvExpr *expr, BvExprContext &ctx) {
   // x % 2 == x - (x[31] + x) & (-2)
   if (expr->ty == BvExpr::Mod && expr->r->ty == BvExpr::Const && expr->r->vi == 2) {
     auto _1 = expr->l;
@@ -75,16 +75,16 @@ BvExpr *rewriteRoot(BvExpr *expr, BvExprContext &ctx) {
   return expr;
 }
 
-BvExpr *rewrite(BvExpr *expr, BvExprContext &ctx) {
+BvExpr *foldTree(BvExpr *expr, BvExprContext &ctx) {
   if (!expr)
     return nullptr;
 
-  BvExpr* newcond = rewrite(expr->cond, ctx);
-  BvExpr* newl = rewrite(expr->l, ctx);
-  BvExpr* newr = rewrite(expr->r, ctx);
+  BvExpr* newcond = foldTree(expr->cond, ctx);
+  BvExpr* newl = foldTree(expr->l, ctx);
+  BvExpr* newr = foldTree(expr->r, ctx);
 
   BvExpr* updated = ctx.create(expr->ty, expr->vi, expr->name, newcond, newl, newr);
-  return rewriteRoot(updated, ctx);
+  return foldSpecialForms(updated, ctx);
 }
 
 }
@@ -100,7 +100,7 @@ BvExpr *smt::simplify(BvExpr *expr, BvExprContext &ctx) {
     for (auto &rule : rules) {
       if (auto rewritten = rule.rewrite(expr); rewritten != expr)
         changed = true, expr = rewritten;
-      if (auto rewritten = rewrite(expr, ctx); rewritten != expr)
+      if (auto rewritten = foldTree(expr, ctx); rewritten != expr)
         changed = true, expr = rewritten;
     }
     result = expr;

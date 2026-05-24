@@ -26,7 +26,7 @@ Rule cmpgt("(lt y x)");
 
 // It's guaranteed that the induction variable will be a multiple of `vi`
 // at the beginning of the loop.
-void tidymod(Op *loop, int vi) {
+void alignModAtLoopEntry(Op *loop, int vi) {
   int start = V(loop->DEF(0));
   auto region = loop->getRegion();
   auto entry = region->getFirstBlock();
@@ -57,7 +57,7 @@ void tidymod(Op *loop, int vi) {
   }
 }
 
-bool isInvariant(Op *loop, Op *cond) {
+bool loopCondIsInvariant(Op *loop, Op *cond) {
   // For simplicity we only check these things currently.
   if (!(isa<LtOp>(cond) || isa<LeOp>(cond) || isa<EqOp>(cond) || isa<NeOp>(cond)))
     return false;
@@ -93,9 +93,9 @@ bool isInvariant(Op *loop, Op *cond) {
   return true;
 }
 
-void moveOperands(Op *op, Op *before) {
+void hoistOperandDefsBefore(Op *op, Op *before) {
   for (auto operand : op->getOperands())
-    moveOperands(operand.defining, before);
+    hoistOperandDefsBefore(operand.defining, before);
   if (!op->inside(before) && op != before->DEF())
     return;
   
@@ -230,7 +230,7 @@ bool Unswitch::cmpmod(Op *loop, Op *cond) {
   // Unroll the loop `vi` times.
   unroll(loop, vi);
   // Check `mod`s inside the loop and erase them when possible.
-  tidymod(loop, vi);
+  alignModAtLoopEntry(loop, vi);
   unswitched++;
   return true;
 }
@@ -539,7 +539,7 @@ bool Unswitch::gtconst(Op *loop, Op *cond) {
 }
 
 bool Unswitch::invariant(Op *loop, Op *cond) {
-  if (!isInvariant(loop, cond))
+  if (!loopCondIsInvariant(loop, cond))
     return false;
 
   bool isWhile = isa<WhileOp>(loop);
@@ -558,7 +558,7 @@ bool Unswitch::invariant(Op *loop, Op *cond) {
 
   // This should be safe, as the condition is invariant.
   loop->moveToStart(ifso->appendBlock());
-  moveOperands(cond, _if);
+  hoistOperandDefsBefore(cond, _if);
 
   builder.setToBlockStart(ifnot->appendBlock());
   auto floop = isWhile

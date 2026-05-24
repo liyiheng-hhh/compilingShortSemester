@@ -19,7 +19,7 @@ Rule modIncr("(mod (add x y) 'a)");
 Rule constDiv("(div x 'a)");
 Rule invarAdd("(addl x y)");
 
-Op *phiFromSafe(Op *phi, BasicBlock *bb) {
+Op *incomingPhiForBlock(Op *phi, BasicBlock *bb) {
   if (!phi || !bb)
     return nullptr;
 
@@ -297,7 +297,7 @@ void SCEV::runImpl(LoopInfo *info) {
   std::set<std::pair<Op*, int>> divs;
   Builder builder;
   for (auto phi : phis) {
-    auto latchval = phiFromSafe(phi, latch);
+    auto latchval = incomingPhiForBlock(phi, latch);
     if (!latchval)
       continue;
     // Try to match (add x 'a).
@@ -306,7 +306,7 @@ void SCEV::runImpl(LoopInfo *info) {
       phi->add<IncreaseAttr>(V(v));
 
       // Also find out the start value.
-      auto startVal = phiFromSafe(phi, preheader);
+      auto startVal = incomingPhiForBlock(phi, preheader);
       if (!startVal)
         continue;
       start[phi] = startVal;
@@ -338,7 +338,7 @@ void SCEV::runImpl(LoopInfo *info) {
   // See if this phi comes from `x + <IncreaseAttr { a }>,
   // If so, this is <IncreaseAttr { 0, a }>.
   for (auto phi : phis) {
-    auto latchval = phiFromSafe(phi, latch);
+    auto latchval = incomingPhiForBlock(phi, latch);
     if (!latchval)
       continue;
     if (isa<AddIOp>(latchval) || isa<AddLOp>(latchval)) {
@@ -394,14 +394,14 @@ void SCEV::runImpl(LoopInfo *info) {
   // std::cerr << info << "\n";
   for (auto phi : exit->getPhis()) {
     // std::cerr << "phi: " << phi;
-    auto fromLatch = phiFromSafe(phi, latch);
+    auto fromLatch = incomingPhiForBlock(phi, latch);
     if (fromLatch)
       exitlatch[fromLatch] = phi;
   }
 
   // Factor out the modulus.
   for (auto phi : mods) {
-    auto mod = phiFromSafe(phi, latch);
+    auto mod = incomingPhiForBlock(phi, latch);
     if (!mod)
       continue;
     auto latchphi = exitlatch.count(mod) ? exitlatch[mod] : exitlatch[phi];
@@ -479,13 +479,13 @@ void SCEV::discardIv(LoopInfo *info) {
     if (phi == iv)
       continue;
 
-    auto latchval = phiFromSafe(phi, latch);
+    auto latchval = incomingPhiForBlock(phi, latch);
     if (!latchval)
       continue;
     // Try to match (addl (x 'a)).
     if (constIncrL.match(latchval, { { "x", phi } })) {
       auto v = constIncrL.extract("'a");
-      start = phiFromSafe(phi, preheader);
+      start = incomingPhiForBlock(phi, preheader);
       if (!start)
         continue;
       candidate = phi;
@@ -496,7 +496,7 @@ void SCEV::discardIv(LoopInfo *info) {
   if (!candidate)
     return;
 
-  auto after = phiFromSafe(candidate, latch);
+  auto after = incomingPhiForBlock(candidate, latch);
   if (!after)
     return;
   if (!after->getParent()->dominates(latch))
@@ -544,7 +544,7 @@ void SCEV::replaceAfter(LoopInfo *info) {
   std::unordered_map<Op*, Op*> exitlatch;
   auto exitphis = exit->getPhis();
   for (auto phi : exitphis) {
-    auto fromLatch = phiFromSafe(phi, latch);
+    auto fromLatch = incomingPhiForBlock(phi, latch);
     if (fromLatch)
       exitlatch[fromLatch] = phi;
   }
@@ -583,12 +583,12 @@ void SCEV::replaceAfter(LoopInfo *info) {
   builder.setToBlockStart(interm);
 
   for (auto phi : phis) {
-    auto latchval = phiFromSafe(phi, latch);
+    auto latchval = incomingPhiForBlock(phi, latch);
     if (!latchval)
       continue;
     bool addl = isa<AddLOp>(latchval);
 
-    auto vstart = phiFromSafe(phi, preheader);
+    auto vstart = incomingPhiForBlock(phi, preheader);
     if (!vstart)
       continue;
     auto latchphi = exitlatch[latchval];
