@@ -150,7 +150,7 @@ static bool emitSDivByConstPow2Enhanced(CodeGen &cg, int lg) {
 }
 
 // -O1: exact SysY 32-bit signed division by known constant.
-// Sisyphus-style: more 2^n special cases + small constant fast paths.
+// More 2^n special cases + small constant fast paths.
 static bool emitSDivByConst(CodeGen &cg, int32_t d) {
   if (!cg.optO1() || d == 0 || d == 1 || d == -1) {
     return false;
@@ -164,7 +164,7 @@ static bool emitSDivByConst(CodeGen &cg, int32_t d) {
       }
       return emitSDivByConstPow2Trunc(cg, lg);
     }
-    // Sisyphus-style fast paths for very common small divisors
+    // Fast paths for very common small divisors
     // (these often appear in crypto / hash / sort / matrix code)
     if (d == 3) {
       // n/3 using magic 0x55555556

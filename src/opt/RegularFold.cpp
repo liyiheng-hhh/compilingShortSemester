@@ -447,7 +447,7 @@ void RegularFold::run() {
   int folded;
 
   bool enableIrDivStrength = true;
-  if (const char *env = std::getenv("SISY_ENABLE_IR_DIV_STRENGTH"))
+  if (const char *env = std::getenv("SYSY_CC_ENABLE_IR_DIV_STRENGTH"))
     enableIrDivStrength = env[0] && std::strcmp(env, "0") != 0;
 
   // Build a map of global name → GlobalOp for constant-global detection.

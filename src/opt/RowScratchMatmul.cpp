@@ -328,7 +328,7 @@ bool validateAddressShape(StoreOp *store, const std::vector<LoadOp*> &loads,
 
 bool tryMatchMatmul(LoopInfo *iLoop, const std::map<std::string, GlobalOp*> &globals,
                     MatmulShape &shape) {
-  const bool debug = envEnabled("SISY_ROW_SCRATCH_DEBUG", false);
+  const bool debug = envEnabled("SYSY_CC_ROW_SCRATCH_DEBUG", false);
   auto reject = [&](const char *why) {
     if (debug)
       std::cerr << "[row-scratch] reject " << why << "\n";
@@ -715,7 +715,7 @@ std::map<std::string, int> RowScratchMatmul::stats() {
 }
 
 void RowScratchMatmul::run() {
-  if (!envEnabled("SISY_ENABLE_ROW_SCRATCH_MATMUL", true))
+  if (envEnabled("SYSY_CC_NO_ROW_SCRATCH_MATMUL", false))
     return;
 
   auto globals = getGlobalMap();

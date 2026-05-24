@@ -4,7 +4,7 @@
 
 // 后端指令调度优化
 // 基于列表调度（List Scheduling）算法，减少流水线停顿
-// 参考 Sisyphus: 简单的延迟模型 + 依赖分析
+// 简单的延迟模型 + 依赖分析
 
 // 延迟模型（简化 RISC-V 延迟）
 struct DelayModel {

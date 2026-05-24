@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-// Stage 3: RISC-V assembly post-processing passes (Sisyphus-inspired).
+// Stage 3: RISC-V assembly post-processing passes on textual asm.
 // Operates on textual asm emitted by CodeGen.
 
 namespace rv {

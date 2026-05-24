@@ -389,11 +389,11 @@ std::map<std::string, int> LoopTiling::stats() {
 }
 
 void LoopTiling::run() {
-  if (!envEnabled("SISY_ENABLE_LOOP_TILING", true))
+  if (envEnabled("SYSY_CC_NO_LOOP_TILING", false))
     return;
 
-  int tileSize = envInt("SISY_TILE_SIZE", kDefaultTileSize);
-  int maxRounds = envInt("SISY_TILE_ROUNDS", 3);
+  int tileSize = envInt("SYSY_CC_TILE_SIZE", envInt("SYSY_TILE_SIZE", kDefaultTileSize));
+  int maxRounds = envInt("SYSY_CC_TILE_ROUNDS", 3);
 
   // Run multiple rounds to handle deeper nests (tile from inside out).
   for (int round = 0; round < maxRounds; round++) {

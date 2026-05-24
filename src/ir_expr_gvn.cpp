@@ -6,7 +6,7 @@
 using namespace std;
 
 // 跨块 GVN (Global Value Numbering)
-// 参考 Sisyphus：使用哈希表识别等价表达式
+// 使用哈希表识别等价表达式
 
 struct ExprKey {
   IROp op;

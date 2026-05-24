@@ -9,7 +9,7 @@
 namespace rv {
 
 // Reserved for additional asm-level strength reductions (e.g. rem -> sub+mul).
-// Currently a no-op placeholder so the Stage 3 pipeline layout matches Sisyphus.
+// Reserved for additional asm-level strength reductions.
 void strengthReductAsm(std::vector<std::string> & /*lines*/) {
   if (envFlagTruthy("SYSY_CC_NO_RV_STRENGTH_REDUCT")) return;
 }

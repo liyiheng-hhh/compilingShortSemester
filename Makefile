@@ -134,7 +134,7 @@ PERF_SY ?= examples/smoke.sy
 perf-profile: compiler
 	@bash ./scripts/profile_sy.sh "$(PERF_SY)"
 
-# ---- 运行时性能评测（eval-runtime 工作流，对齐 Sisyphus 本地习惯）----
+# ---- 运行时性能评测（eval-runtime 工作流）----
 #   make libsysy.a
 #   make runtime-eval SUITE=performance OPT=O1
 #   make runtime-summary

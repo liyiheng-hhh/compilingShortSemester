@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# O0 vs O1 对比（对应 Sisyphus 的 eval-o2-aggressive 思路；本项目无 O2）
+# O0 vs O1 对比
 #
 #   ./scripts/eval-compare-opt.sh performance 20
 #   AGGR_MEDIAN_TOL_RATIO=0.02 ./scripts/eval-compare-opt.sh functional 10
