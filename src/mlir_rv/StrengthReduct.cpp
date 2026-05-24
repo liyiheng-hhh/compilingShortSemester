@@ -56,9 +56,14 @@ int StrengthReduct::runImpl() {
   Builder builder;
 
   int converted = 0;
+  const bool enableMul =
+    envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MUL", true);
   const bool enableMulwDecompose =
     envEnabled("SYSY_RV_ENABLE_MULW_DECOMPOSE", false);
-  
+
+  if (!enableMul)
+    goto strength_reduct_div;
+
   // ===================
   // Rewrite MulOp.
   // ===================
@@ -227,9 +232,8 @@ int StrengthReduct::runImpl() {
     return false;
   });
 
-  if (!envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_DIV", false))
-    return converted;
-
+strength_reduct_div:
+  if (envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_DIV", true)) {
   // ===================
   // Rewrite DivOp.
   // ===================
@@ -293,6 +297,9 @@ int StrengthReduct::runImpl() {
       return true;
     }
 
+    if (!envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MAGIC_DIV", false))
+      return false;
+
     // We truncate division toward zero.
     // See https://gmplib.org/~tege/divcnst-pldi94.pdf,
     // Section 5.
@@ -328,7 +335,9 @@ int StrengthReduct::runImpl() {
 
     return false;
   });
+  }
 
+  if (envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_REM", true)) {
   // ===================
   // Rewrite ModOp.
   // ===================
@@ -397,6 +406,9 @@ int StrengthReduct::runImpl() {
       return true;
     }
 
+    if (!envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MAGIC_REM", false))
+      return false;
+
     // Replace with div-mul-sub.
     //   x % y
     // becomes
@@ -411,9 +423,11 @@ int StrengthReduct::runImpl() {
 
     return false;
   });
+  }
 
+  if (envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_DIV", true)) {
   // ===================
-  // Rewrite DivOp.
+  // Rewrite DivOp (SCEV).
   // ===================
 
   runRewriter([&](DivOp *op) {
@@ -446,6 +460,7 @@ int StrengthReduct::runImpl() {
 
     return false;
   });
+  }
 
   return converted;
 }

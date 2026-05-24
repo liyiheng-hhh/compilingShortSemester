@@ -38,8 +38,11 @@ protected:
       
       auto ts = op->findAll<T>();
       success = false;
-      for (auto t : ts)
+      for (auto t : ts) {
+        if (!t->getParent())
+          continue;
         success |= rewriter(cast<T>(t));
+      }
     } while (success);
   }
 

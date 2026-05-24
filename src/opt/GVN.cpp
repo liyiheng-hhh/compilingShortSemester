@@ -26,9 +26,31 @@ bool GVN::Expr::operator<(const Expr &other) const {
 }
 
 #define ALLOW(Ty) || isa<Ty>(op)
-bool allowed(Op *op) {
+static bool callPure(Op *op, const std::map<std::string, FuncOp*> &fnMap) {
+  if (op->has<ImpureAttr>())
+    return false;
+  auto name = NAME(op);
+  if (isExtern(name))
+    return false;
+  auto it = fnMap.find(name);
+  if (it == fnMap.end() || !it->second)
+    return false;
+  return !it->second->has<ImpureAttr>();
+}
+
+static bool globalConst(GetGlobalOp *op, const std::map<std::string, GlobalOp*> &gMap) {
+  auto it = gMap.find(NAME(op));
+  return it != gMap.end() && it->second && it->second->has<ConstAttr>();
+}
+
+bool allowed(Op *op, const std::map<std::string, FuncOp*> &fnMap,
+             const std::map<std::string, GlobalOp*> &gMap) {
+  if (isa<CallOp>(op))
+    return callPure(op, fnMap);
+  if (isa<GetGlobalOp>(op))
+    return globalConst(cast<GetGlobalOp>(op), gMap);
   return
-    (isa<CallOp>(op) && !op->has<ImpureAttr>())
+    false
     ALLOW(AddIOp)
     ALLOW(SubIOp)
     ALLOW(MulIOp)
@@ -69,7 +91,6 @@ bool allowed(Op *op) {
     ALLOW(MulshOp)
     ALLOW(MuluhOp)
     ALLOW(SetNotZeroOp)
-    ALLOW(GetGlobalOp)
     ALLOW(BroadcastOp)
 
   // RISC-V GVN
@@ -78,7 +99,9 @@ bool allowed(Op *op) {
   ;
 }
 
-void GVN::dvnt(BasicBlock *bb, Domtree &domtree) {
+void GVN::dvnt(BasicBlock *bb, Domtree &domtree,
+               const std::map<std::string, FuncOp*> &fnMap,
+               const std::map<std::string, GlobalOp*> &gMap) {
   SemanticScope scope(*this);
 
   auto phis = bb->getPhis();
@@ -115,7 +138,7 @@ void GVN::dvnt(BasicBlock *bb, Domtree &domtree) {
     if (isa<PhiOp>(op))
       continue;
 
-    if (!allowed(op)) {
+    if (!allowed(op, fnMap, gMap)) {
       symbols[op] = num++;
       continue;
     }
@@ -160,13 +183,15 @@ void GVN::dvnt(BasicBlock *bb, Domtree &domtree) {
   }
 
   for (auto succ : domtree[bb])
-    dvnt(succ, domtree);
+    dvnt(succ, domtree, fnMap, gMap);
 }
 
 // See https://www.cs.tufts.edu/~nr/cs257/archive/keith-cooper/value-numbering.pdf,
 // "Value Numbering", Briggs, 1997
 // Refer to figure 4.
-void GVN::runImpl(Region *region) {
+void GVN::runImpl(Region *region,
+                  const std::map<std::string, FuncOp*> &fnMap,
+                  const std::map<std::string, GlobalOp*> &gMap) {
   region->updateDoms();
 
   // Construct a dominator tree.
@@ -176,13 +201,15 @@ void GVN::runImpl(Region *region) {
       domtree[bb->getIdom()].push_back(bb);
   }
 
-  dvnt(region->getFirstBlock(), domtree);
+  dvnt(region->getFirstBlock(), domtree, fnMap, gMap);
 }
 
 void GVN::run() {
   auto funcs = collectFuncs();
+  auto fnMap = getFunctionMap();
+  auto gMap = getGlobalMap();
   for (auto func : funcs)
-    runImpl(func->getRegion());
+    runImpl(func->getRegion(), fnMap, gMap);
 
   // Tidy up remaining phis after gvn.
   runRewriter([&](PhiOp *op) {

@@ -11,3 +11,4 @@ libsysy.a
 performance/
 tests/.out/
 compiler2026-sisyphus-pure-rv/
+compiler2026-test-main/

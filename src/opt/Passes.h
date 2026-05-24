@@ -77,14 +77,17 @@ class GVN : public Pass {
   };
 
   // Dominator-based Value Numbering Technique. See Briggs.
-  void dvnt(BasicBlock *bb, Domtree &domtree);
+  void dvnt(BasicBlock *bb, Domtree &domtree,
+            const std::map<std::string, FuncOp*> &fnMap,
+            const std::map<std::string, GlobalOp*> &gMap);
 public:
   GVN(ModuleOp *module): Pass(module) {}
     
   std::string name() override { return "gvn"; };
   std::map<std::string, int> stats() override;
   void run() override;
-  void runImpl(Region *region);
+  void runImpl(Region *region, const std::map<std::string, FuncOp*> &fnMap,
+              const std::map<std::string, GlobalOp*> &gMap);
 };
 
 class Inline : public Pass {

@@ -17,20 +17,51 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/pa
 	$(SRCDIR)/rv/rv_asm.cpp $(SRCDIR)/rv/rv_passes.cpp $(SRCDIR)/rv/RegPeephole.cpp \
 	$(SRCDIR)/rv/InstCombine.cpp $(SRCDIR)/rv/Schedule.cpp $(SRCDIR)/rv/StrengthReduct.cpp \
 	$(SRCDIR)/codegen/OpBase.cpp $(SRCDIR)/codegen/Attrs.cpp $(SRCDIR)/codegen/CodeGen.cpp \
+	$(SRCDIR)/pre-opt/PreAttrs.cpp $(SRCDIR)/pre-opt/MoveAlloca.cpp \
+	$(SRCDIR)/pre-opt/EarlyConstFold.cpp $(SRCDIR)/pre-opt/Localize.cpp \
+	$(SRCDIR)/pre-opt/EarlyInline.cpp $(SRCDIR)/pre-opt/TCO.cpp \
+	$(SRCDIR)/pre-opt/LoweredTCO.cpp $(SRCDIR)/pre-opt/Remerge.cpp \
+	$(SRCDIR)/pre-opt/RaiseToFor.cpp $(SRCDIR)/pre-opt/View.cpp \
+	$(SRCDIR)/pre-opt/LoopDCE.cpp $(SRCDIR)/pre-opt/TidyMemory.cpp \
+	$(SRCDIR)/pre-opt/Lower.cpp $(SRCDIR)/pre-opt/ArrayAccess.cpp \
+	$(SRCDIR)/pre-opt/Base.cpp $(SRCDIR)/pre-opt/ColumnMajor.cpp \
+	$(SRCDIR)/pre-opt/Fusion.cpp $(SRCDIR)/pre-opt/NoStore.cpp \
+	$(SRCDIR)/pre-opt/Parallelizable.cpp $(SRCDIR)/pre-opt/Parallelize.cpp \
+	$(SRCDIR)/pre-opt/Unroll.cpp $(SRCDIR)/pre-opt/Unswitch.cpp \
 	$(SRCDIR)/opt/Pass.cpp $(SRCDIR)/opt/GVN.cpp \
 	$(SRCDIR)/mlir_rv/Lower.cpp $(SRCDIR)/mlir_rv/InstCombine.cpp $(SRCDIR)/mlir_rv/RvDCE.cpp \
-	$(SRCDIR)/mlir_rv/Schedule.cpp $(SRCDIR)/mlir_rv/RegAlloc.cpp $(SRCDIR)/mlir_rv/RegPeephole.cpp \
+	$(SRCDIR)/mlir_rv/StrengthReduct.cpp $(SRCDIR)/mlir_rv/Schedule.cpp $(SRCDIR)/mlir_rv/RegAlloc.cpp $(SRCDIR)/mlir_rv/RegPeephole.cpp \
 	$(SRCDIR)/mlir_rv/Dump.cpp \
 	$(SRCDIR)/rv_mlir_pipeline.cpp \
 	$(SRCDIR)/dialect_pipeline.cpp $(SRCDIR)/dialect_fallback.cpp \
 	$(SRCDIR)/dialect_parse/Lexer.cpp $(SRCDIR)/dialect_parse/Parser.cpp \
-	$(SRCDIR)/dialect_parse/Sema.cpp $(SRCDIR)/dialect_parse/Type.cpp \
+	$(SRCDIR)/dialect_parse/Sema.cpp $(SRCDIR)/dialect_parse/KnapsackDp.cpp \
+	$(SRCDIR)/dialect_parse/Type.cpp \
 	$(SRCDIR)/dialect_hir/DhirOps.cpp $(SRCDIR)/dialect_hir/DhirBuilder.cpp \
 	$(SRCDIR)/cfg/HIRToCFG.cpp $(SRCDIR)/cfg/CFGOps.cpp $(SRCDIR)/cfg/CFGToLegacy.cpp \
 	$(SRCDIR)/cfg/CFGLegality.cpp $(SRCDIR)/cfg/CFGVerifier.cpp \
-	$(SRCDIR)/opt/PassManager.cpp $(SRCDIR)/opt/Mem2Reg.cpp $(SRCDIR)/opt/RegularFold.cpp \
+	$(SRCDIR)/opt/PassManager.cpp $(SRCDIR)/opt/Mem2Reg.cpp \
+	$(SRCDIR)/opt/Alias.cpp $(SRCDIR)/opt/Pureness.cpp $(SRCDIR)/opt/AtMostOnce.cpp \
+	$(SRCDIR)/opt/DSE.cpp $(SRCDIR)/opt/DLE.cpp $(SRCDIR)/opt/DAE.cpp \
+	$(SRCDIR)/opt/AggressiveDCE.cpp \
+	$(SRCDIR)/opt/LoopInfo.cpp $(SRCDIR)/opt/LoopAnalysis.cpp \
+	$(SRCDIR)/opt/CanonicalizeLoop.cpp $(SRCDIR)/opt/LoopRotate.cpp \
+	$(SRCDIR)/opt/LoopUnroll.cpp $(SRCDIR)/opt/LICM.cpp $(SRCDIR)/opt/SCEV.cpp \
+	$(SRCDIR)/opt/RowScratchMatmul.cpp $(SRCDIR)/opt/LoopTiling.cpp \
+	$(SRCDIR)/opt/RemoveEmptyLoop.cpp $(SRCDIR)/opt/Inline.cpp \
+	$(SRCDIR)/opt/FlattenCFG.cpp \
+	$(SRCDIR)/opt/RegularFold.cpp \
+	$(SRCDIR)/opt/GCM.cpp $(SRCDIR)/opt/Select.cpp $(SRCDIR)/opt/InstSchedule.cpp \
+	$(SRCDIR)/opt/LateInline.cpp $(SRCDIR)/opt/Reassociate.cpp \
+	$(SRCDIR)/opt/ArrayStrideAnalysis.cpp $(SRCDIR)/opt/Globalize.cpp \
+	$(SRCDIR)/opt/InlineStore.cpp $(SRCDIR)/opt/SynthConstArray.cpp \
 	$(SRCDIR)/opt/DCE.cpp $(SRCDIR)/opt/SimplifyCFG.cpp $(SRCDIR)/opt/CallGraph.cpp \
-	$(SRCDIR)/utils/Matcher.cpp
+	$(SRCDIR)/opt/Verify.cpp \
+	$(SRCDIR)/utils/Exec.cpp \
+	$(SRCDIR)/utils/Matcher.cpp \
+	$(SRCDIR)/utils/smt/BvMatcher.cpp $(SRCDIR)/utils/smt/CDCL.cpp \
+	$(SRCDIR)/utils/smt/Simplify.cpp $(SRCDIR)/utils/smt/Solve.cpp \
+	$(SRCDIR)/main/Options.cpp
 OBJS := $(SRCS:.cpp=.o)
 
 all: compiler

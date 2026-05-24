@@ -9,18 +9,6 @@ static bool isTerminator(Op *op) {
   return isa<BranchOp>(op) || isa<GotoOp>(op) || isa<ReturnOp>(op);
 }
 
-static void sealOpenBlocks(Builder &builder, BasicBlock *first, BasicBlock *last, BasicBlock *exit) {
-  if (!first || !last || !exit)
-    return;
-
-  for (auto bb = first; bb != last->nextBlock(); bb = bb->nextBlock()) {
-    if (bb->getOpCount() == 0 || !isTerminator(bb->getLastOp())) {
-      builder.setToBlockEnd(bb);
-      builder.create<GotoOp>({ new TargetAttr(exit) });
-    }
-  }
-}
-
 static void handleIf(Op *x) {
   Builder builder;
 
@@ -31,54 +19,40 @@ static void handleIf(Op *x) {
   auto beforeIf = bb;
   bb = region->insertAfter(bb);
   beforeIf->splitOpsAfter(bb, x);
-  
-  // Now we're inserting things between `beforeIf` and `bb`. This preserves existing jumps.
+
   // Move all blocks in thenRegion after the new basic block.
   auto thenRegion = x->getRegion(0);
   auto [thenFirst, thenFinal] = thenRegion->moveTo(beforeIf);
   auto final = thenFinal ? thenFinal : beforeIf;
-  auto thenTarget = thenFirst ? thenFirst : final;
-  auto elseTarget = (BasicBlock*) nullptr;
 
   // This IfOp has an elseRegion. Repeat the process.
   bool hasElse = x->getRegions().size() > 1;
-  BasicBlock *elseFirst = nullptr, *elseFinal = nullptr;
+  BasicBlock *elseFirst = nullptr;
   if (hasElse) {
     auto elseRegion = x->getRegion(1);
     auto anchor = thenFinal ? thenFinal : beforeIf;
-    std::tie(elseFirst, elseFinal) = elseRegion->moveTo(anchor);
-    if (elseFinal)
-      final = elseFinal;
-    else if (elseFirst)
-      final = elseFirst;
-    else
-      final = anchor;
-    elseTarget = elseFirst ? elseFirst : final;
-  } else {
-    elseTarget = nullptr;
+    std::tie(elseFirst, final) = elseRegion->moveTo(anchor);
+    if (!final)
+      final = elseFirst ? elseFirst : anchor;
   }
 
   auto end = region->insertAfter(final);
-  if (!thenTarget)
-    thenTarget = end;
-  if (!elseTarget)
-    elseTarget = end;
+  auto thenTarget = thenFirst ? thenFirst : end;
 
   if (hasElse) {
+    auto elseTarget = elseFirst ? elseFirst : end;
     builder.setToBlockEnd(beforeIf);
-    builder.create<BranchOp>({ x->getOperand() },{
+    builder.create<BranchOp>({ x->getOperand() }, {
       new TargetAttr(thenTarget),
       new ElseAttr(elseTarget)
     });
-  }
-
-  // Close every open block in moved fragments to preserve structured-if semantics.
-  // Without this, non-final open blocks can accidentally fall through into sibling
-  // fragment blocks after moveTo(), causing wrong-code on nested if ladders.
-  sealOpenBlocks(builder, thenFirst, thenFinal, end);
-  if (hasElse)
-    sealOpenBlocks(builder, elseFirst, elseFinal, end);
-  else {
+    builder.setToBlockEnd(final);
+    builder.create<GotoOp>({ new TargetAttr(end) });
+    if (thenFinal) {
+      builder.setToBlockEnd(thenFinal);
+      builder.create<GotoOp>({ new TargetAttr(end) });
+    }
+  } else {
     builder.setToBlockEnd(beforeIf);
     builder.create<BranchOp>({ x->getOperand() }, {
       new TargetAttr(thenTarget),
@@ -276,12 +250,12 @@ void tidy(FuncOp *func) {
 
 void FlattenCFG::run() {
   auto ifs = module->findAll<IfOp>();
-  for (auto it = ifs.rbegin(); it != ifs.rend(); ++it)
-    handleIf(*it);
-  
+  for (auto x : ifs)
+    handleIf(x);
+
   auto whiles = module->findAll<WhileOp>();
-  for (auto it = whiles.rbegin(); it != whiles.rend(); ++it)
-    handleWhile(*it);
+  for (auto x : whiles)
+    handleWhile(x);
 
   // Now everything inside functions have been flattened.
   // Tidy up the basic blocks:

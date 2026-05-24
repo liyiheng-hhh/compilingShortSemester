@@ -47,6 +47,8 @@ std::string runRvMlirPipeline(ModuleOp *module, bool enableSchedule,
   runPass<rv::RvDCE>(module);
   if (!envFlag("SYSY_RV_DISABLE_GVN", false) && rv::envEnabledSuffix("ENABLE_GVN", true))
     runPass<GVN>(module);
+  if (rv::envEnabledSuffix("ENABLE_STRENGTH_REDUCT", true))
+    runPass<rv::StrengthReduct>(module);
   if (enableSchedule && rv::envEnabledSuffix("ENABLE_SCHEDULE", true))
     runPass<rv::Schedule>(module);
   const bool fast = envFlag("SYSY_CC_MLIR_RV_FAST_RA", false);
