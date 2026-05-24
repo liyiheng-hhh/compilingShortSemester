@@ -2,9 +2,9 @@
 
 using namespace sys;
 
-static void postorder(BasicBlock *current, DomTree &tree, std::vector<BasicBlock*> &order) {
+static void aliasDomPostorder(BasicBlock *current, DomTree &tree, std::vector<BasicBlock*> &order) {
   for (auto bb : tree[current])
-    postorder(bb, tree, order);
+    aliasDomPostorder(bb, tree, order);
   order.push_back(current);
 }
 
@@ -16,7 +16,7 @@ void Alias::runImpl(Region *region) {
 
   BasicBlock *entry = region->getFirstBlock();
   std::vector<BasicBlock*> rpo;
-  postorder(entry, tree, rpo);
+  aliasDomPostorder(entry, tree, rpo);
   std::reverse(rpo.begin(), rpo.end());
 
   // Then traverse the CFG in that order.

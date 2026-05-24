@@ -12,7 +12,7 @@ std::map<std::string, int> InlineStore::stats() {
 
 namespace {
 
-bool hasStore(BasicBlock *bb) {
+bool istBlockHasStore(BasicBlock *bb) {
   for (auto x : bb->getOps()) {
     if (isa<StoreOp>(x))
       return true;
@@ -20,7 +20,7 @@ bool hasStore(BasicBlock *bb) {
   return false;
 }
 
-bool globalLoadEscapesToCall(ModuleOp *module, const std::string &name) {
+bool istGlobalLoadEscapesToCall(ModuleOp *module, const std::string &name) {
   for (auto get : module->findAll<GetGlobalOp>()) {
     if (NAME(get) != name)
       continue;
@@ -38,7 +38,7 @@ bool globalLoadEscapesToCall(ModuleOp *module, const std::string &name) {
   return false;
 }
 
-bool globalStillLive(GlobalOp *glob) {
+bool istGlobalStillLive(GlobalOp *glob) {
   return glob && glob->getParent();
 }
 
@@ -71,9 +71,9 @@ void InlineStore::run() {
         continue;
       if (!fMap[name]->has<AtMostOnceAttr>())
         continue;
-      if (globalLoadEscapesToCall(module, k))
+      if (istGlobalLoadEscapesToCall(module, k))
         continue;
-      if (!globalStillLive(v))
+      if (!istGlobalStillLive(v))
         continue;
       queue.push_back(k);
     }
@@ -88,7 +88,7 @@ void InlineStore::run() {
     if (!gMap.count(gname))
       continue;
     auto glob = gMap[gname];
-    if (!globalStillLive(glob))
+    if (!istGlobalStillLive(glob))
       continue;
     auto funcname = *used[gname].begin();
     Op *func = fMap[funcname];
@@ -178,9 +178,9 @@ void InlineStore::run() {
         auto ifnot = ELSE(term);
         // Don't check too far (haven't thought of how to handle loops yet.)
         // Just check the next block.
-        if (isa<ReturnOp>(ifnot->getLastOp()) && !hasStore(ifnot) && !ifso->dominates(runner))
+        if (isa<ReturnOp>(ifnot->getLastOp()) && !istBlockHasStore(ifnot) && !ifso->dominates(runner))
           runner = ifso;
-        else if (isa<ReturnOp>(ifso->getLastOp()) && !hasStore(ifso) && !ifnot->dominates(runner))
+        else if (isa<ReturnOp>(ifso->getLastOp()) && !istBlockHasStore(ifso) && !ifnot->dominates(runner))
           runner = ifnot;
         else break;
       } else break;

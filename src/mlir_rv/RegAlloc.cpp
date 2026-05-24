@@ -12,7 +12,7 @@ using namespace sys::rv;
 
 namespace {
 
-bool envEnabled(const char *name, bool fallback = true) {
+bool raEnvEnabled(const char *name, bool fallback = true) {
   const char *v = std::getenv(name);
   if (!v || !v[0])
     return fallback;
@@ -57,12 +57,12 @@ public:
   SpilledRs2Attr *clone() override { return new SpilledRs2Attr(fp, offset, ref); }
 };
 
-bool fitsImm12(int x) {
+bool raFitsImm12(int x) {
   return x > -2048 && x < 2048;
 }
 
-void materializeSpAddr(Builder &builder, Reg tmp, int offset) {
-  if (fitsImm12(offset))
+void raMaterializeSpAddr(Builder &builder, Reg tmp, int offset) {
+  if (raFitsImm12(offset))
     builder.create<AddiOp>({ RDC(tmp), RSC(Reg::sp), new IntAttr(offset) });
   else {
     builder.create<LiOp>({ RDC(tmp), new IntAttr(offset) });
@@ -70,8 +70,8 @@ void materializeSpAddr(Builder &builder, Reg tmp, int offset) {
   }
 }
 
-void emitStackStore(Builder &builder, Reg src, bool fp, int offset) {
-  if (fitsImm12(offset)) {
+void raEmitStackStore(Builder &builder, Reg src, bool fp, int offset) {
+  if (raFitsImm12(offset)) {
     if (fp)
       builder.create<FsdOp>({ RSC(src), RS2C(Reg::sp), new IntAttr(offset) });
     else
@@ -79,24 +79,24 @@ void emitStackStore(Builder &builder, Reg src, bool fp, int offset) {
     return;
   }
 
-  materializeSpAddr(builder, spillReg2, offset);
+  raMaterializeSpAddr(builder, spillReg2, offset);
   if (fp)
     builder.create<FsdOp>({ RSC(src), RS2C(spillReg2), new IntAttr(0) });
   else
     builder.create<sys::rv::StoreOp>({ RSC(src), RS2C(spillReg2), new IntAttr(0), new SizeAttr(8) });
 }
 
-void emitStackLoad(Builder &builder, Reg dst, Value::Type ty, int offset, Reg addrTmp) {
-  if (fitsImm12(offset)) {
+void raEmitStackLoad(Builder &builder, Reg dst, Value::Type ty, int offset, Reg addrTmp) {
+  if (raFitsImm12(offset)) {
     builder.create<sys::rv::LoadOp>(ty, { RDC(dst), RSC(Reg::sp), new IntAttr(offset), new SizeAttr(8) });
     return;
   }
 
-  materializeSpAddr(builder, addrTmp, offset);
+  raMaterializeSpAddr(builder, addrTmp, offset);
   builder.create<sys::rv::LoadOp>(ty, { RDC(dst), RSC(addrTmp), new IntAttr(0), new SizeAttr(8) });
 }
 
-std::vector<Value::Type> getArgTypes(FuncOp *funcOp) {
+std::vector<Value::Type> raGetArgTypes(FuncOp *funcOp) {
   int argcnt = funcOp->get<ArgCountAttr>()->count;
   if (auto argTypes = funcOp->find<ArgTypesAttr>()) {
     if ((int) argTypes->types.size() == argcnt)
@@ -112,13 +112,13 @@ std::vector<Value::Type> getArgTypes(FuncOp *funcOp) {
   return types;
 }
 
-struct ArgPlacement {
+struct RaArgPlacement {
   bool fp;
   int regIndex;
   int stackIndex;
 };
 
-ArgPlacement getArgPlacement(const std::vector<Value::Type> &types, int index) {
+RaArgPlacement raGetArgPlacement(const std::vector<Value::Type> &types, int index) {
   int intCount = 0;
   int fpCount = 0;
   int stackCount = 0;
@@ -185,7 +185,7 @@ std::map<std::string, int> RegAlloc::stats() {
 std::string getValueNumber(Value value);
 
 // For debug purposes
-void dumpInterf(Region *region, const std::unordered_map<Op*, std::unordered_set<Op*>> &interf) {
+void raDumpInterf(Region *region, const std::unordered_map<Op*, std::unordered_set<Op*>> &interf) {
   region->dump(std::cerr, /*depth=*/1);
   std::cerr << "\n\n===== interference graph =====\n\n";
   for (auto [k, v] : interf) {
@@ -196,7 +196,7 @@ void dumpInterf(Region *region, const std::unordered_map<Op*, std::unordered_set
   }
 }
 
-void dumpAssignment(Region *region, const std::unordered_map<Op*, Reg> &assignment) {
+void raDumpAssignment(Region *region, const std::unordered_map<Op*, Reg> &assignment) {
   region->dump(std::cerr, /*depth=*/1);
   std::cerr << "\n\n===== assignment =====\n\n";
   for (auto [k, v] : assignment) {
@@ -205,7 +205,7 @@ void dumpAssignment(Region *region, const std::unordered_map<Op*, Reg> &assignme
 }
 
 // Used in constructing interference graph.
-struct Event {
+struct RaRegEvent {
   int timestamp;
   bool start;
   Op *op;
@@ -265,7 +265,7 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
   builder.setToRegionStart(region);
   std::vector<Value> argHolders, fargHolders;
   auto argcnt = funcOp->get<ArgCountAttr>()->count;
-  auto argTypes = getArgTypes(cast<FuncOp>(funcOp));
+  auto argTypes = raGetArgTypes(cast<FuncOp>(funcOp));
   for (int i = 0; i < 8; i++) {
     auto placeholder = builder.create<PlaceHolderOp>();
     assignment[placeholder] = argRegs[i];
@@ -301,7 +301,7 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
 
     Op *op = getArgs[i];
     auto ty = op->getResultType();
-    auto placement = getArgPlacement(argTypes, (int) i);
+    auto placement = raGetArgPlacement(argTypes, (int) i);
 
     // It is necessary to put those GetArgs to the front.
     if (fpreg(ty) && placement.regIndex >= 0) {
@@ -441,18 +441,18 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
     }
 
     // We use event-driven approach to optimize it into O(n log n + E).
-    std::vector<Event> events;
+    std::vector<RaRegEvent> events;
     for (auto [op, v] : lastUsed) {
       // Don't push empty live range. It's not handled properly.
       if (defined[op] == v)
         continue;
       
-      events.push_back(Event { defined[op], true, op });
-      events.push_back(Event { v, false, op });
+      events.push_back(RaRegEvent { defined[op], true, op });
+      events.push_back(RaRegEvent { v, false, op });
     }
 
     // Sort with ascending time (i.e. instruction count).
-    std::sort(events.begin(), events.end(), [](Event a, Event b) {
+    std::sort(events.begin(), events.end(), [](RaRegEvent a, RaRegEvent b) {
       // For the same timestamp, we first set END events as inactive, then deal with START events.
       return a.timestamp == b.timestamp ? (!a.start && b.start) : a.timestamp < b.timestamp;
     });
@@ -672,7 +672,7 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
 
   // Mapping integer spill slots to FP registers is fragile around large
   // argument frames and dynamic call-frame deltas. Keep it opt-in.
-  if (!localFastMode && spillOffset.size() && envEnabled("SYSY_RV_SPILL_TO_FP", false)) {
+  if (!localFastMode && spillOffset.size() && raEnvEnabled("SYSY_RV_SPILL_TO_FP", false)) {
     // Try to reuse floating-point registers for spilling.
     std::unordered_set<Reg> used;
     for (auto [op, x] : assignment) {
@@ -1122,7 +1122,7 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
         if (offset < delta)
           builder.create<FmvdxOp>({ RDC(Reg(delta - offset)), RSC(reg) });
         else
-          emitStackStore(builder, reg, fp, offset);
+          raEmitStackStore(builder, reg, fp, offset);
         op->add<RdAttr>(reg);
       }
 
@@ -1142,7 +1142,7 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
         else if (offset < delta)
           builder.create<FmvxdOp>({ RDC(reg), RSC(Reg(delta - offset)) });
         else
-          emitStackLoad(builder, reg, ldty, offset, spillReg);
+          raEmitStackLoad(builder, reg, ldty, offset, spillReg);
         op->add<RsAttr>(reg);
       }
 
@@ -1162,7 +1162,7 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
         else if (offset < delta)
           builder.create<FmvxdOp>({ RDC(reg), RSC(Reg(delta - offset)) });
         else
-          emitStackLoad(builder, reg, ldty, offset, spillReg2);
+          raEmitStackLoad(builder, reg, ldty, offset, spillReg2);
         op->add<Rs2Attr>(reg);
       }
     }
@@ -1201,7 +1201,7 @@ void RegAlloc::run() {
 
   for (auto func : funcs) {
     proEpilogue(func, leaves.count(func));
-    if (envEnabled("SYSY_RV_ENABLE_TIDYUP", true))
+    if (raEnvEnabled("SYSY_RV_ENABLE_TIDYUP", true))
       tidyup(func->getRegion());
   }
 }

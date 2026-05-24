@@ -21,13 +21,13 @@ namespace {
 constexpr int kDefaultTileSize = 32;
 constexpr int kMinTripForTiling = 64;
 
-bool envEnabled(const char *name, bool fallback) {
+bool ltEnvEnabled(const char *name, bool fallback) {
   const char *raw = std::getenv(name);
   if (!raw || !raw[0]) return fallback;
   return std::strcmp(raw, "0") != 0 && std::strcmp(raw, "false") != 0;
 }
 
-int envInt(const char *name, int fallback) {
+int ltEnvInt(const char *name, int fallback) {
   const char *raw = std::getenv(name);
   if (!raw || !raw[0]) return fallback;
   int v = std::atoi(raw);
@@ -36,7 +36,7 @@ int envInt(const char *name, int fallback) {
 
 // Check if loop has unit-step induction variable.
 // More robust than relying on LoopAnalysis::getInduction() which may miss patterns.
-bool isCanonicalUnitLoop(LoopInfo *loop) {
+bool ltIsCanonicalUnitLoop(LoopInfo *loop) {
   if (!loop || !loop->preheader || loop->latches.size() != 1 || loop->exits.size() != 1)
     return false;
 
@@ -73,7 +73,7 @@ bool isCanonicalUnitLoop(LoopInfo *loop) {
 }
 
 // Estimate trip count. Returns 0 if runtime/unknown.
-int estimateTrip(LoopInfo *loop) {
+int ltEstimateTrip(LoopInfo *loop) {
   auto stop = loop->getStop();
   if (!stop) return 0;
   if (isa<IntOp>(stop)) return V(stop);
@@ -85,7 +85,7 @@ int estimateTrip(LoopInfo *loop) {
 // reference the outer IV in a way that breaks tiling semantics.
 // Strip-mining wraps the entire outer loop body, so side effects are
 // preserved at the same execution frequency.
-bool isPerfectSubNest(LoopInfo *outer, LoopInfo *inner) {
+bool ltIsPerfectSubNest(LoopInfo *outer, LoopInfo *inner) {
   if (outer->subloops.size() != 1 || outer->subloops[0] != inner)
     return false;
   // For tiling to be safe, we just need the outer to have exactly one subloop.
@@ -108,7 +108,7 @@ bool isPerfectSubNest(LoopInfo *outer, LoopInfo *inner) {
 // Conservative: only tile when all stores in inner loop write to addresses
 // that depend on the inner IV, and all loads from the same base also depend
 // on the inner IV (i.e., each tile iteration is independent).
-bool isTilingSafe(LoopInfo *outer, LoopInfo *inner) {
+bool ltIsTilingSafe(LoopInfo *outer, LoopInfo *inner) {
   auto outerIV = outer->getInduction();
   auto innerIV = inner->getInduction();
   if (!outerIV || !innerIV) return false;
@@ -131,7 +131,7 @@ bool isTilingSafe(LoopInfo *outer, LoopInfo *inner) {
   return true;
 }
 
-Op *findUnitIvPhi(LoopInfo *loop) {
+Op *ltFindUnitIvPhi(LoopInfo *loop) {
   if (!loop || !loop->preheader || loop->latches.size() != 1)
     return nullptr;
   auto latch = loop->getLatch();
@@ -172,13 +172,13 @@ LoopInfo *nestRoot(LoopInfo *loop) {
   return loop;
 }
 
-Op *loopInductionVar(LoopInfo *loop) {
-  if (Op *iv = findUnitIvPhi(loop))
+Op *ltLoopInductionVar(LoopInfo *loop) {
+  if (Op *iv = ltFindUnitIvPhi(loop))
     return iv;
   return loop ? loop->getInduction() : nullptr;
 }
 
-bool ivHasUseOutsideLoop(Op *iv, LoopInfo *loop) {
+bool ltIvHasUseOutsideLoop(Op *iv, LoopInfo *loop) {
   if (!iv || !loop)
     return false;
   for (Op *user : iv->getUses()) {
@@ -192,22 +192,22 @@ bool ivHasUseOutsideLoop(Op *iv, LoopInfo *loop) {
 
 // Strip-mining preserves iteration order but not the IV value after the loop
 // when the IV is used outside the loop being tiled.
-bool nestTilingPreservesLiveOuts(LoopInfo *outer, LoopInfo *inner) {
+bool ltNestPreservesLiveOuts(LoopInfo *outer, LoopInfo *inner) {
   LoopInfo *root = nestRoot(outer);
   if (!root)
     return false;
 
-  Op *outerIv = loopInductionVar(outer);
-  if (outerIv && ivHasUseOutsideLoop(outerIv, outer))
+  Op *outerIv = ltLoopInductionVar(outer);
+  if (outerIv && ltIvHasUseOutsideLoop(outerIv, outer))
     return false;
 
-  Op *innerIv = loopInductionVar(inner);
-  if (innerIv && ivHasUseOutsideLoop(innerIv, inner))
+  Op *innerIv = ltLoopInductionVar(inner);
+  if (innerIv && ltIvHasUseOutsideLoop(innerIv, inner))
     return false;
 
   for (LoopInfo *L = outer; L; L = L->parent) {
-    Op *iv = loopInductionVar(L);
-    if (iv && ivHasUseOutsideLoop(iv, root))
+    Op *iv = ltLoopInductionVar(L);
+    if (iv && ltIvHasUseOutsideLoop(iv, root))
       return false;
     if (L == root)
       break;
@@ -223,7 +223,7 @@ bool nestTilingPreservesLiveOuts(LoopInfo *outer, LoopInfo *inner) {
 //
 // Implementation: We modify the existing loop's start/stop to be bounded
 // by the tile, and wrap it in a new outer loop.
-bool applyStripMine(LoopInfo *loop, int tileSize) {
+bool ltApplyStripMine(LoopInfo *loop, int tileSize) {
   auto preheader = loop->preheader;
   auto header = loop->header;
   auto exit = loop->getExit();
@@ -389,11 +389,11 @@ std::map<std::string, int> LoopTiling::stats() {
 }
 
 void LoopTiling::run() {
-  if (envEnabled("SYSY_CC_NO_LOOP_TILING", false))
+  if (ltEnvEnabled("SYSY_CC_NO_LOOP_TILING", false))
     return;
 
-  int tileSize = envInt("SYSY_CC_TILE_SIZE", envInt("SYSY_TILE_SIZE", kDefaultTileSize));
-  int maxRounds = envInt("SYSY_CC_TILE_ROUNDS", 3);
+  int tileSize = ltEnvInt("SYSY_CC_TILE_SIZE", ltEnvInt("SYSY_TILE_SIZE", kDefaultTileSize));
+  int maxRounds = ltEnvInt("SYSY_CC_TILE_ROUNDS", 3);
 
   // Run multiple rounds to handle deeper nests (tile from inside out).
   for (int round = 0; round < maxRounds; round++) {
@@ -421,7 +421,7 @@ void LoopTiling::run() {
           auto cur = worklist.back();
           worklist.pop_back();
 
-          if (!isCanonicalUnitLoop(cur)) {
+          if (!ltIsCanonicalUnitLoop(cur)) {
             continue;
           }
           if (cur->subloops.size() != 1) {
@@ -436,10 +436,10 @@ void LoopTiling::run() {
           }
 
           // inner has no subloops — this is a tileable 2-level pair.
-          if (!isCanonicalUnitLoop(inner)) {
+          if (!ltIsCanonicalUnitLoop(inner)) {
             continue;
           }
-          if (!isPerfectSubNest(cur, inner)) {
+          if (!ltIsPerfectSubNest(cur, inner)) {
             continue;
           }
 
@@ -468,28 +468,28 @@ void LoopTiling::run() {
           // Nested strip-mine is unsafe when the same scalar is reused across
           // multiple loop nests in one function (sl1). Allow only top-level pairs
           // unless explicitly enabled after improved live-out analysis.
-          if (cur->parent && !envEnabled("SYSY_CC_ENABLE_NESTED_LOOP_TILING", false)) {
+          if (cur->parent && !ltEnvEnabled("SYSY_CC_ENABLE_NESTED_LOOP_TILING", false)) {
             rejectedShape++;
             continue;
           }
 
-          if (!isTilingSafe(cur, inner)) {
+          if (!ltIsTilingSafe(cur, inner)) {
             rejectedShape++;
             continue;
           }
 
-          if (!nestTilingPreservesLiveOuts(cur, inner)) {
+          if (!ltNestPreservesLiveOuts(cur, inner)) {
             rejectedShape++;
             continue;
           }
 
-          int trip = estimateTrip(cur);
+          int trip = ltEstimateTrip(cur);
           if (trip > 0 && trip < kMinTripForTiling) {
             rejectedProfit++;
             continue;
           }
 
-          if (applyStripMine(cur, tileSize)) {
+          if (ltApplyStripMine(cur, tileSize)) {
             tiled++;
             changed = true;
             break; // Re-run analysis after modifying

@@ -11,6 +11,8 @@
 
 ## 本轮已完成（helper 重命名）
 
+### 批次 1
+
 | 文件 | 重命名示例 |
 |------|------------|
 | `opt/Mem2Reg.cpp` | `SlotLiveIn`, `computeSlotLiveIn`, `resolvePhiOperandOnEdge` |
@@ -20,6 +22,21 @@
 | `utils/smt/Simplify.cpp` | `foldTree`, `foldSpecialForms` |
 | `pre-opt/Unswitch.cpp` | `alignModAtLoopEntry`, `loopCondIsInvariant` |
 | `dialect_parse/KnapsackDp.cpp` | `dpEmitMainLoops`, `dpVarRef`, `dpFindFunction` |
+
+### 批次 2
+
+| 文件 | 重命名示例 |
+|------|------------|
+| `opt/Select.cpp` | `selHoistable`, `selIdentical` |
+| `opt/InlineStore.cpp` | `istBlockHasStore`, `istGlobalStillLive` |
+| `opt/Pureness.cpp` | `pureGlobalHasStores` |
+| `opt/Alias.cpp` | `aliasDomPostorder` |
+| `opt/GVN.cpp` | `gvnCallPure`, `gvnGlobalConst`, `gvnAllowed` |
+| `opt/GCM.cpp` | `gcmIsPinned`, `gcmDomPostorder` |
+| `opt/LoopTiling.cpp` | `ltApplyStripMine`, `ltEnvEnabled`, … |
+| `opt/RowScratchMatmul.cpp` | `rsmTryMatchMatmul`, `rsmBin`, `RsmMatmulShape`, … |
+| `mlir_rv/RegAlloc.cpp` | `raEmitStackLoad`, `raGetArgTypes`, `RaRegEvent` |
+| `mlir_rv/RegPeephole.cpp` | `rpRotateFallthroughLoop`, `rpSaveCalleeRegs`, … |
 
 ## 暂不动（高风险）
 

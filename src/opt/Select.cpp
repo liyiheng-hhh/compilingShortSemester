@@ -5,7 +5,7 @@ using namespace sys;
 namespace {
 
 #define ALLOWED(Ty) || isa<Ty>(op)
-bool hoistable(Op *op) {
+bool selHoistable(Op *op) {
   return isa<AddIOp>(op)
     ALLOWED(IntOp)
     ALLOWED(AddLOp)
@@ -20,7 +20,7 @@ bool hoistable(Op *op) {
   ;
 }
 
-bool identical(Op *a, Op *b) {
+bool selIdentical(Op *a, Op *b) {
   if (a->opid != b->opid || a->getOperandCount() != b->getOperandCount())
     return false;
 
@@ -32,7 +32,7 @@ bool identical(Op *a, Op *b) {
     return V(a) == V(b);
   
   for (int i = 0; i < a->getOperandCount(); i++) {
-    if (!identical(a->DEF(i), b->DEF(i)))
+    if (!selIdentical(a->DEF(i), b->DEF(i)))
       return false;
   }
   return true;
@@ -70,7 +70,7 @@ void Select::run() {
     
     // Now check if both bb1 and bb2 have identical initial op sequence.
     auto r1 = bb1->getFirstOp(), r2 = bb2->getFirstOp();
-    while (hoistable(r1) && identical(r1, r2)) {
+    while (selHoistable(r1) && selIdentical(r1, r2)) {
       auto x1 = r1->nextOp(), x2 = r2->nextOp();
       
       r1->moveBefore(term);
@@ -157,7 +157,7 @@ void Select::run() {
     // It has to be relocatable, and has to be "worth it",
     // because we're pulling it out of an if.
     // We use a whitelist.
-    if (!hoistable(v2))
+    if (!selHoistable(v2))
       continue;
 
     // Check if their unique predecessors are the same.

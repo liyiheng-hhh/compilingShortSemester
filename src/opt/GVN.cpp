@@ -26,7 +26,7 @@ bool GVN::Expr::operator<(const Expr &other) const {
 }
 
 #define ALLOW(Ty) || isa<Ty>(op)
-static bool callPure(Op *op, const std::map<std::string, FuncOp*> &fnMap) {
+static bool gvnCallPure(Op *op, const std::map<std::string, FuncOp*> &fnMap) {
   if (op->has<ImpureAttr>())
     return false;
   auto name = NAME(op);
@@ -38,17 +38,17 @@ static bool callPure(Op *op, const std::map<std::string, FuncOp*> &fnMap) {
   return !it->second->has<ImpureAttr>();
 }
 
-static bool globalConst(GetGlobalOp *op, const std::map<std::string, GlobalOp*> &gMap) {
+static bool gvnGlobalConst(GetGlobalOp *op, const std::map<std::string, GlobalOp*> &gMap) {
   auto it = gMap.find(NAME(op));
   return it != gMap.end() && it->second && it->second->has<ConstAttr>();
 }
 
-bool allowed(Op *op, const std::map<std::string, FuncOp*> &fnMap,
+bool gvnAllowed(Op *op, const std::map<std::string, FuncOp*> &fnMap,
              const std::map<std::string, GlobalOp*> &gMap) {
   if (isa<CallOp>(op))
-    return callPure(op, fnMap);
+    return gvnCallPure(op, fnMap);
   if (isa<GetGlobalOp>(op))
-    return globalConst(cast<GetGlobalOp>(op), gMap);
+    return gvnGlobalConst(cast<GetGlobalOp>(op), gMap);
   return
     false
     ALLOW(AddIOp)
@@ -138,7 +138,7 @@ void GVN::dvnt(BasicBlock *bb, Domtree &domtree,
     if (isa<PhiOp>(op))
       continue;
 
-    if (!allowed(op, fnMap, gMap)) {
+    if (!gvnAllowed(op, fnMap, gMap)) {
       symbols[op] = num++;
       continue;
     }

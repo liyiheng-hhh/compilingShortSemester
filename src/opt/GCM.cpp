@@ -5,7 +5,7 @@ using namespace sys;
 
 // Pinned operations cannot move.
 #define PINNED(Ty) || isa<Ty>(op)
-static bool pinned(Op *op) {
+static bool gcmIsPinned(Op *op) {
   return (isa<CallOp>(op) && op->has<ImpureAttr>())
     PINNED(LoadOp)
     PINNED(StoreOp)
@@ -21,7 +21,7 @@ static bool pinned(Op *op) {
 
 // Schedule `op` to the first block that is dominated by its inputs.
 void GCM::scheduleEarly(BasicBlock *entry, Op *op) {
-  if (visited.count(op) || pinned(op))
+  if (visited.count(op) || gcmIsPinned(op))
     return;
   visited.insert(op);
 
@@ -44,7 +44,7 @@ void GCM::scheduleEarly(BasicBlock *entry, Op *op) {
 
 // Schedule `op` to the latest block that dominates its uses, but as out-of-loop as possible.
 void GCM::scheduleLate(Op *op) {
-  if (visited.count(op) || pinned(op))
+  if (visited.count(op) || gcmIsPinned(op))
     return;
   visited.insert(op);
 
@@ -114,9 +114,9 @@ void GCM::updateLoopDepth(LoopInfo *info, int dep) {
     updateLoopDepth(subloop, dep + 1);
 }
 
-static void postorder(BasicBlock *current, DomTree &tree, std::vector<BasicBlock*> &order) {
+static void gcmDomPostorder(BasicBlock *current, DomTree &tree, std::vector<BasicBlock*> &order) {
   for (auto child : tree[current])
-    postorder(child, tree, order);
+    gcmDomPostorder(child, tree, order);
   order.push_back(current);
 }
 
@@ -153,13 +153,13 @@ void GCM::runImpl(Region *region, const LoopForest &forest) {
   }
 
   std::vector<BasicBlock*> rpo;
-  postorder(entry, tree, rpo);
+  gcmDomPostorder(entry, tree, rpo);
   std::reverse(rpo.begin(), rpo.end());
 
   std::vector<Op*> toSched;
   for (auto bb : rpo) {
     for (auto op : bb->getOps()) {
-      if (pinned(op))
+      if (gcmIsPinned(op))
         continue;
 
       toSched.push_back(op);

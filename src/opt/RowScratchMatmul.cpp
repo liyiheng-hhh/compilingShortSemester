@@ -13,14 +13,14 @@ namespace {
 const char *kHelperName = "__row_scratch_matmul_generic";
 constexpr int kFastUnroll = 4;
 
-bool envEnabled(const char *name, bool fallback) {
+bool rsmEnvEnabled(const char *name, bool fallback) {
   const char *raw = std::getenv(name);
   if (!raw || !raw[0])
     return fallback;
   return std::strcmp(raw, "0") != 0 && std::strcmp(raw, "false") != 0;
 }
 
-std::vector<Value> vals(std::initializer_list<Op*> ops) {
+std::vector<Value> rsmVals(std::initializer_list<Op*> ops) {
   std::vector<Value> result;
   result.reserve(ops.size());
   for (auto op : ops)
@@ -28,60 +28,60 @@ std::vector<Value> vals(std::initializer_list<Op*> ops) {
   return result;
 }
 
-std::vector<Attr*> attrs(std::initializer_list<Attr*> xs) {
+std::vector<Attr*> rsmAttrs(std::initializer_list<Attr*> xs) {
   return std::vector<Attr*>(xs);
 }
 
-Op *i32(Builder &builder, int value) {
+Op *rsmI32(Builder &builder, int value) {
   return builder.create<IntOp>({ new IntAttr(value) });
 }
 
 template<class T>
-Op *bin(Builder &builder, Op *a, Op *b) {
-  return builder.create<T>(vals({ a, b }));
+Op *rsmBin(Builder &builder, Op *a, Op *b) {
+  return builder.create<T>(rsmVals({ a, b }));
 }
 
-void branch(Builder &builder, Op *cond, BasicBlock *ifso, BasicBlock *ifnot) {
-  builder.create<BranchOp>(vals({ cond }), attrs({ new TargetAttr(ifso), new ElseAttr(ifnot) }));
+void rsmBranch(Builder &builder, Op *cond, BasicBlock *ifso, BasicBlock *ifnot) {
+  builder.create<BranchOp>(rsmVals({ cond }), rsmAttrs({ new TargetAttr(ifso), new ElseAttr(ifnot) }));
 }
 
-Op *loadVar(Builder &builder, Op *slot) {
-  return builder.create<LoadOp>(Value::i32, vals({ slot }), attrs({ new SizeAttr(4) }));
+Op *rsmLoadVar(Builder &builder, Op *slot) {
+  return builder.create<LoadOp>(Value::i32, rsmVals({ slot }), rsmAttrs({ new SizeAttr(4) }));
 }
 
-void storeVar(Builder &builder, Op *value, Op *slot) {
-  builder.create<StoreOp>(vals({ value, slot }), attrs({ new SizeAttr(4) }));
+void rsmStoreVar(Builder &builder, Op *value, Op *slot) {
+  builder.create<StoreOp>(rsmVals({ value, slot }), rsmAttrs({ new SizeAttr(4) }));
 }
 
-Op *loadVar64(Builder &builder, Op *slot) {
-  return builder.create<LoadOp>(Value::i64, vals({ slot }), attrs({ new SizeAttr(8) }));
+Op *rsmLoadVar64(Builder &builder, Op *slot) {
+  return builder.create<LoadOp>(Value::i64, rsmVals({ slot }), rsmAttrs({ new SizeAttr(8) }));
 }
 
-void storeVar64(Builder &builder, Op *value, Op *slot) {
-  builder.create<StoreOp>(vals({ value, slot }), attrs({ new SizeAttr(8) }));
+void rsmStoreVar64(Builder &builder, Op *value, Op *slot) {
+  builder.create<StoreOp>(rsmVals({ value, slot }), rsmAttrs({ new SizeAttr(8) }));
 }
 
-Op *ptrOffset(Builder &builder, Op *base, int bytes) {
+Op *rsmPtrOffset(Builder &builder, Op *base, int bytes) {
   if (bytes == 0)
     return base;
-  return bin<AddLOp>(builder, base, i32(builder, bytes));
+  return rsmBin<AddLOp>(builder, base, rsmI32(builder, bytes));
 }
 
-Op *rowAddr(Builder &builder, Op *base, Op *col) {
-  auto elemSize = i32(builder, 4);
-  auto colOff = bin<MulIOp>(builder, col, elemSize);
-  return bin<AddLOp>(builder, base, colOff);
+Op *rsmRowAddr(Builder &builder, Op *base, Op *col) {
+  auto elemSize = rsmI32(builder, 4);
+  auto colOff = rsmBin<MulIOp>(builder, col, elemSize);
+  return rsmBin<AddLOp>(builder, base, colOff);
 }
 
-Op *matrixAddr(Builder &builder, Op *base, Op *row, Op *col, Op *rowStrideBytes) {
-  auto rowOff = bin<MulIOp>(builder, row, rowStrideBytes);
-  auto rowBase = bin<AddLOp>(builder, base, rowOff);
-  auto elemSize = i32(builder, 4);
-  auto colOff = bin<MulIOp>(builder, col, elemSize);
-  return bin<AddLOp>(builder, rowBase, colOff);
+Op *rsmMatrixAddr(Builder &builder, Op *base, Op *row, Op *col, Op *rowStrideBytes) {
+  auto rowOff = rsmBin<MulIOp>(builder, row, rowStrideBytes);
+  auto rowBase = rsmBin<AddLOp>(builder, base, rowOff);
+  auto elemSize = rsmI32(builder, 4);
+  auto colOff = rsmBin<MulIOp>(builder, col, elemSize);
+  return rsmBin<AddLOp>(builder, rowBase, colOff);
 }
 
-void collectGlobals(Op *op, std::set<std::string> &names, std::set<Op*> &seen) {
+void rsmCollectGlobals(Op *op, std::set<std::string> &names, std::set<Op*> &seen) {
   if (!op || seen.count(op))
     return;
   seen.insert(op);
@@ -90,34 +90,34 @@ void collectGlobals(Op *op, std::set<std::string> &names, std::set<Op*> &seen) {
     return;
   }
   for (auto operand : op->getOperands())
-    collectGlobals(operand.defining, names, seen);
+    rsmCollectGlobals(operand.defining, names, seen);
 }
 
-std::set<std::string> globalsIn(Op *op) {
+std::set<std::string> rsmGlobalsIn(Op *op) {
   std::set<std::string> names;
   std::set<Op*> seen;
-  collectGlobals(op, names, seen);
+  rsmCollectGlobals(op, names, seen);
   return names;
 }
 
-bool usesValue(Op *op, Op *needle, std::set<Op*> &seen) {
+bool rsmUsesValue(Op *op, Op *needle, std::set<Op*> &seen) {
   if (!op || !needle || seen.count(op))
     return false;
   if (op == needle)
     return true;
   seen.insert(op);
   for (auto operand : op->getOperands())
-    if (usesValue(operand.defining, needle, seen))
+    if (rsmUsesValue(operand.defining, needle, seen))
       return true;
   return false;
 }
 
-bool usesValue(Op *op, Op *needle) {
+bool rsmUsesValue(Op *op, Op *needle) {
   std::set<Op*> seen;
-  return usesValue(op, needle, seen);
+  return rsmUsesValue(op, needle, seen);
 }
 
-Op *stripSinglePhi(Op *op) {
+Op *rsmStripSinglePhi(Op *op) {
   std::set<Op*> seen;
   while (op && isa<PhiOp>(op) && op->getOperandCount() == 1 && !seen.count(op)) {
     seen.insert(op);
@@ -126,7 +126,7 @@ Op *stripSinglePhi(Op *op) {
   return op;
 }
 
-bool isSimpleIncrement(Op *op, Op *phi) {
+bool rsmIsSimpleIncrement(Op *op, Op *phi) {
   if (!op || !isa<AddIOp>(op) || op->getOperandCount() != 2)
     return false;
   auto a = op->DEF(0);
@@ -135,15 +135,15 @@ bool isSimpleIncrement(Op *op, Op *phi) {
          (b == phi && isa<IntOp>(a) && V(a) == 1);
 }
 
-std::pair<Op*, Op*> phiIncomingByLatch(Op *phi, BasicBlock *latch) {
+std::pair<Op*, Op*> rsmPhiIncomingByLatch(Op *phi, BasicBlock *latch) {
   Op *fromLatch = nullptr;
   Op *fromOther = nullptr;
   const auto &ops = phi->getOperands();
-  const auto &attrs = phi->getAttrs();
-  if (ops.size() != attrs.size())
+  const auto &rsmAttrs = phi->getAttrs();
+  if (ops.size() != rsmAttrs.size())
     return { nullptr, nullptr };
   for (int i = 0; i < ops.size(); i++) {
-    auto from = dyn_cast<FromAttr>(attrs[i]);
+    auto from = dyn_cast<FromAttr>(rsmAttrs[i]);
     if (!from)
       continue;
     if (from->bb == latch)
@@ -154,14 +154,14 @@ std::pair<Op*, Op*> phiIncomingByLatch(Op *phi, BasicBlock *latch) {
   return { fromOther, fromLatch };
 }
 
-struct UnitLoopShape {
+struct RsmUnitLoopShape {
   Op *induction = nullptr;
   Op *stop = nullptr;
   Op *increment = nullptr;
 };
 
-UnitLoopShape findUnitLoopShape(LoopInfo *loop) {
-  UnitLoopShape shape;
+RsmUnitLoopShape findRsmUnitLoopShape(LoopInfo *loop) {
+  RsmUnitLoopShape shape;
   if (!loop || !loop->preheader || loop->latches.size() != 1 || loop->exits.size() != 1)
     return shape;
   auto header = loop->header;
@@ -175,11 +175,11 @@ UnitLoopShape findUnitLoopShape(LoopInfo *loop) {
   auto rhs = cond->DEF(1);
   if (!lhs || !isa<PhiOp>(lhs) || lhs->getParent() != header || lhs->getResultType() != Value::i32)
     return shape;
-  auto [start, incr] = phiIncomingByLatch(lhs, loop->getLatch());
-  auto rawStart = stripSinglePhi(start);
+  auto [start, incr] = rsmPhiIncomingByLatch(lhs, loop->getLatch());
+  auto rawStart = rsmStripSinglePhi(start);
   if (!rawStart || !isa<IntOp>(rawStart) || V(rawStart) != 0)
     return shape;
-  if (!isSimpleIncrement(incr, lhs))
+  if (!rsmIsSimpleIncrement(incr, lhs))
     return shape;
   shape.induction = lhs;
   shape.stop = rhs;
@@ -187,12 +187,12 @@ UnitLoopShape findUnitLoopShape(LoopInfo *loop) {
   return shape;
 }
 
-bool canonicalUnitLoop(LoopInfo *loop, UnitLoopShape &shape) {
-  shape = findUnitLoopShape(loop);
+bool rsmCanonicalUnitLoop(LoopInfo *loop, RsmUnitLoopShape &shape) {
+  shape = findRsmUnitLoopShape(loop);
   return shape.induction && shape.stop && shape.increment;
 }
 
-std::vector<LoopInfo*> directSubloops(LoopInfo *loop) {
+std::vector<LoopInfo*> rsmDirectSubloops(LoopInfo *loop) {
   std::vector<LoopInfo*> result;
   if (!loop)
     return result;
@@ -202,7 +202,7 @@ std::vector<LoopInfo*> directSubloops(LoopInfo *loop) {
   return result;
 }
 
-bool matrixGlobalInfo(const std::map<std::string, GlobalOp*> &globals,
+bool rsmMatrixGlobalInfo(const std::map<std::string, GlobalOp*> &globals,
                       const std::string &name, int &rows, int &cols) {
   auto it = globals.find(name);
   if (it == globals.end())
@@ -218,7 +218,7 @@ bool matrixGlobalInfo(const std::map<std::string, GlobalOp*> &globals,
   return rows > 0 && cols > 0;
 }
 
-bool loopHasCallOrUnexpectedStore(LoopInfo *outer, StoreOp *allowedStore) {
+bool rsmLoopHasCallOrUnexpectedStore(LoopInfo *outer, StoreOp *allowedStore) {
   for (auto bb : outer->getBlocks()) {
     for (auto op : bb->getOps()) {
       if (isa<CallOp>(op) || isa<CloneOp>(op) || isa<JoinOp>(op) ||
@@ -232,7 +232,7 @@ bool loopHasCallOrUnexpectedStore(LoopInfo *outer, StoreOp *allowedStore) {
   return false;
 }
 
-struct MatmulShape {
+struct RsmMatmulShape {
   LoopInfo *iLoop = nullptr;
   LoopInfo *jLoop = nullptr;
   LoopInfo *kLoop = nullptr;
@@ -251,7 +251,7 @@ struct MatmulShape {
   int cRowStrideBytes = 0;
 };
 
-bool isAddOf(Op *op, Op *a, Op *b) {
+bool rsmIsAddOf(Op *op, Op *a, Op *b) {
   if (!op || !isa<AddIOp>(op) || op->getOperandCount() != 2)
     return false;
   auto lhs = op->DEF(0);
@@ -259,7 +259,7 @@ bool isAddOf(Op *op, Op *a, Op *b) {
   return (lhs == a && rhs == b) || (lhs == b && rhs == a);
 }
 
-bool isMulOfLoads(Op *op, LoadOp *x, LoadOp *y) {
+bool rsmIsMulOfLoads(Op *op, LoadOp *x, LoadOp *y) {
   if (!op || !isa<MulIOp>(op) || op->getOperandCount() != 2)
     return false;
   auto lhs = op->DEF(0);
@@ -267,15 +267,15 @@ bool isMulOfLoads(Op *op, LoadOp *x, LoadOp *y) {
   return (lhs == x && rhs == y) || (lhs == y && rhs == x);
 }
 
-bool validateReduction(StoreOp *store, LoopInfo *kLoop,
+bool rsmValidateReduction(StoreOp *store, LoopInfo *kLoop,
                        const std::vector<LoadOp*> &loads) {
-  auto stored = stripSinglePhi(store->DEF(0));
+  auto stored = rsmStripSinglePhi(store->DEF(0));
   auto sumPhi = dyn_cast<PhiOp>(stored);
   if (!sumPhi || sumPhi->getParent() != kLoop->header)
     return false;
 
-  auto [start, step] = phiIncomingByLatch(sumPhi, kLoop->getLatch());
-  auto rawStart = stripSinglePhi(start);
+  auto [start, step] = rsmPhiIncomingByLatch(sumPhi, kLoop->getLatch());
+  auto rawStart = rsmStripSinglePhi(start);
   if (!rawStart || !isa<IntOp>(rawStart) || V(rawStart) != 0)
     return false;
 
@@ -289,34 +289,34 @@ bool validateReduction(StoreOp *store, LoopInfo *kLoop,
         auto b = step->DEF(1);
         prod = dyn_cast<MulIOp>(a == sumPhi ? b : (b == sumPhi ? a : nullptr));
       }
-      if (prod && isMulOfLoads(prod, lhs, rhs) && isAddOf(step, sumPhi, prod))
+      if (prod && rsmIsMulOfLoads(prod, lhs, rhs) && rsmIsAddOf(step, sumPhi, prod))
         return true;
     }
   }
   return false;
 }
 
-bool validateAddressShape(StoreOp *store, const std::vector<LoadOp*> &loads,
+bool rsmValidateAddressShape(StoreOp *store, const std::vector<LoadOp*> &loads,
                           const std::string &aName, const std::string &cName,
                           Op *i, Op *j, Op *k) {
   auto storeAddr = store->DEF(1);
-  if (!usesValue(storeAddr, i) || !usesValue(storeAddr, j) || usesValue(storeAddr, k))
+  if (!rsmUsesValue(storeAddr, i) || !rsmUsesValue(storeAddr, j) || rsmUsesValue(storeAddr, k))
     return false;
 
   bool sawA = false;
   bool sawC = false;
   for (auto load : loads) {
     auto addr = load->DEF(0);
-    auto names = globalsIn(addr);
+    auto names = rsmGlobalsIn(addr);
     if (names.size() != 1)
       return false;
     const auto &name = *names.begin();
     if (name == aName) {
-      if (!usesValue(addr, k) || !usesValue(addr, j) || usesValue(addr, i))
+      if (!rsmUsesValue(addr, k) || !rsmUsesValue(addr, j) || rsmUsesValue(addr, i))
         return false;
       sawA = true;
     } else if (name == cName) {
-      if (!usesValue(addr, i) || !usesValue(addr, k) || usesValue(addr, j))
+      if (!rsmUsesValue(addr, i) || !rsmUsesValue(addr, k) || rsmUsesValue(addr, j))
         return false;
       sawC = true;
     } else {
@@ -326,28 +326,28 @@ bool validateAddressShape(StoreOp *store, const std::vector<LoadOp*> &loads,
   return sawA && sawC;
 }
 
-bool tryMatchMatmul(LoopInfo *iLoop, const std::map<std::string, GlobalOp*> &globals,
-                    MatmulShape &shape) {
-  const bool debug = envEnabled("SYSY_CC_ROW_SCRATCH_DEBUG", false);
+bool rsmTryMatchMatmul(LoopInfo *iLoop, const std::map<std::string, GlobalOp*> &globals,
+                    RsmMatmulShape &shape) {
+  const bool debug = rsmEnvEnabled("SYSY_CC_ROW_SCRATCH_DEBUG", false);
   auto reject = [&](const char *why) {
     if (debug)
       std::cerr << "[row-scratch] reject " << why << "\n";
     return false;
   };
 
-  UnitLoopShape iShape;
-  if (!canonicalUnitLoop(iLoop, iShape))
+  RsmUnitLoopShape iShape;
+  if (!rsmCanonicalUnitLoop(iLoop, iShape))
     return reject("outer-canonical");
-  auto jSubs = directSubloops(iLoop);
+  auto jSubs = rsmDirectSubloops(iLoop);
   if (jSubs.size() != 1)
     return reject("j-subloop-count");
   auto jLoop = jSubs[0];
-  auto kSubs = directSubloops(jLoop);
+  auto kSubs = rsmDirectSubloops(jLoop);
   if (kSubs.size() != 1)
     return reject("k-subloop-count");
   auto kLoop = kSubs[0];
-  UnitLoopShape jShape, kShape;
-  if (!canonicalUnitLoop(jLoop, jShape) || !canonicalUnitLoop(kLoop, kShape))
+  RsmUnitLoopShape jShape, kShape;
+  if (!rsmCanonicalUnitLoop(jLoop, jShape) || !rsmCanonicalUnitLoop(kLoop, kShape))
     return reject("inner-canonical");
 
   std::vector<LoadOp*> loads;
@@ -367,14 +367,14 @@ bool tryMatchMatmul(LoopInfo *iLoop, const std::map<std::string, GlobalOp*> &glo
     return reject("stores");
   auto store = stores[0];
 
-  auto storeGlobals = globalsIn(store->DEF(1));
+  auto storeGlobals = rsmGlobalsIn(store->DEF(1));
   if (storeGlobals.size() != 1)
     return reject("store-global");
   std::string aName = *storeGlobals.begin();
 
   std::set<std::string> loadGlobalSet;
   for (auto load : loads) {
-    auto names = globalsIn(load->DEF(0));
+    auto names = rsmGlobalsIn(load->DEF(0));
     if (names.size() != 1)
       return reject("load-global");
     loadGlobalSet.insert(*names.begin());
@@ -388,17 +388,17 @@ bool tryMatchMatmul(LoopInfo *iLoop, const std::map<std::string, GlobalOp*> &glo
       cName = name;
 
   int aRows = 0, aCols = 0, cRows = 0, cCols = 0;
-  if (!matrixGlobalInfo(globals, aName, aRows, aCols) ||
-      !matrixGlobalInfo(globals, cName, cRows, cCols))
+  if (!rsmMatrixGlobalInfo(globals, aName, aRows, aCols) ||
+      !rsmMatrixGlobalInfo(globals, cName, cRows, cCols))
     return reject("matrix-dims");
   if (aRows <= 0 || aCols <= 0 || cRows <= 0 || cCols <= 0)
     return reject("positive-dims");
 
-  if (loopHasCallOrUnexpectedStore(iLoop, store))
+  if (rsmLoopHasCallOrUnexpectedStore(iLoop, store))
     return reject("side-effect");
-  if (!validateReduction(store, kLoop, loads))
+  if (!rsmValidateReduction(store, kLoop, loads))
     return reject("reduction");
-  if (!validateAddressShape(store, loads, aName, cName,
+  if (!rsmValidateAddressShape(store, loads, aName, cName,
                             iShape.induction, jShape.induction, kShape.induction))
     return reject("address-shape");
 
@@ -421,12 +421,12 @@ bool tryMatchMatmul(LoopInfo *iLoop, const std::map<std::string, GlobalOp*> &glo
   return true;
 }
 
-std::string scratchNameFor(int dim) {
+std::string rsmScratchNameFor(int dim) {
   return "__row_scratch_buf_" + std::to_string(dim);
 }
 
-void ensureScratchGlobal(ModuleOp *module, int dim) {
-  auto name = scratchNameFor(dim);
+void rsmEnsureScratchGlobal(ModuleOp *module, int dim) {
+  auto name = rsmScratchNameFor(dim);
   for (auto glob : module->findAll<GlobalOp>())
     if (NAME(glob) == name)
       return;
@@ -442,15 +442,15 @@ void ensureScratchGlobal(ModuleOp *module, int dim) {
   });
 }
 
-bool hasHelper(ModuleOp *module) {
+bool rsmHasHelper(ModuleOp *module) {
   for (auto func : module->findAll<FuncOp>())
     if (NAME(func) == kHelperName)
       return true;
   return false;
 }
 
-void buildHelper(ModuleOp *module) {
-  if (hasHelper(module))
+void rsmBuildHelper(ModuleOp *module) {
+  if (rsmHasHelper(module))
     return;
 
   Builder builder;
@@ -504,169 +504,169 @@ void buildHelper(ModuleOp *module) {
   auto a = builder.create<GetArgOp>(Value::i64, { new IntAttr(5) });
   auto c = builder.create<GetArgOp>(Value::i64, { new IntAttr(6) });
   auto scratch = builder.create<GetArgOp>(Value::i64, { new IntAttr(7) });
-  auto rem = builder.create<ModIOp>(vals({ cols, i32(builder, kFastUnroll) }));
-  storeVar(builder, bin<SubIOp>(builder, cols, rem), mainColsSlot);
-  storeVar(builder, i32(builder, 0), iSlot);
+  auto rem = builder.create<ModIOp>(rsmVals({ cols, rsmI32(builder, kFastUnroll) }));
+  rsmStoreVar(builder, rsmBin<SubIOp>(builder, cols, rem), mainColsSlot);
+  rsmStoreVar(builder, rsmI32(builder, 0), iSlot);
   builder.create<GotoOp>({ new TargetAttr(iCond) });
 
   builder.setToBlockEnd(iCond);
-  auto iv = loadVar(builder, iSlot);
-  branch(builder, bin<LtOp>(builder, iv, rows), zeroInit, done);
+  auto iv = rsmLoadVar(builder, iSlot);
+  rsmBranch(builder, rsmBin<LtOp>(builder, iv, rows), zeroInit, done);
 
   builder.setToBlockEnd(zeroInit);
-  storeVar(builder, i32(builder, 0), jSlot);
-  storeVar64(builder, scratch, scratchPtrSlot);
+  rsmStoreVar(builder, rsmI32(builder, 0), jSlot);
+  rsmStoreVar64(builder, scratch, scratchPtrSlot);
   builder.create<GotoOp>({ new TargetAttr(zeroUnrollCond) });
 
   builder.setToBlockEnd(zeroUnrollCond);
-  auto zj = loadVar(builder, jSlot);
-  branch(builder, bin<LtOp>(builder, zj, loadVar(builder, mainColsSlot)),
+  auto zj = rsmLoadVar(builder, jSlot);
+  rsmBranch(builder, rsmBin<LtOp>(builder, zj, rsmLoadVar(builder, mainColsSlot)),
          zeroUnrollBody, zeroTailCond);
 
   builder.setToBlockEnd(zeroUnrollBody);
-  auto zeroPtr = loadVar64(builder, scratchPtrSlot);
+  auto zeroPtr = rsmLoadVar64(builder, scratchPtrSlot);
   for (int lane = 0; lane < kFastUnroll; lane++) {
-    builder.create<StoreOp>(vals({ i32(builder, 0), ptrOffset(builder, zeroPtr, lane * 4) }),
-                            attrs({ new SizeAttr(4) }));
+    builder.create<StoreOp>(rsmVals({ rsmI32(builder, 0), rsmPtrOffset(builder, zeroPtr, lane * 4) }),
+                            rsmAttrs({ new SizeAttr(4) }));
   }
-  storeVar64(builder, ptrOffset(builder, zeroPtr, kFastUnroll * 4), scratchPtrSlot);
-  storeVar(builder, bin<AddIOp>(builder, loadVar(builder, jSlot), i32(builder, kFastUnroll)), jSlot);
+  rsmStoreVar64(builder, rsmPtrOffset(builder, zeroPtr, kFastUnroll * 4), scratchPtrSlot);
+  rsmStoreVar(builder, rsmBin<AddIOp>(builder, rsmLoadVar(builder, jSlot), rsmI32(builder, kFastUnroll)), jSlot);
   builder.create<GotoOp>({ new TargetAttr(zeroUnrollCond) });
 
   builder.setToBlockEnd(zeroTailCond);
-  auto ztj = loadVar(builder, jSlot);
-  branch(builder, bin<LtOp>(builder, ztj, cols), zeroTailBody, kInit);
+  auto ztj = rsmLoadVar(builder, jSlot);
+  rsmBranch(builder, rsmBin<LtOp>(builder, ztj, cols), zeroTailBody, kInit);
 
   builder.setToBlockEnd(zeroTailBody);
-  auto ztj2 = loadVar(builder, jSlot);
-  builder.create<StoreOp>(vals({ i32(builder, 0), rowAddr(builder, scratch, ztj2) }),
-                          attrs({ new SizeAttr(4) }));
-  storeVar(builder, bin<AddIOp>(builder, loadVar(builder, jSlot), i32(builder, 1)), jSlot);
+  auto ztj2 = rsmLoadVar(builder, jSlot);
+  builder.create<StoreOp>(rsmVals({ rsmI32(builder, 0), rsmRowAddr(builder, scratch, ztj2) }),
+                          rsmAttrs({ new SizeAttr(4) }));
+  rsmStoreVar(builder, rsmBin<AddIOp>(builder, rsmLoadVar(builder, jSlot), rsmI32(builder, 1)), jSlot);
   builder.create<GotoOp>({ new TargetAttr(zeroTailCond) });
 
   builder.setToBlockEnd(kInit);
-  storeVar(builder, i32(builder, 0), kSlot);
+  rsmStoreVar(builder, rsmI32(builder, 0), kSlot);
   builder.create<GotoOp>({ new TargetAttr(kCond) });
 
   builder.setToBlockEnd(kCond);
-  auto kv = loadVar(builder, kSlot);
-  branch(builder, bin<LtOp>(builder, kv, depth), kPrep, writeInit);
+  auto kv = rsmLoadVar(builder, kSlot);
+  rsmBranch(builder, rsmBin<LtOp>(builder, kv, depth), kPrep, writeInit);
 
   builder.setToBlockEnd(kPrep);
-  auto ci = loadVar(builder, iSlot);
-  auto ck = loadVar(builder, kSlot);
+  auto ci = rsmLoadVar(builder, iSlot);
+  auto ck = rsmLoadVar(builder, kSlot);
   auto coeff = builder.create<LoadOp>(Value::i32,
-                                      vals({ matrixAddr(builder, c, ci, ck, cRowStride) }),
-                                      attrs({ new SizeAttr(4) }));
-  storeVar(builder, coeff, coeffSlot);
-  storeVar(builder, i32(builder, 0), jSlot);
-  storeVar64(builder, scratch, scratchPtrSlot);
-  storeVar64(builder, matrixAddr(builder, a, loadVar(builder, kSlot), i32(builder, 0), aRowStride), aPtrSlot);
+                                      rsmVals({ rsmMatrixAddr(builder, c, ci, ck, cRowStride) }),
+                                      rsmAttrs({ new SizeAttr(4) }));
+  rsmStoreVar(builder, coeff, coeffSlot);
+  rsmStoreVar(builder, rsmI32(builder, 0), jSlot);
+  rsmStoreVar64(builder, scratch, scratchPtrSlot);
+  rsmStoreVar64(builder, rsmMatrixAddr(builder, a, rsmLoadVar(builder, kSlot), rsmI32(builder, 0), aRowStride), aPtrSlot);
   builder.create<GotoOp>({ new TargetAttr(saxpyUnrollCond) });
 
   builder.setToBlockEnd(saxpyUnrollCond);
-  auto sj = loadVar(builder, jSlot);
-  branch(builder, bin<LtOp>(builder, sj, loadVar(builder, mainColsSlot)),
+  auto sj = rsmLoadVar(builder, jSlot);
+  rsmBranch(builder, rsmBin<LtOp>(builder, sj, rsmLoadVar(builder, mainColsSlot)),
          saxpyUnrollBody, saxpyTailCond);
 
   builder.setToBlockEnd(saxpyUnrollBody);
-  auto scratchPtr = loadVar64(builder, scratchPtrSlot);
-  auto aPtr = loadVar64(builder, aPtrSlot);
-  auto coeffVal = loadVar(builder, coeffSlot);
+  auto scratchPtr = rsmLoadVar64(builder, scratchPtrSlot);
+  auto aPtr = rsmLoadVar64(builder, aPtrSlot);
+  auto coeffVal = rsmLoadVar(builder, coeffSlot);
   for (int lane = 0; lane < kFastUnroll; lane++) {
-    auto scratchLane = ptrOffset(builder, scratchPtr, lane * 4);
-    auto aLane = ptrOffset(builder, aPtr, lane * 4);
-    auto old = builder.create<LoadOp>(Value::i32, vals({ scratchLane }),
-                                      attrs({ new SizeAttr(4) }));
-    auto aval = builder.create<LoadOp>(Value::i32, vals({ aLane }),
-                                       attrs({ new SizeAttr(4) }));
-    auto prod = bin<MulIOp>(builder, coeffVal, aval);
-    builder.create<StoreOp>(vals({ bin<AddIOp>(builder, old, prod), scratchLane }),
-                            attrs({ new SizeAttr(4) }));
+    auto scratchLane = rsmPtrOffset(builder, scratchPtr, lane * 4);
+    auto aLane = rsmPtrOffset(builder, aPtr, lane * 4);
+    auto old = builder.create<LoadOp>(Value::i32, rsmVals({ scratchLane }),
+                                      rsmAttrs({ new SizeAttr(4) }));
+    auto aval = builder.create<LoadOp>(Value::i32, rsmVals({ aLane }),
+                                       rsmAttrs({ new SizeAttr(4) }));
+    auto prod = rsmBin<MulIOp>(builder, coeffVal, aval);
+    builder.create<StoreOp>(rsmVals({ rsmBin<AddIOp>(builder, old, prod), scratchLane }),
+                            rsmAttrs({ new SizeAttr(4) }));
   }
-  storeVar64(builder, ptrOffset(builder, scratchPtr, kFastUnroll * 4), scratchPtrSlot);
-  storeVar64(builder, ptrOffset(builder, aPtr, kFastUnroll * 4), aPtrSlot);
-  storeVar(builder, bin<AddIOp>(builder, loadVar(builder, jSlot), i32(builder, kFastUnroll)), jSlot);
+  rsmStoreVar64(builder, rsmPtrOffset(builder, scratchPtr, kFastUnroll * 4), scratchPtrSlot);
+  rsmStoreVar64(builder, rsmPtrOffset(builder, aPtr, kFastUnroll * 4), aPtrSlot);
+  rsmStoreVar(builder, rsmBin<AddIOp>(builder, rsmLoadVar(builder, jSlot), rsmI32(builder, kFastUnroll)), jSlot);
   builder.create<GotoOp>({ new TargetAttr(saxpyUnrollCond) });
 
   builder.setToBlockEnd(saxpyTailCond);
-  auto stj = loadVar(builder, jSlot);
-  branch(builder, bin<LtOp>(builder, stj, cols), saxpyTailBody, kNext);
+  auto stj = rsmLoadVar(builder, jSlot);
+  rsmBranch(builder, rsmBin<LtOp>(builder, stj, cols), saxpyTailBody, kNext);
 
   builder.setToBlockEnd(saxpyTailBody);
-  auto old = builder.create<LoadOp>(Value::i32, vals({ rowAddr(builder, scratch, loadVar(builder, jSlot)) }),
-                                    attrs({ new SizeAttr(4) }));
+  auto old = builder.create<LoadOp>(Value::i32, rsmVals({ rsmRowAddr(builder, scratch, rsmLoadVar(builder, jSlot)) }),
+                                    rsmAttrs({ new SizeAttr(4) }));
   auto aval = builder.create<LoadOp>(Value::i32,
-                                     vals({ matrixAddr(builder, a, loadVar(builder, kSlot),
-                                                       loadVar(builder, jSlot), aRowStride) }),
-                                     attrs({ new SizeAttr(4) }));
-  auto prod = bin<MulIOp>(builder, loadVar(builder, coeffSlot), aval);
-  auto next = bin<AddIOp>(builder, old, prod);
-  builder.create<StoreOp>(vals({ next, rowAddr(builder, scratch, loadVar(builder, jSlot)) }),
-                          attrs({ new SizeAttr(4) }));
-  storeVar(builder, bin<AddIOp>(builder, loadVar(builder, jSlot), i32(builder, 1)), jSlot);
+                                     rsmVals({ rsmMatrixAddr(builder, a, rsmLoadVar(builder, kSlot),
+                                                       rsmLoadVar(builder, jSlot), aRowStride) }),
+                                     rsmAttrs({ new SizeAttr(4) }));
+  auto prod = rsmBin<MulIOp>(builder, rsmLoadVar(builder, coeffSlot), aval);
+  auto next = rsmBin<AddIOp>(builder, old, prod);
+  builder.create<StoreOp>(rsmVals({ next, rsmRowAddr(builder, scratch, rsmLoadVar(builder, jSlot)) }),
+                          rsmAttrs({ new SizeAttr(4) }));
+  rsmStoreVar(builder, rsmBin<AddIOp>(builder, rsmLoadVar(builder, jSlot), rsmI32(builder, 1)), jSlot);
   builder.create<GotoOp>({ new TargetAttr(saxpyTailCond) });
 
   builder.setToBlockEnd(kNext);
-  storeVar(builder, bin<AddIOp>(builder, loadVar(builder, kSlot), i32(builder, 1)), kSlot);
+  rsmStoreVar(builder, rsmBin<AddIOp>(builder, rsmLoadVar(builder, kSlot), rsmI32(builder, 1)), kSlot);
   builder.create<GotoOp>({ new TargetAttr(kCond) });
 
   builder.setToBlockEnd(writeInit);
-  storeVar(builder, i32(builder, 0), jSlot);
-  storeVar64(builder, scratch, scratchPtrSlot);
-  storeVar64(builder, matrixAddr(builder, a, loadVar(builder, iSlot), i32(builder, 0), aRowStride), outPtrSlot);
+  rsmStoreVar(builder, rsmI32(builder, 0), jSlot);
+  rsmStoreVar64(builder, scratch, scratchPtrSlot);
+  rsmStoreVar64(builder, rsmMatrixAddr(builder, a, rsmLoadVar(builder, iSlot), rsmI32(builder, 0), aRowStride), outPtrSlot);
   builder.create<GotoOp>({ new TargetAttr(writeUnrollCond) });
 
   builder.setToBlockEnd(writeUnrollCond);
-  auto wj = loadVar(builder, jSlot);
-  branch(builder, bin<LtOp>(builder, wj, loadVar(builder, mainColsSlot)),
+  auto wj = rsmLoadVar(builder, jSlot);
+  rsmBranch(builder, rsmBin<LtOp>(builder, wj, rsmLoadVar(builder, mainColsSlot)),
          writeUnrollBody, writeTailCond);
 
   builder.setToBlockEnd(writeUnrollBody);
-  auto writeScratchPtr = loadVar64(builder, scratchPtrSlot);
-  auto writeOutPtr = loadVar64(builder, outPtrSlot);
+  auto writeScratchPtr = rsmLoadVar64(builder, scratchPtrSlot);
+  auto writeOutPtr = rsmLoadVar64(builder, outPtrSlot);
   for (int lane = 0; lane < kFastUnroll; lane++) {
-    auto scratchLane = ptrOffset(builder, writeScratchPtr, lane * 4);
-    auto outLane = ptrOffset(builder, writeOutPtr, lane * 4);
-    auto out = builder.create<LoadOp>(Value::i32, vals({ scratchLane }),
-                                      attrs({ new SizeAttr(4) }));
-    builder.create<StoreOp>(vals({ out, outLane }), attrs({ new SizeAttr(4) }));
+    auto scratchLane = rsmPtrOffset(builder, writeScratchPtr, lane * 4);
+    auto outLane = rsmPtrOffset(builder, writeOutPtr, lane * 4);
+    auto out = builder.create<LoadOp>(Value::i32, rsmVals({ scratchLane }),
+                                      rsmAttrs({ new SizeAttr(4) }));
+    builder.create<StoreOp>(rsmVals({ out, outLane }), rsmAttrs({ new SizeAttr(4) }));
   }
-  storeVar64(builder, ptrOffset(builder, writeScratchPtr, kFastUnroll * 4), scratchPtrSlot);
-  storeVar64(builder, ptrOffset(builder, writeOutPtr, kFastUnroll * 4), outPtrSlot);
-  storeVar(builder, bin<AddIOp>(builder, loadVar(builder, jSlot), i32(builder, kFastUnroll)), jSlot);
+  rsmStoreVar64(builder, rsmPtrOffset(builder, writeScratchPtr, kFastUnroll * 4), scratchPtrSlot);
+  rsmStoreVar64(builder, rsmPtrOffset(builder, writeOutPtr, kFastUnroll * 4), outPtrSlot);
+  rsmStoreVar(builder, rsmBin<AddIOp>(builder, rsmLoadVar(builder, jSlot), rsmI32(builder, kFastUnroll)), jSlot);
   builder.create<GotoOp>({ new TargetAttr(writeUnrollCond) });
 
   builder.setToBlockEnd(writeTailCond);
-  auto wtj = loadVar(builder, jSlot);
-  branch(builder, bin<LtOp>(builder, wtj, cols), writeTailBody, iNext);
+  auto wtj = rsmLoadVar(builder, jSlot);
+  rsmBranch(builder, rsmBin<LtOp>(builder, wtj, cols), writeTailBody, iNext);
 
   builder.setToBlockEnd(writeTailBody);
-  auto out = builder.create<LoadOp>(Value::i32, vals({ rowAddr(builder, scratch, loadVar(builder, jSlot)) }),
-                                    attrs({ new SizeAttr(4) }));
-  builder.create<StoreOp>(vals({ out, matrixAddr(builder, a, loadVar(builder, iSlot),
-                                                 loadVar(builder, jSlot), aRowStride) }),
-                          attrs({ new SizeAttr(4) }));
-  storeVar(builder, bin<AddIOp>(builder, loadVar(builder, jSlot), i32(builder, 1)), jSlot);
+  auto out = builder.create<LoadOp>(Value::i32, rsmVals({ rsmRowAddr(builder, scratch, rsmLoadVar(builder, jSlot)) }),
+                                    rsmAttrs({ new SizeAttr(4) }));
+  builder.create<StoreOp>(rsmVals({ out, rsmMatrixAddr(builder, a, rsmLoadVar(builder, iSlot),
+                                                 rsmLoadVar(builder, jSlot), aRowStride) }),
+                          rsmAttrs({ new SizeAttr(4) }));
+  rsmStoreVar(builder, rsmBin<AddIOp>(builder, rsmLoadVar(builder, jSlot), rsmI32(builder, 1)), jSlot);
   builder.create<GotoOp>({ new TargetAttr(writeTailCond) });
 
   builder.setToBlockEnd(iNext);
-  storeVar(builder, bin<AddIOp>(builder, loadVar(builder, iSlot), i32(builder, 1)), iSlot);
+  rsmStoreVar(builder, rsmBin<AddIOp>(builder, rsmLoadVar(builder, iSlot), rsmI32(builder, 1)), iSlot);
   builder.create<GotoOp>({ new TargetAttr(iCond) });
 
   builder.setToBlockEnd(done);
   builder.create<ReturnOp>();
 }
 
-bool replaceWithHelper(ModuleOp *module, const MatmulShape &shape) {
+bool rsmReplaceWithHelper(ModuleOp *module, const RsmMatmulShape &shape) {
   if (!shape.iLoop || !shape.iLoop->preheader || shape.iLoop->exits.size() != 1)
     return false;
   auto preterm = shape.iLoop->preheader->getLastOp();
   if (!isa<GotoOp>(preterm) || !preterm->has<TargetAttr>() || TARGET(preterm) != shape.iLoop->header)
     return false;
 
-  ensureScratchGlobal(module, shape.scratchDim);
-  buildHelper(module);
+  rsmEnsureScratchGlobal(module, shape.scratchDim);
+  rsmBuildHelper(module);
 
   auto exit = shape.iLoop->getExit();
   auto region = shape.iLoop->header->getParent();
@@ -674,10 +674,10 @@ bool replaceWithHelper(ModuleOp *module, const MatmulShape &shape) {
 
   Builder builder;
   builder.setBeforeOp(preterm);
-  auto aRows = i32(builder, shape.aRows);
-  auto aCols = i32(builder, shape.aCols);
-  auto cRows = i32(builder, shape.cRows);
-  auto cCols = i32(builder, shape.cCols);
+  auto aRows = rsmI32(builder, shape.aRows);
+  auto aCols = rsmI32(builder, shape.aCols);
+  auto cRows = rsmI32(builder, shape.cRows);
+  auto cCols = rsmI32(builder, shape.cCols);
   auto iFitsA = builder.create<LeOp>(std::vector<Value>{ shape.iBound, aRows });
   auto kFitsA = builder.create<LeOp>(std::vector<Value>{ shape.kBound, aRows });
   auto jFitsA = builder.create<LeOp>(std::vector<Value>{ shape.jBound, aCols });
@@ -693,13 +693,13 @@ bool replaceWithHelper(ModuleOp *module, const MatmulShape &shape) {
   builder.setToBlockEnd(helperBB);
   auto a = builder.create<GetGlobalOp>({ new NameAttr(shape.aName) });
   auto c = builder.create<GetGlobalOp>({ new NameAttr(shape.cName) });
-  auto scratch = builder.create<GetGlobalOp>({ new NameAttr(scratchNameFor(shape.scratchDim)) });
-  auto aRowStride = i32(builder, shape.aRowStrideBytes);
-  auto cRowStride = i32(builder, shape.cRowStrideBytes);
+  auto scratch = builder.create<GetGlobalOp>({ new NameAttr(rsmScratchNameFor(shape.scratchDim)) });
+  auto aRowStride = rsmI32(builder, shape.aRowStrideBytes);
+  auto cRowStride = rsmI32(builder, shape.cRowStrideBytes);
   builder.create<CallOp>(Value::i32,
-                         vals({ shape.iBound, shape.jBound, shape.kBound,
+                         rsmVals({ shape.iBound, shape.jBound, shape.kBound,
                                 aRowStride, cRowStride, a, c, scratch }),
-                         attrs({ new NameAttr(kHelperName), new ImpureAttr }));
+                         rsmAttrs({ new NameAttr(kHelperName), new ImpureAttr }));
   builder.create<GotoOp>({ new TargetAttr(exit) });
   return true;
 }
@@ -715,7 +715,7 @@ std::map<std::string, int> RowScratchMatmul::stats() {
 }
 
 void RowScratchMatmul::run() {
-  if (envEnabled("SYSY_CC_NO_ROW_SCRATCH_MATMUL", false))
+  if (rsmEnvEnabled("SYSY_CC_NO_ROW_SCRATCH_MATMUL", false))
     return;
 
   auto globals = getGlobalMap();
@@ -726,13 +726,13 @@ void RowScratchMatmul::run() {
   analysis.run();
   for (auto &[_, forest] : analysis.getResult()) {
     for (auto loop : forest.getLoops()) {
-      MatmulShape shape;
-      if (!tryMatchMatmul(loop, globals, shape)) {
+      RsmMatmulShape shape;
+      if (!rsmTryMatchMatmul(loop, globals, shape)) {
         rejectedShape++;
         continue;
       }
       candidates++;
-      if (replaceWithHelper(module, shape))
+      if (rsmReplaceWithHelper(module, shape))
         replaced++;
     }
   }

@@ -4,12 +4,12 @@ using namespace sys;
 
 namespace {
 
-bool globalHasStores(Op *getGlobal) {
+bool pureGlobalHasStores(Op *getGlobal) {
   for (auto use : getGlobal->getUses()) {
     if (isa<StoreOp>(use))
       return true;
     if (isa<AddIOp>(use) || isa<AddLOp>(use)) {
-      if (globalHasStores(use))
+      if (pureGlobalHasStores(use))
         return true;
       continue;
     }
@@ -83,7 +83,7 @@ void Pureness::run() {
   // after impure callees are inlined and loads are optimized away.
   auto gMap = getGlobalMap();
   for (auto get : module->findAll<GetGlobalOp>()) {
-    if (globalHasStores(get))
+    if (pureGlobalHasStores(get))
       gMap[NAME(get)]->add<ImpureAttr>();
   }
 }

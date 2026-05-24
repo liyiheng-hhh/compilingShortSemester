@@ -10,7 +10,7 @@ using namespace sys;
 
 namespace {
 
-bool envEnabled(const char *name, bool fallback = true) {
+bool rpEnvEnabled(const char *name, bool fallback = true) {
   const char *v = std::getenv(name);
   if (!v || !v[0])
     return fallback;
@@ -19,11 +19,11 @@ bool envEnabled(const char *name, bool fallback = true) {
   return true;
 }
 
-bool isMemoryClobber(Op *op) {
+bool rpIsMemoryClobber(Op *op) {
   return isa<rv::StoreOp>(op) || isa<FsdOp>(op) || isa<rv::CallOp>(op);
 }
 
-std::vector<Value::Type> getArgTypes(FuncOp *funcOp) {
+std::vector<Value::Type> rpGetArgTypes(FuncOp *funcOp) {
   int argcnt = funcOp->get<ArgCountAttr>()->count;
   if (auto argTypes = funcOp->find<ArgTypesAttr>()) {
     if ((int) argTypes->types.size() == argcnt)
@@ -39,7 +39,7 @@ std::vector<Value::Type> getArgTypes(FuncOp *funcOp) {
   return types;
 }
 
-int getStackArgIndex(const std::vector<Value::Type> &types, int index) {
+int rpGetStackArgIndex(const std::vector<Value::Type> &types, int index) {
   int intCount = 0;
   int fpCount = 0;
   int stackCount = 0;
@@ -63,7 +63,7 @@ int getStackArgIndex(const std::vector<Value::Type> &types, int index) {
 }
 
 template <typename BranchTy, typename InverseBranchTy>
-bool rotateFallthroughLoop(BranchTy *op, Builder &builder) {
+bool rpRotateFallthroughLoop(BranchTy *op, Builder &builder) {
   if (!op->template has<TargetAttr>() || op->template has<ElseAttr>())
     return false;
   auto header = op->getParent();
@@ -259,7 +259,7 @@ int RegAlloc::latePeephole(Op *funcOp) {
     return false;
   });
 
-  if (envEnabled("SYSY_RV_ENABLE_LOAD_LOAD_CSE", true)) {
+  if (rpEnvEnabled("SYSY_RV_ENABLE_LOAD_LOAD_CSE", true)) {
     for (auto bb : funcOp->getRegion()->getBlocks()) {
       Op *op = bb->getFirstOp();
       while (op) {
@@ -298,7 +298,7 @@ int RegAlloc::latePeephole(Op *funcOp) {
     }
   }
 
-  if (envEnabled("SYSY_RV_ENABLE_BLOCK_LOAD_CSE", true)) {
+  if (rpEnvEnabled("SYSY_RV_ENABLE_BLOCK_LOAD_CSE", true)) {
     struct LoadKey {
       bool fp = false;
       Reg base = Reg::zero;
@@ -326,7 +326,7 @@ int RegAlloc::latePeephole(Op *funcOp) {
       for (Op *op = bb->getFirstOp(); op; ) {
         Op *next = op->atBack() ? nullptr : op->nextOp();
 
-        if (isMemoryClobber(op)) {
+        if (rpIsMemoryClobber(op)) {
           available.clear();
           op = next;
           continue;
@@ -664,7 +664,7 @@ int RegAlloc::latePeephole(Op *funcOp) {
       // This must substitute the move source, not the arithmetic destination:
       //   mv t0, a0; addw a1, t0, t0  ->  addw a1, a0, a0
       // Replacing with RD(next) corrupts cases where RD(next) is unrelated.
-      if (envEnabled("SYSY_RV_ENABLE_MOVE_ARITH_PEEPHOLE", true) &&
+      if (rpEnvEnabled("SYSY_RV_ENABLE_MOVE_ARITH_PEEPHOLE", true) &&
           (isa<MulwOp>(next) || isa<AddwOp>(next) || isa<SubwOp>(next)) &&
           op->getUses().size() == 1 &&
           *op->getUses().begin() == next) {
@@ -877,17 +877,17 @@ void RegAlloc::tidyup(Region *region) {
         continue;
       auto term = bb->getLastOp();
       if (auto op = dyn_cast<BgeOp>(term))
-        changed |= rotateFallthroughLoop<BgeOp, BltOp>(op, builder);
+        changed |= rpRotateFallthroughLoop<BgeOp, BltOp>(op, builder);
       else if (auto op = dyn_cast<BltOp>(term))
-        changed |= rotateFallthroughLoop<BltOp, BgeOp>(op, builder);
+        changed |= rpRotateFallthroughLoop<BltOp, BgeOp>(op, builder);
       else if (auto op = dyn_cast<BgtOp>(term))
-        changed |= rotateFallthroughLoop<BgtOp, BleOp>(op, builder);
+        changed |= rpRotateFallthroughLoop<BgtOp, BleOp>(op, builder);
       else if (auto op = dyn_cast<BleOp>(term))
-        changed |= rotateFallthroughLoop<BleOp, BgtOp>(op, builder);
+        changed |= rpRotateFallthroughLoop<BleOp, BgtOp>(op, builder);
       else if (auto op = dyn_cast<BeqOp>(term))
-        changed |= rotateFallthroughLoop<BeqOp, BneOp>(op, builder);
+        changed |= rpRotateFallthroughLoop<BeqOp, BneOp>(op, builder);
       else if (auto op = dyn_cast<BneOp>(term))
-        changed |= rotateFallthroughLoop<BneOp, BeqOp>(op, builder);
+        changed |= rpRotateFallthroughLoop<BneOp, BeqOp>(op, builder);
     }
   }
 
@@ -1023,7 +1023,7 @@ void RegAlloc::tidyup(Region *region) {
   else \
     builder.create<StoreOp>({ RSC(reg), RS2C(addr), new IntAttr(offset), new SizeAttr(8) });
 
-void save(Builder builder, const std::vector<Reg> &regs, int offset) {
+void rpSaveCalleeRegs(Builder builder, const std::vector<Reg> &regs, int offset) {
   using sys::rv::StoreOp;
 
   for (auto reg : regs) {
@@ -1053,12 +1053,12 @@ void save(Builder builder, const std::vector<Reg> &regs, int offset) {
 
 namespace {
 
-bool fitsImm12(int x) {
+bool rpFitsImm12(int x) {
   return x > -2048 && x < 2048;
 }
 
-void materializeSpAddr(Builder &builder, Reg tmp, int offset) {
-  if (fitsImm12(offset))
+void rpMaterializeSpAddr(Builder &builder, Reg tmp, int offset) {
+  if (rpFitsImm12(offset))
     builder.create<AddiOp>({ RDC(tmp), RSC(Reg::sp), new IntAttr(offset) });
   else {
     builder.create<LiOp>({ RDC(tmp), new IntAttr(offset) });
@@ -1066,9 +1066,9 @@ void materializeSpAddr(Builder &builder, Reg tmp, int offset) {
   }
 }
 
-void emitStackLoad(Builder &builder, Reg dst, Value::Type ty, int offset) {
+void rpEmitStackLoad(Builder &builder, Reg dst, Value::Type ty, int offset) {
   int size = ty == Value::i64 ? 8 : 4;
-  if (fitsImm12(offset)) {
+  if (rpFitsImm12(offset)) {
     builder.create<sys::rv::LoadOp>(ty, {
       RDC(dst),
       RSC(Reg::sp),
@@ -1079,7 +1079,7 @@ void emitStackLoad(Builder &builder, Reg dst, Value::Type ty, int offset) {
   }
 
   Reg scratch = (dst == spillReg2 ? spillReg : spillReg2);
-  materializeSpAddr(builder, scratch, offset);
+  rpMaterializeSpAddr(builder, scratch, offset);
   builder.create<sys::rv::LoadOp>(ty, {
     RDC(dst),
     RSC(scratch),
@@ -1088,7 +1088,7 @@ void emitStackLoad(Builder &builder, Reg dst, Value::Type ty, int offset) {
   });
 }
 
-void emitSpAdjust(Builder &builder, int delta) {
+void rpEmitSpAdjust(Builder &builder, int delta) {
   while (delta != 0) {
     int step = delta;
     if (step > 2047)
@@ -1102,7 +1102,7 @@ void emitSpAdjust(Builder &builder, int delta) {
 
 }
 
-void load(Builder builder, const std::vector<Reg> &regs, int offset) {
+void rpLoadCalleeRegs(Builder builder, const std::vector<Reg> &regs, int offset) {
   using sys::rv::LoadOp;
 
   for (auto reg : regs) {
@@ -1154,7 +1154,7 @@ void RegAlloc::proEpilogue(FuncOp *funcOp, bool isLeaf) {
   if (offset != 0)
     builder.create<SubSpOp>({ new IntAttr(offset) });
   
-  save(builder, preserve, offset);
+  rpSaveCalleeRegs(builder, preserve, offset);
 
   // Similarly add function epilogue.
   if (offset != 0) {
@@ -1165,7 +1165,7 @@ void RegAlloc::proEpilogue(FuncOp *funcOp, bool isLeaf) {
 
     builder.setToBlockStart(bb);
 
-    load(builder, preserve, offset);
+    rpLoadCalleeRegs(builder, preserve, offset);
     builder.create<SubSpOp>({ new IntAttr(-offset) });
     builder.create<RetOp>();
   }
@@ -1181,10 +1181,10 @@ void RegAlloc::proEpilogue(FuncOp *funcOp, bool isLeaf) {
     return V(a) < V(b);
   });
   std::map<Op*, int> argOffsets;
-  auto argTypes = getArgTypes(cast<FuncOp>(funcOp));
+  auto argTypes = rpGetArgTypes(cast<FuncOp>(funcOp));
 
   for (auto op : remainingGets) {
-    int stackIndex = getStackArgIndex(argTypes, V(op));
+    int stackIndex = rpGetStackArgIndex(argTypes, V(op));
     if (stackIndex >= 0)
       argOffsets[op] = stackIndex * 8;
   }
@@ -1206,7 +1206,7 @@ void RegAlloc::proEpilogue(FuncOp *funcOp, bool isLeaf) {
       bool fp = op->getResultType() == Value::f32;
       rdReg = fp ? fspillReg : spillReg;
     }
-    emitStackLoad(builder, rdReg, loadTy, myoffset);
+    rpEmitStackLoad(builder, rdReg, loadTy, myoffset);
     auto created = op->prevOp();
     if (created)
       op->replaceAllUsesWith(created);
@@ -1219,7 +1219,7 @@ void RegAlloc::proEpilogue(FuncOp *funcOp, bool isLeaf) {
   //   addi <rd = sp> <rs = sp> <-4>
   runRewriter(funcOp, [&](SubSpOp *op) {
     builder.setBeforeOp(op);
-    emitSpAdjust(builder, -V(op));
+    rpEmitSpAdjust(builder, -V(op));
     op->erase();
     return true;
   });
