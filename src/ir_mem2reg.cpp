@@ -163,7 +163,7 @@ struct DominatorTree {
   }
 };
 
-static vector<unordered_set<int>> computeDominanceFrontier(
+static vector<unordered_set<int>> irMem2regComputeDomFrontier(
     const DominatorTree &dt,
     const vector<vector<int>> &preds) {
   int n = dt.n;
@@ -255,7 +255,7 @@ public:
     dt = DominatorTree(n);
     dt.compute(preds, succ);
     dbg("df");
-    df = computeDominanceFrontier(dt, preds);
+    df = irMem2regComputeDomFrontier(dt, preds);
 
     dbg("collect");
     collectVariables();

@@ -19,7 +19,7 @@ namespace sys::cfg {
 
 namespace {
 
-size_t productDims(const std::vector<int> &dims) {
+size_t htcProductDims(const std::vector<int> &dims) {
   if (dims.empty())
     return 1;
   size_t prod = 1;
@@ -28,9 +28,9 @@ size_t productDims(const std::vector<int> &dims) {
   return prod;
 }
 
-size_t typeSize(Type *ty);
+size_t htcTypeSize(Type *ty);
 
-size_t scalarSize(Type *ty) {
+size_t htcScalarSize(Type *ty) {
   if (!ty)
     return 4;
   if (isa<IntType>(ty) || isa<FloatType>(ty))
@@ -46,7 +46,7 @@ size_t scalarSize(Type *ty) {
   return 4;
 }
 
-dhir::TypeKind mapElementType(Type *ty) {
+dhir::TypeKind htcMapElementType(Type *ty) {
   if (!ty)
     return dhir::TypeKind::Unknown;
   if (isa<IntType>(ty))
@@ -54,21 +54,21 @@ dhir::TypeKind mapElementType(Type *ty) {
   if (isa<FloatType>(ty))
     return dhir::TypeKind::Float;
   if (auto ptr = dyn_cast<PointerType>(ty))
-    return mapElementType(ptr->pointee);
+    return htcMapElementType(ptr->pointee);
   if (auto arr = dyn_cast<ArrayType>(ty))
-    return mapElementType(arr->base);
+    return htcMapElementType(arr->base);
   return dhir::TypeKind::Unknown;
 }
 
-size_t typeSize(Type *ty) {
+size_t htcTypeSize(Type *ty) {
   if (!ty)
     return 4;
   if (auto arr = dyn_cast<ArrayType>(ty))
-    return typeSize(arr->base) * productDims(arr->dims);
-  return scalarSize(ty);
+    return htcTypeSize(arr->base) * htcProductDims(arr->dims);
+  return htcScalarSize(ty);
 }
 
-std::vector<int> typeDims(Type *ty) {
+std::vector<int> htcTypeDims(Type *ty) {
   if (!ty)
     return {};
   if (auto arr = dyn_cast<ArrayType>(ty))
@@ -86,7 +86,7 @@ std::vector<int> typeDims(Type *ty) {
   return {};
 }
 
-std::vector<size_t> computeStrideBytes(const std::vector<int> &dims, size_t elemSize) {
+std::vector<size_t> htcComputeStrideBytes(const std::vector<int> &dims, size_t elemSize) {
   if (dims.empty())
     return {};
   std::vector<size_t> strides(dims.size(), elemSize ? elemSize : 4);
@@ -99,12 +99,12 @@ std::vector<size_t> computeStrideBytes(const std::vector<int> &dims, size_t elem
   return strides;
 }
 
-SymbolInfo buildSymbolInfo(const std::string &name, Type *ty, bool isGlobal, bool isParam, bool isMutable) {
+SymbolInfo htcBuildSymbolInfo(const std::string &name, Type *ty, bool isGlobal, bool isParam, bool isMutable) {
   SymbolInfo info;
   info.name = name;
   info.type = dhir::mapType(ty);
-  info.elementType = mapElementType(ty);
-  info.dims = typeDims(ty);
+  info.elementType = htcMapElementType(ty);
+  info.dims = htcTypeDims(ty);
   info.isGlobal = isGlobal;
   info.isParam = isParam;
   info.isMutable = isMutable;
@@ -114,14 +114,14 @@ SymbolInfo buildSymbolInfo(const std::string &name, Type *ty, bool isGlobal, boo
     info.elemSize = 4;
   else if (info.type == dhir::TypeKind::Pointer || info.type == dhir::TypeKind::Array)
     info.elemSize = 8;
-  info.storageSize = typeSize(ty);
+  info.storageSize = htcTypeSize(ty);
   if (info.storageSize == 0)
     info.storageSize = (info.type == dhir::TypeKind::Pointer || info.type == dhir::TypeKind::Array) ? 8 : 4;
-  info.strideBytes = computeStrideBytes(info.dims, info.elemSize);
+  info.strideBytes = htcComputeStrideBytes(info.dims, info.elemSize);
   return info;
 }
 
-std::string formatFloat(double value) {
+std::string htcFormatFloat(double value) {
   std::ostringstream oss;
   // Preserve enough decimal digits to round-trip through strtof() in
   // CFG->legacy lowering without introducing avoidable ULP drift.
@@ -129,12 +129,12 @@ std::string formatFloat(double value) {
   return oss.str();
 }
 
-struct FuncLoweringState {
+struct HtcFuncLoweringState {
   int tempId = 0;
   int blockId = 0;
 };
 
-class Lowerer {
+class HtcLowerer {
   const dhir::Module &hirModule;
   std::vector<std::string> &errors;
   std::unordered_map<const dhir::Op*, std::string> resolvedSymbols;
@@ -142,7 +142,7 @@ class Lowerer {
   std::unordered_set<std::string> globalSymbols;
 
 public:
-  explicit Lowerer(const dhir::Module &hirModule, std::vector<std::string> &errors):
+  explicit HtcLowerer(const dhir::Module &hirModule, std::vector<std::string> &errors):
     hirModule(hirModule), errors(errors) {}
 
   Module run() {
@@ -215,7 +215,7 @@ private:
     func.params.clear();
     for (size_t i = 0; i < fn->args.size(); i++) {
       Type *argTy = i < fnTy->params.size() ? fnTy->params[i] : nullptr;
-      func.params.push_back(buildSymbolInfo(fn->args[i], argTy, false, true, true));
+      func.params.push_back(htcBuildSymbolInfo(fn->args[i], argTy, false, true, true));
     }
   }
 
@@ -405,7 +405,7 @@ private:
     return 4;
   }
 
-  int newBlock(Func &func, FuncLoweringState &st, const std::string &prefix) {
+  int newBlock(Func &func, HtcFuncLoweringState &st, const std::string &prefix) {
     Block bb;
     bb.name = prefix + "." + std::to_string(st.blockId++);
     func.blocks.push_back(std::move(bb));
@@ -429,7 +429,7 @@ private:
     emit(func, bid, ret);
   }
 
-  std::string newTemp(FuncLoweringState &st) {
+  std::string newTemp(HtcFuncLoweringState &st) {
     return "%t" + std::to_string(st.tempId++);
   }
 
@@ -460,7 +460,7 @@ private:
       if (op->kind == dhir::OpKind::VarDecl && !op->symbol.empty() && !seen.count(op->symbol)) {
         const auto *origin = dyn_cast<VarDeclNode>(op->origin);
         Type *ty = origin ? origin->type : op->origin ? op->origin->type : nullptr;
-        auto info = buildSymbolInfo(op->symbol, ty, true, false, origin ? origin->mut : true);
+        auto info = htcBuildSymbolInfo(op->symbol, ty, true, false, origin ? origin->mut : true);
 
         if (origin && origin->init) {
           if (auto i = dyn_cast<IntNode>(origin->init)) {
@@ -470,7 +470,7 @@ private:
             info.hasFloatInit = true;
             info.floatInit = f->value;
           } else if (auto arr = dyn_cast<ConstArrayNode>(origin->init)) {
-            size_t elems = productDims(info.dims);
+            size_t elems = htcProductDims(info.dims);
             if (elems == 0)
               elems = 1;
             if (arr->isFloat) {
@@ -499,14 +499,14 @@ private:
     if (op->kind == dhir::OpKind::VarDecl && !sym.empty() && !seen.count(sym)) {
       const auto *origin = op->origin ? dyn_cast<VarDeclNode>(op->origin) : nullptr;
       Type *ty = origin ? origin->type : op->origin ? op->origin->type : nullptr;
-      locals.push_back(buildSymbolInfo(sym, ty, false, false, origin ? origin->mut : true));
+      locals.push_back(htcBuildSymbolInfo(sym, ty, false, false, origin ? origin->mut : true));
       seen.insert(sym);
     }
     for (const auto &child : op->children)
       collectLocalsRec(child.get(), locals, seen);
   }
 
-  std::string lowerExpr(const dhir::Op *op, Func &func, FuncLoweringState &st, int &cur,
+  std::string lowerExpr(const dhir::Op *op, Func &func, HtcFuncLoweringState &st, int &cur,
                         const std::unordered_map<std::string, SymbolInfo> &symbols) {
     if (!op)
       return "#0";
@@ -518,7 +518,7 @@ private:
       return "#0";
     case dhir::OpKind::ConstFloat:
       if (op->hasFloatValue)
-        return "f#" + formatFloat(op->floatValue);
+        return "f#" + htcFormatFloat(op->floatValue);
       return "f#0.0";
     case dhir::OpKind::Load: {
       Inst inst;
@@ -659,7 +659,7 @@ private:
   }
 
   std::string lowerASTExpr(ASTNode *node, dhir::TypeKind fallbackType, Func &func,
-                           FuncLoweringState &st, int &cur,
+                           HtcFuncLoweringState &st, int &cur,
                            const std::unordered_map<std::string, SymbolInfo> &symbols) {
     if (!node)
       return defaultToken(fallbackType);
@@ -673,7 +673,7 @@ private:
     return lowerExpr(exprModule.root->children[0].get(), func, st, cur, symbols);
   }
 
-  std::string normalizeCond(const dhir::Op *cond, Func &func, FuncLoweringState &st, int &cur,
+  std::string normalizeCond(const dhir::Op *cond, Func &func, HtcFuncLoweringState &st, int &cur,
                             const std::unordered_map<std::string, SymbolInfo> &symbols) {
     auto value = lowerExpr(cond, func, st, cur, symbols);
     auto ty = inferExprType(cond);
@@ -691,7 +691,7 @@ private:
     return cmp.result;
   }
 
-  void emitCondBranch(const dhir::Op *cond, Func &func, FuncLoweringState &st, int cur,
+  void emitCondBranch(const dhir::Op *cond, Func &func, HtcFuncLoweringState &st, int cur,
                       const std::unordered_map<std::string, SymbolInfo> &symbols,
                       int trueTarget, int falseTarget) {
     if (!cond) {
@@ -726,7 +726,7 @@ private:
     emit(func, at, cbr);
   }
 
-  void emitLocalArrayInit(const std::string &symbol, const VarDeclNode *var, Func &func, FuncLoweringState &st, int &cur,
+  void emitLocalArrayInit(const std::string &symbol, const VarDeclNode *var, Func &func, HtcFuncLoweringState &st, int &cur,
                           const std::unordered_map<std::string, SymbolInfo> &symbols,
                           std::set<std::string> *stores) {
     if (!var || !var->init)
@@ -746,8 +746,8 @@ private:
       return;
     }
 
-    size_t declaredSize = productDims(it->second.dims);
-    size_t astSize = productDims(arrTy->dims);
+    size_t declaredSize = htcProductDims(it->second.dims);
+    size_t astSize = htcProductDims(arrTy->dims);
     if (declaredSize == 0)
       declaredSize = 1;
     if (astSize == 0)
@@ -847,7 +847,7 @@ private:
     }
   }
 
-  int lowerStmt(const dhir::Op *op, Func &func, FuncLoweringState &st, int cur,
+  int lowerStmt(const dhir::Op *op, Func &func, HtcFuncLoweringState &st, int cur,
                 int breakTarget, int continueTarget,
                 const std::unordered_map<std::string, SymbolInfo> &symbols,
                 std::set<std::string> *stores) {
@@ -1121,7 +1121,7 @@ private:
 
   Func lowerFunc(const dhir::Op &funcOp, const Module &cfgModule) {
     Func func;
-    FuncLoweringState st;
+    HtcFuncLoweringState st;
     func.name = funcOp.symbol.empty() ? "anonymous" : funcOp.symbol;
 
     buildResolvedSymbols(funcOp, cfgModule);
@@ -1154,7 +1154,7 @@ private:
 }  // namespace
 
 Module lowerFromHIR(const dhir::Module &hirModule, std::vector<std::string> &errors) {
-  Lowerer lowering(hirModule, errors);
+  HtcLowerer lowering(hirModule, errors);
   return lowering.run();
 }
 

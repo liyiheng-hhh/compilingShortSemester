@@ -17,10 +17,10 @@ struct ArgLoc {
   bool valueIsFloat = false;
 };
 
-static constexpr bool kEnableIrBackend = true;
-static constexpr bool kEnableRecursiveT5BinaryPath = false;
+static constexpr bool cgcEnableIrBackend = true;
+static constexpr bool cgcEnableRecursiveT5BinaryPath = false;
 
-static int intLog2Positive32(int32_t v) {
+static int cgcIntLog2Positive32(int32_t v) {
   if (v <= 0 || (v & (v - 1)) != 0) {
     return -1;
   }
@@ -34,18 +34,18 @@ static int intLog2Positive32(int32_t v) {
 
 // ---- Signed 32-bit division by constant (libdivide-style magic + power-of-2) ----
 
-static constexpr uint8_t kLd32ShiftMask = 0x1F;
-static constexpr uint8_t kLdAddMarker = 0x40;
-static constexpr uint8_t kLdNegDivisor = 0x80;
+static constexpr uint8_t cgcLd32ShiftMask = 0x1F;
+static constexpr uint8_t cgcLdAddMarker = 0x40;
+static constexpr uint8_t cgcLdNegDivisor = 0x80;
 
-static uint32_t u64Div32To32(uint32_t u1, uint32_t u0, uint32_t v, uint32_t *r) {
+static uint32_t cgcU64Div32To32(uint32_t u1, uint32_t u0, uint32_t v, uint32_t *r) {
   uint64_t n = (static_cast<uint64_t>(u1) << 32) | u0;
   uint32_t q = static_cast<uint32_t>(n / v);
   *r = static_cast<uint32_t>(n - static_cast<uint64_t>(q) * static_cast<uint64_t>(v));
   return q;
 }
 
-static bool libdivideS32Gen(int32_t d, int32_t *magicOut, uint8_t *moreOut) {
+static bool cgcLibdivideS32Gen(int32_t d, int32_t *magicOut, uint8_t *moreOut) {
   if (d == 0) {
     return false;
   }
@@ -54,12 +54,12 @@ static bool libdivideS32Gen(int32_t d, int32_t *magicOut, uint8_t *moreOut) {
   uint32_t floorLog2D = 31u - static_cast<uint32_t>(__builtin_clz(absD));
   if ((absD & (absD - 1)) == 0) {
     *magicOut = 0;
-    *moreOut = static_cast<uint8_t>(floorLog2D | (d < 0 ? kLdNegDivisor : 0));
+    *moreOut = static_cast<uint8_t>(floorLog2D | (d < 0 ? cgcLdNegDivisor : 0));
     return true;
   }
   uint32_t rem = 0;
   uint32_t proposedM =
-      u64Div32To32(1u << (floorLog2D - 1), 0, absD, &rem);
+      cgcU64Div32To32(1u << (floorLog2D - 1), 0, absD, &rem);
   const uint32_t e = absD - rem;
   uint8_t more = 0;
   if (e < (1u << floorLog2D)) {
@@ -70,12 +70,12 @@ static bool libdivideS32Gen(int32_t d, int32_t *magicOut, uint8_t *moreOut) {
     if (twiceRem >= absD || twiceRem < rem) {
       proposedM += 1;
     }
-    more = static_cast<uint8_t>(floorLog2D | kLdAddMarker);
+    more = static_cast<uint8_t>(floorLog2D | cgcLdAddMarker);
   }
   proposedM += 1;
   int32_t magic = static_cast<int32_t>(proposedM);
   if (d < 0) {
-    more |= kLdNegDivisor;
+    more |= cgcLdNegDivisor;
     magic = -magic;
   }
   *magicOut = magic;
@@ -84,13 +84,13 @@ static bool libdivideS32Gen(int32_t d, int32_t *magicOut, uint8_t *moreOut) {
 }
 
 // Pre: a0 = 32-bit dividend (sign-extended by caller). Post: a0 = trunc(n / d).
-static bool emitSigned32DivByConstMagicPayload(CodeGen &cg, int32_t d) {
+static bool cgcEmitSigned32DivByConstMagicPayload(CodeGen &cg, int32_t d) {
   int32_t magic = 0;
   uint8_t more = 0;
-  if (!libdivideS32Gen(d, &magic, &more)) {
+  if (!cgcLibdivideS32Gen(d, &magic, &more)) {
     return false;
   }
-  const uint8_t shift = more & kLd32ShiftMask;
+  const uint8_t shift = more & cgcLd32ShiftMask;
   if (magic == 0) {
     // 2^k 除数：此移位序列是 floor 风格，与 SysY 截断 div/rem 不一致（crc rotr8 的 /256、%2 等）。
     (void)shift;
@@ -102,8 +102,8 @@ static bool emitSigned32DivByConstMagicPayload(CodeGen &cg, int32_t d) {
   cg.emit("\tmul\tt2, a0, t1");
   cg.emit("\tsrli\tt2, t2, 32");
   cg.emit("\tsext.w\tt2, t2");
-  if (more & kLdAddMarker) {
-    if (more & kLdNegDivisor) {
+  if (more & cgcLdAddMarker) {
+    if (more & cgcLdNegDivisor) {
       cg.emit("\tsubw\tt2, t2, a0");
     } else {
       cg.emit("\taddw\tt2, t2, a0");
@@ -118,7 +118,7 @@ static bool emitSigned32DivByConstMagicPayload(CodeGen &cg, int32_t d) {
 }
 
 // SysY 截断除法：n / 2^lg（lg>=0，除数为正 2 的幂）。
-static bool emitSDivByConstPow2Trunc(CodeGen &cg, int lg) {
+static bool cgcEmitSDivByConstPow2Trunc(CodeGen &cg, int lg) {
   if (lg < 0 || lg > 30) {
     return false;
   }
@@ -136,7 +136,7 @@ static bool emitSDivByConstPow2Trunc(CodeGen &cg, int lg) {
 }
 
 // Enhanced power-of-2 signed division for common small exponents (O1)
-static bool emitSDivByConstPow2Enhanced(CodeGen &cg, int lg) {
+static bool cgcEmitSDivByConstPow2Enhanced(CodeGen &cg, int lg) {
   if (lg < 1 || lg > 30) return false;
   // For /2 and /4 we use a slightly more efficient sequence when possible
   if (lg == 1) {
@@ -146,23 +146,23 @@ static bool emitSDivByConstPow2Enhanced(CodeGen &cg, int lg) {
     cg.emit("\tsraiw\ta0, a0, 1");
     return true;
   }
-  return emitSDivByConstPow2Trunc(cg, lg);
+  return cgcEmitSDivByConstPow2Trunc(cg, lg);
 }
 
 // -O1: exact SysY 32-bit signed division by known constant.
 // More 2^n special cases + small constant fast paths.
-static bool emitSDivByConst(CodeGen &cg, int32_t d) {
+static bool cgcEmitSDivByConst(CodeGen &cg, int32_t d) {
   if (!cg.optO1() || d == 0 || d == 1 || d == -1) {
     return false;
   }
   cg.emit("\tsext.w\ta0, a0");
   if (d > 0) {
-    const int lg = intLog2Positive32(d);
+    const int lg = cgcIntLog2Positive32(d);
     if (lg >= 0 && (static_cast<int32_t>(1) << lg) == d) {
       if (lg <= 4) {
-        return emitSDivByConstPow2Enhanced(cg, lg);
+        return cgcEmitSDivByConstPow2Enhanced(cg, lg);
       }
-      return emitSDivByConstPow2Trunc(cg, lg);
+      return cgcEmitSDivByConstPow2Trunc(cg, lg);
     }
     // Fast paths for very common small divisors
     // (these often appear in crypto / hash / sort / matrix code)
@@ -223,19 +223,19 @@ static bool emitSDivByConst(CodeGen &cg, int32_t d) {
       return true;
     }
   }
-  return emitSigned32DivByConstMagicPayload(cg, d);
+  return cgcEmitSigned32DivByConstMagicPayload(cg, d);
 }
 
-static bool emitSRemByConst(CodeGen &cg, int32_t d) {
+static bool cgcEmitSRemByConst(CodeGen &cg, int32_t d) {
   if (!cg.optO1() || d == 0 || d == 1 || d == -1) {
     return false;
   }
   cg.emit("\tmv\tt6, a0");
   cg.emit("\tsext.w\ta0, t6");
   if (d > 0) {
-    const int lg = intLog2Positive32(d);
+    const int lg = cgcIntLog2Positive32(d);
     if (lg >= 0 && (static_cast<int32_t>(1) << lg) == d) {
-      if (!emitSDivByConstPow2Trunc(cg, lg)) {
+      if (!cgcEmitSDivByConstPow2Trunc(cg, lg)) {
         return false;
       }
       cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
@@ -244,7 +244,7 @@ static bool emitSRemByConst(CodeGen &cg, int32_t d) {
       return true;
     }
   }
-  if (!emitSigned32DivByConstMagicPayload(cg, d)) {
+  if (!cgcEmitSigned32DivByConstMagicPayload(cg, d)) {
     return false;
   }
   cg.emit("\tli\tt1, " + to_string(static_cast<int>(d)));
@@ -254,7 +254,7 @@ static bool emitSRemByConst(CodeGen &cg, int32_t d) {
 }
 
 // Emit optimal RISC-V code for a0 = a0 * k. Returns true if code was emitted.
-static bool emitMulByConst(CodeGen &cg, int32_t k) {
+static bool cgcEmitMulByConst(CodeGen &cg, int32_t k) {
   if (k == 0) {
     cg.emit("\tli\ta0, 0");
     return true;
@@ -264,7 +264,7 @@ static bool emitMulByConst(CodeGen &cg, int32_t k) {
     cg.emit("\tnegw\ta0, a0");
     return true;
   }
-  int lg = intLog2Positive32(k > 0 ? k : -k);
+  int lg = cgcIntLog2Positive32(k > 0 ? k : -k);
   if (lg >= 0) {
     cg.emit(k > 0 ? "\tslliw\ta0, a0, " + to_string(lg)
                   : "\tslliw\ta0, a0, " + to_string(lg) + "\n\tnegw\ta0, a0");
@@ -274,14 +274,14 @@ static bool emitMulByConst(CodeGen &cg, int32_t k) {
   auto tryEmit = [&](int32_t val, bool negate) -> bool {
     if (val <= 1 || val > 256) return false;
     // Try val = 2^a ± 1
-    int a = intLog2Positive32(val - 1);
+    int a = cgcIntLog2Positive32(val - 1);
     if (a >= 0) {
       cg.emit("\tslliw\tt2, a0, " + to_string(a));
       cg.emit(negate ? "\tsubw\ta0, t2, a0" : "\taddw\ta0, t2, a0");
       if (k < 0) cg.emit("\tnegw\ta0, a0");
       return true;
     }
-    a = intLog2Positive32(val + 1);
+    a = cgcIntLog2Positive32(val + 1);
     if (a >= 0) {
       cg.emit("\tslliw\tt2, a0, " + to_string(a));
       cg.emit(negate ? "\taddw\ta0, t2, a0" : "\tsubw\ta0, t2, a0");
@@ -291,7 +291,7 @@ static bool emitMulByConst(CodeGen &cg, int32_t k) {
     // Try val = 2^a + 2^b
     for (a = 1; a <= 8; ++a) {
       int rem = val - (1 << a);
-      int b = intLog2Positive32(rem);
+      int b = cgcIntLog2Positive32(rem);
       if (b >= 0) {
         cg.emit("\tslliw\tt2, a0, " + to_string(a));
         cg.emit("\tslliw\tt1, a0, " + to_string(b));
@@ -303,7 +303,7 @@ static bool emitMulByConst(CodeGen &cg, int32_t k) {
     // Try val = 2^a - 2^b
     for (a = 1; a <= 8; ++a) {
       int sum = val + (1 << a);
-      int b = intLog2Positive32(sum);
+      int b = cgcIntLog2Positive32(sum);
       if (b >= 0 && b > a) {
         cg.emit("\tslliw\tt2, a0, " + to_string(b));
         cg.emit("\tslliw\tt1, a0, " + to_string(a));
@@ -319,7 +319,7 @@ static bool emitMulByConst(CodeGen &cg, int32_t k) {
 }
 
 // Extended constant multiplication strength reduction (popcount decomposition for larger k)
-static bool emitMulByConstExtended(CodeGen &cg, int32_t k) {
+static bool cgcEmitMulByConstExtended(CodeGen &cg, int32_t k) {
   if (k == 0) {
     cg.emit("\tli\ta0, 0");
     return true;
@@ -329,14 +329,14 @@ static bool emitMulByConstExtended(CodeGen &cg, int32_t k) {
     cg.emit("\tnegw\ta0, a0");
     return true;
   }
-  int lg = intLog2Positive32(k > 0 ? k : -k);
+  int lg = cgcIntLog2Positive32(k > 0 ? k : -k);
   if (lg >= 0) {
     cg.emit(k > 0 ? "\tslliw\ta0, a0, " + to_string(lg)
                   : "\tslliw\ta0, a0, " + to_string(lg) + "\n\tnegw\ta0, a0");
     return true;
   }
   // Fall back to basic patterns first
-  if (emitMulByConst(cg, k)) return true;
+  if (cgcEmitMulByConst(cg, k)) return true;
 
   // Popcount-based decomposition for larger constants (up to 12 bits set)
   uint32_t u = static_cast<uint32_t>(k > 0 ? k : -k);
@@ -370,7 +370,7 @@ static bool emitMulByConstExtended(CodeGen &cg, int32_t k) {
   return false;
 }
 
-static bool exprIsLeaf(Expr *e) {
+static bool cgcExprIsLeaf(Expr *e) {
   if (!e) {
     return true;
   }
@@ -385,20 +385,20 @@ static bool exprIsLeaf(Expr *e) {
       return false;
     }
     for (auto &ix : lv->indices) {
-      if (!exprIsLeaf(ix.get())) {
+      if (!cgcExprIsLeaf(ix.get())) {
         return false;
       }
     }
     return true;
   }
   case ExprKind::Unary:
-    return exprIsLeaf(static_cast<UnaryExpr *>(e)->expr.get());
+    return cgcExprIsLeaf(static_cast<UnaryExpr *>(e)->expr.get());
   default:
     return false;
   }
 }
 
-static bool exprHasNoCall(Expr *e) {
+static bool cgcExprHasNoCall(Expr *e) {
   if (!e) return true;
   switch (e->kind) {
   case ExprKind::Number:
@@ -407,15 +407,15 @@ static bool exprHasNoCall(Expr *e) {
   case ExprKind::LVal: {
     auto *lv = static_cast<LValExpr *>(e);
     for (auto &ix : lv->indices) {
-      if (!exprHasNoCall(ix.get())) return false;
+      if (!cgcExprHasNoCall(ix.get())) return false;
     }
     return true;
   }
   case ExprKind::Unary:
-    return exprHasNoCall(static_cast<UnaryExpr *>(e)->expr.get());
+    return cgcExprHasNoCall(static_cast<UnaryExpr *>(e)->expr.get());
   case ExprKind::Binary: {
     auto *b = static_cast<BinaryExpr *>(e);
-    return exprHasNoCall(b->lhs.get()) && exprHasNoCall(b->rhs.get());
+    return cgcExprHasNoCall(b->lhs.get()) && cgcExprHasNoCall(b->rhs.get());
   }
   case ExprKind::Call:
     return false;
@@ -423,7 +423,7 @@ static bool exprHasNoCall(Expr *e) {
   return false;
 }
 
-static bool exprUsesArrayAddress(Expr *e) {
+static bool cgcExprUsesArrayAddress(Expr *e) {
   if (!e) return false;
   switch (e->kind) {
   case ExprKind::Number:
@@ -435,15 +435,15 @@ static bool exprUsesArrayAddress(Expr *e) {
     return false;
   }
   case ExprKind::Unary:
-    return exprUsesArrayAddress(static_cast<UnaryExpr *>(e)->expr.get());
+    return cgcExprUsesArrayAddress(static_cast<UnaryExpr *>(e)->expr.get());
   case ExprKind::Binary: {
     auto *b = static_cast<BinaryExpr *>(e);
-    return exprUsesArrayAddress(b->lhs.get()) || exprUsesArrayAddress(b->rhs.get());
+    return cgcExprUsesArrayAddress(b->lhs.get()) || cgcExprUsesArrayAddress(b->rhs.get());
   }
   case ExprKind::Call: {
     auto *c = static_cast<CallExpr *>(e);
     for (auto &a : c->args) {
-      if (exprUsesArrayAddress(a.get())) return true;
+      if (cgcExprUsesArrayAddress(a.get())) return true;
     }
     return false;
   }
@@ -452,7 +452,7 @@ static bool exprUsesArrayAddress(Expr *e) {
 }
 
 // Under -O1, emitExpr may use t4 (binary fast paths, emitLValAddress simpleIndices base).
-static bool assignRhsMayClobberAddrRegT4(Expr *e) {
+static bool cgcAssignRhsMayClobberAddrRegT4(Expr *e) {
   if (!e) {
     return false;
   }
@@ -465,7 +465,7 @@ static bool assignRhsMayClobberAddrRegT4(Expr *e) {
   case ExprKind::Binary:
     return true;
   case ExprKind::Unary:
-    return assignRhsMayClobberAddrRegT4(static_cast<UnaryExpr *>(e)->expr.get());
+    return cgcAssignRhsMayClobberAddrRegT4(static_cast<UnaryExpr *>(e)->expr.get());
   case ExprKind::LVal: {
     auto *lv = static_cast<LValExpr *>(e);
     return !lv->indices.empty();
@@ -475,7 +475,7 @@ static bool assignRhsMayClobberAddrRegT4(Expr *e) {
   }
 }
 
-static ReturnStmt *singleReturnStmt(FuncDef *def) {
+static ReturnStmt *cgcSingleReturnStmt(FuncDef *def) {
   if (!def || !def->body || def->body->items.size() != 1) {
     return nullptr;
   }
@@ -487,7 +487,7 @@ static ReturnStmt *singleReturnStmt(FuncDef *def) {
   return ret->expr ? ret : nullptr;
 }
 
-static int exprNodeCount(Expr *e) {
+static int cgcExprNodeCount(Expr *e) {
   if (!e) {
     return 0;
   }
@@ -499,21 +499,21 @@ static int exprNodeCount(Expr *e) {
     int n = 1;
     auto *lv = static_cast<LValExpr *>(e);
     for (auto &ix : lv->indices) {
-      n += exprNodeCount(ix.get());
+      n += cgcExprNodeCount(ix.get());
     }
     return n;
   }
   case ExprKind::Unary:
-    return 1 + exprNodeCount(static_cast<UnaryExpr *>(e)->expr.get());
+    return 1 + cgcExprNodeCount(static_cast<UnaryExpr *>(e)->expr.get());
   case ExprKind::Binary: {
     auto *b = static_cast<BinaryExpr *>(e);
-    return 1 + exprNodeCount(b->lhs.get()) + exprNodeCount(b->rhs.get());
+    return 1 + cgcExprNodeCount(b->lhs.get()) + cgcExprNodeCount(b->rhs.get());
   }
   case ExprKind::Call: {
     int n = 1;
     auto *c = static_cast<CallExpr *>(e);
     for (auto &a : c->args) {
-      n += exprNodeCount(a.get());
+      n += cgcExprNodeCount(a.get());
     }
     return n;
   }
@@ -521,7 +521,7 @@ static int exprNodeCount(Expr *e) {
   return 1;
 }
 
-static bool symbolInList(Symbol *sym, const vector<Symbol *> &symbols) {
+static bool cgcSymbolInList(Symbol *sym, const vector<Symbol *> &symbols) {
   for (Symbol *s : symbols) {
     if (s == sym) {
       return true;
@@ -530,7 +530,7 @@ static bool symbolInList(Symbol *sym, const vector<Symbol *> &symbols) {
   return false;
 }
 
-static bool inlineReturnExprEligible(Expr *e, const vector<Symbol *> &params) {
+static bool cgcInlineReturnExprEligible(Expr *e, const vector<Symbol *> &params) {
   if (!e || e->type.isPointer || e->type.base != BaseType::Int) {
     return false;
   }
@@ -546,55 +546,55 @@ static bool inlineReturnExprEligible(Expr *e, const vector<Symbol *> &params) {
       return false;
     }
     Symbol *sym = lv->symbol;
-    return sym && (symbolInList(sym, params) ||
+    return sym && (cgcSymbolInList(sym, params) ||
                    (sym->isGlobal && !sym->isArray && sym->base == BaseType::Int));
   }
   case ExprKind::Unary:
-    return inlineReturnExprEligible(static_cast<UnaryExpr *>(e)->expr.get(), params);
+    return cgcInlineReturnExprEligible(static_cast<UnaryExpr *>(e)->expr.get(), params);
   case ExprKind::Binary: {
     auto *b = static_cast<BinaryExpr *>(e);
-    return inlineReturnExprEligible(b->lhs.get(), params) &&
-           inlineReturnExprEligible(b->rhs.get(), params);
+    return cgcInlineReturnExprEligible(b->lhs.get(), params) &&
+           cgcInlineReturnExprEligible(b->rhs.get(), params);
   }
   }
   return false;
 }
 
-static bool stmtHasCall(Stmt *s);
-static bool exprHasCall(Expr *e) {
+static bool cgcStmtHasCall(Stmt *s);
+static bool cgcExprHasCall(Expr *e) {
   if (!e) return false;
   if (e->kind == ExprKind::Call) return true;
   if (e->kind == ExprKind::Unary)
-    return exprHasCall(static_cast<UnaryExpr *>(e)->expr.get());
+    return cgcExprHasCall(static_cast<UnaryExpr *>(e)->expr.get());
   if (e->kind == ExprKind::Binary) {
     auto *b = static_cast<BinaryExpr *>(e);
-    return exprHasCall(b->lhs.get()) || exprHasCall(b->rhs.get());
+    return cgcExprHasCall(b->lhs.get()) || cgcExprHasCall(b->rhs.get());
   }
   if (e->kind == ExprKind::LVal) {
     auto *lv = static_cast<LValExpr *>(e);
     for (auto &ix : lv->indices)
-      if (exprHasCall(ix.get())) return true;
+      if (cgcExprHasCall(ix.get())) return true;
     return false;
   }
   return false;
 }
-static bool stmtHasCall(Stmt *s) {
+static bool cgcStmtHasCall(Stmt *s) {
   if (!s) return false;
   switch (s->kind) {
   case StmtKind::Expr: {
     auto *es = static_cast<ExprStmt *>(s);
-    return es->expr && exprHasCall(es->expr.get());
+    return es->expr && cgcExprHasCall(es->expr.get());
   }
   case StmtKind::Assign: {
     auto *as = static_cast<AssignStmt *>(s);
     for (auto &ix : as->lhs->indices)
-      if (exprHasCall(ix.get())) return true;
-    return exprHasCall(as->rhs.get());
+      if (cgcExprHasCall(ix.get())) return true;
+    return cgcExprHasCall(as->rhs.get());
   }
   case StmtKind::Decl: {
     auto *d = static_cast<DeclStmt *>(s);
     for (auto &vd : d->defs) {
-      if (vd.init && !vd.init->isList && vd.init->expr && exprHasCall(vd.init->expr.get()))
+      if (vd.init && !vd.init->isList && vd.init->expr && cgcExprHasCall(vd.init->expr.get()))
         return true;
     }
     return false;
@@ -602,21 +602,21 @@ static bool stmtHasCall(Stmt *s) {
   case StmtKind::Block: {
     auto *b = static_cast<BlockStmt *>(s);
     for (auto &it : b->items)
-      if (stmtHasCall(it.get())) return true;
+      if (cgcStmtHasCall(it.get())) return true;
     return false;
   }
   case StmtKind::If: {
     auto *ifs = static_cast<IfStmt *>(s);
-    return exprHasCall(ifs->cond.get()) || stmtHasCall(ifs->thenStmt.get()) ||
-           (ifs->elseStmt && stmtHasCall(ifs->elseStmt.get()));
+    return cgcExprHasCall(ifs->cond.get()) || cgcStmtHasCall(ifs->thenStmt.get()) ||
+           (ifs->elseStmt && cgcStmtHasCall(ifs->elseStmt.get()));
   }
   case StmtKind::While: {
     auto *w = static_cast<WhileStmt *>(s);
-    return exprHasCall(w->cond.get()) || stmtHasCall(w->body.get());
+    return cgcExprHasCall(w->cond.get()) || cgcStmtHasCall(w->body.get());
   }
   case StmtKind::Return: {
     auto *r = static_cast<ReturnStmt *>(s);
-    return r->expr && exprHasCall(r->expr.get());
+    return r->expr && cgcExprHasCall(r->expr.get());
   }
   default: return false;
   }
@@ -624,7 +624,7 @@ static bool stmtHasCall(Stmt *s) {
 
 // namedCount: params[0 .. namedCount-1] 为固定形参；其后为 C 变参（须按整数 ABI 传递，
 // 见 RISC-V ELF psABI：variadic arguments follow the integer calling convention）。
-static vector<ArgLoc> computeArgLocations(const vector<ParamType> &params,
+static vector<ArgLoc> cgcComputeArgLocations(const vector<ParamType> &params,
                                           bool fnVariadic, size_t namedCount,
                                           int *stackSlots) {
   vector<ArgLoc> locs;
@@ -783,7 +783,7 @@ void CodeGen::emitGlobals() {
 
 namespace {
 
-bool exprContainsCall(Expr *e) {
+bool cgcExprContainsCall(Expr *e) {
   if (!e) return false;
   switch (e->kind) {
   case ExprKind::Number:
@@ -792,74 +792,74 @@ bool exprContainsCall(Expr *e) {
   case ExprKind::LVal: {
     auto *lv = static_cast<LValExpr *>(e);
     for (const auto &ix : lv->indices) {
-      if (exprContainsCall(ix.get())) return true;
+      if (cgcExprContainsCall(ix.get())) return true;
     }
     return false;
   }
   case ExprKind::Call:
     return true;
   case ExprKind::Unary:
-    return exprContainsCall(static_cast<UnaryExpr *>(e)->expr.get());
+    return cgcExprContainsCall(static_cast<UnaryExpr *>(e)->expr.get());
   case ExprKind::Binary:
-    return exprContainsCall(static_cast<BinaryExpr *>(e)->lhs.get()) ||
-           exprContainsCall(static_cast<BinaryExpr *>(e)->rhs.get());
+    return cgcExprContainsCall(static_cast<BinaryExpr *>(e)->lhs.get()) ||
+           cgcExprContainsCall(static_cast<BinaryExpr *>(e)->rhs.get());
   default:
     return false;
   }
 }
 
-bool initValContainsCall(const InitVal *iv) {
+bool cgcInitValContainsCall(const InitVal *iv) {
   if (!iv) return false;
-  if (!iv->isList && iv->expr) return exprContainsCall(iv->expr.get());
+  if (!iv->isList && iv->expr) return cgcExprContainsCall(iv->expr.get());
   for (const auto &ch : iv->list) {
-    if (initValContainsCall(ch.get())) return true;
+    if (cgcInitValContainsCall(ch.get())) return true;
   }
   return false;
 }
 
-bool stmtContainsCall(Stmt *s);
+bool cgcStmtContainsCall(Stmt *s);
 
-bool blockContainsCall(BlockStmt &b) {
+bool cgcBlockContainsCall(BlockStmt &b) {
   for (const auto &it : b.items) {
-    if (stmtContainsCall(it.get())) return true;
+    if (cgcStmtContainsCall(it.get())) return true;
   }
   return false;
 }
 
-bool stmtContainsCall(Stmt *s) {
+bool cgcStmtContainsCall(Stmt *s) {
   if (!s) return false;
   switch (s->kind) {
   case StmtKind::Decl: {
     auto *d = static_cast<DeclStmt *>(s);
     for (const auto &vd : d->defs) {
-      if (vd.init && initValContainsCall(vd.init.get())) return true;
+      if (vd.init && cgcInitValContainsCall(vd.init.get())) return true;
     }
     return false;
   }
   case StmtKind::Block:
-    return blockContainsCall(*static_cast<BlockStmt *>(s));
+    return cgcBlockContainsCall(*static_cast<BlockStmt *>(s));
   case StmtKind::Assign:
-    return exprContainsCall(static_cast<AssignStmt *>(s)->lhs.get()) ||
-           exprContainsCall(static_cast<AssignStmt *>(s)->rhs.get());
+    return cgcExprContainsCall(static_cast<AssignStmt *>(s)->lhs.get()) ||
+           cgcExprContainsCall(static_cast<AssignStmt *>(s)->rhs.get());
   case StmtKind::Expr:
-    return exprContainsCall(static_cast<ExprStmt *>(s)->expr.get());
+    return cgcExprContainsCall(static_cast<ExprStmt *>(s)->expr.get());
   case StmtKind::If: {
     auto *i = static_cast<IfStmt *>(s);
-    return exprContainsCall(i->cond.get()) || stmtContainsCall(i->thenStmt.get()) ||
-           stmtContainsCall(i->elseStmt.get());
+    return cgcExprContainsCall(i->cond.get()) || cgcStmtContainsCall(i->thenStmt.get()) ||
+           cgcStmtContainsCall(i->elseStmt.get());
   }
   case StmtKind::While:
-    return exprContainsCall(static_cast<WhileStmt *>(s)->cond.get()) ||
-           stmtContainsCall(static_cast<WhileStmt *>(s)->body.get());
+    return cgcExprContainsCall(static_cast<WhileStmt *>(s)->cond.get()) ||
+           cgcStmtContainsCall(static_cast<WhileStmt *>(s)->body.get());
   case StmtKind::Return:
-    return exprContainsCall(static_cast<ReturnStmt *>(s)->expr.get());
+    return cgcExprContainsCall(static_cast<ReturnStmt *>(s)->expr.get());
   default:
     return false;
   }
 }
 
 bool funcDefAstContainsCall(const FuncDef &def) {
-  return def.body && blockContainsCall(*def.body);
+  return def.body && cgcBlockContainsCall(*def.body);
 }
 
 bool irContainsCall(const IRFunction &ir) {
@@ -883,7 +883,7 @@ void CodeGen::emitFunction(FuncDef &def) {
     int frame = currentFunction_->frameSize;
     IRFunction irBuf;
     bool useIr = false;
-    if (kEnableIrBackend && o1Profile_.irBackend && irFunctionEligible(def)) {
+    if (cgcEnableIrBackend && o1Profile_.irBackend && irFunctionEligible(def)) {
       // Prefer HIR-lowered IRFunction if available (Stage 2 integration)
       // Only use it when it looks complete and safe (basic sanity check).
       bool usedHir = false;
@@ -963,7 +963,7 @@ void CodeGen::emitFunction(FuncDef &def) {
       for (const Param &p : def.params) {
         ptypes.push_back(ParamType{p.base, p.isArray, p.dims});
       }
-      auto plocs = computeArgLocations(ptypes, false, ptypes.size(), nullptr);
+      auto plocs = cgcComputeArgLocations(ptypes, false, ptypes.size(), nullptr);
       int ti = 0, fi = 0;
       for (size_t i = 0; i < def.params.size(); ++i) {
         if (!def.params[i].isArray && def.params[i].base == BaseType::Int &&
@@ -1318,7 +1318,7 @@ void CodeGen::emitIrFlushSkipped() {
   }
 }
 
-static Function *lookupFunctionAsm(const Semantic &sem, const string &asmName) {
+static Function *cgcLookupFunctionAsm(const Semantic &sem, const string &asmName) {
   for (const auto &kv : sem.functions()) {
     if (kv.second->asmName == asmName) {
       return kv.second;
@@ -1327,7 +1327,7 @@ static Function *lookupFunctionAsm(const Semantic &sem, const string &asmName) {
   return nullptr;
 }
 
-static optional<int32_t> irTraceConstI(const IRFunction &ir, int v, size_t before) {
+static optional<int32_t> cgcIrTraceConstI(const IRFunction &ir, int v, size_t before) {
   int cur = v;
   size_t lim = before;
   while (cur >= 0) {
@@ -1356,7 +1356,7 @@ static optional<int32_t> irTraceConstI(const IRFunction &ir, int v, size_t befor
   return nullopt;
 }
 
-static optional<float> irTraceConstF(const IRFunction &ir, int v, size_t before) {
+static optional<float> cgcIrTraceConstF(const IRFunction &ir, int v, size_t before) {
   int cur = v;
   size_t lim = before;
   while (cur >= 0) {
@@ -1422,10 +1422,10 @@ void CodeGen::irInferPtrRegs(const IRFunction &ir) {
         np = getP(w.u) && !getP(w.v);
         break;
       case IROp::Mul: {
-        optional<int32_t> ck = irTraceConstI(ir, w.v, i);
+        optional<int32_t> ck = cgcIrTraceConstI(ir, w.v, i);
         if (ck && *ck == 1) {
           np = getP(w.u);
-        } else if (auto cu = irTraceConstI(ir, w.u, i); cu && *cu == 1) {
+        } else if (auto cu = cgcIrTraceConstI(ir, w.u, i); cu && *cu == 1) {
           np = getP(w.v);
         } else {
           np = false;
@@ -1514,7 +1514,7 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   }
   auto vIsPtr = [&](int v) -> bool { return irVregIsPtr(v); };
-  Function *fn = lookupFunctionAsm(semantic_, in.callee);
+  Function *fn = cgcLookupFunctionAsm(semantic_, in.callee);
   if (!fn) {
     throw CompileError("IR call: unknown function " + in.callee);
   }
@@ -1543,7 +1543,7 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
   }
 
   int stackSlots = 0;
-  auto locs = computeArgLocations(params, fn->variadic, namedCount, &stackSlots);
+  auto locs = cgcComputeArgLocations(params, fn->variadic, namedCount, &stackSlots);
 
   // Optimized path: load args to safe regs (t4-t6, ft), avoid temp stack slots
   int intNeeded = 0;
@@ -1568,7 +1568,7 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
       bool isFloat = !expected.isArray && expected.base == BaseType::Float;
 
       if (isFloat) {
-        if (optional<float> fc = irTraceConstF(ir, av, instIdx)) {
+        if (optional<float> fc = cgcIrTraceConstF(ir, av, instIdx)) {
           emitFloatConst(*fc);
         } else {
           emitIrLoadVreg(av, true);
@@ -1578,7 +1578,7 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
         argReg[i] = reg;
         ++floatUsed;
       } else {
-        if (optional<int32_t> ic = irTraceConstI(ir, av, instIdx)) {
+        if (optional<int32_t> ic = cgcIrTraceConstI(ir, av, instIdx)) {
           emit("\tli\ta0, " + to_string(*ic));
         } else {
           emitIrLoadVreg(av, false);
@@ -1637,7 +1637,7 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
 
   int paramIndex = 0;
   if (fn->injectLineArgument) {
-    optional<int32_t> lineImm = irTraceConstI(ir, in.args[0], instIdx);
+    optional<int32_t> lineImm = cgcIrTraceConstI(ir, in.args[0], instIdx);
     if (lineImm) {
       emit("\tli\ta0, " + to_string(*lineImm));
     } else {
@@ -1658,7 +1658,7 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
         expected.isArray ? Type::pointer(expected.base, expected.dims) : Type::scalar(expected.base);
     int off = tempBase + paramIndex * 8;
     if (target.isPointer) {
-      optional<int32_t> ic = irTraceConstI(ir, av, instIdx);
+      optional<int32_t> ic = cgcIrTraceConstI(ir, av, instIdx);
       if (ic) {
         emit("\tli\ta0, " + to_string(*ic));
       } else {
@@ -1666,7 +1666,7 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
       }
       emitStoreMem("sd", "a0", "sp", off);
     } else if (expected.base == BaseType::Float && vaArg) {
-      if (optional<float> fc = irTraceConstF(ir, av, instIdx)) {
+      if (optional<float> fc = cgcIrTraceConstF(ir, av, instIdx)) {
         emitFloatConst(*fc);
       } else {
         emitIrLoadVreg(av, true);
@@ -1675,14 +1675,14 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
       emit("\tfmv.x.d\ta0, fa1");
       emitStoreMem("sd", "a0", "sp", off);
     } else if (expected.base == BaseType::Float) {
-      if (optional<float> fc = irTraceConstF(ir, av, instIdx)) {
+      if (optional<float> fc = cgcIrTraceConstF(ir, av, instIdx)) {
         emitFloatConst(*fc);
       } else {
         emitIrLoadVreg(av, true);
       }
       emitStoreMem("fsw", "fa0", "sp", off);
     } else if (vaArg) {
-      optional<int32_t> ic = irTraceConstI(ir, av, instIdx);
+      optional<int32_t> ic = cgcIrTraceConstI(ir, av, instIdx);
       if (ic) {
         emit("\tli\ta0, " + to_string(*ic));
       } else {
@@ -1691,7 +1691,7 @@ void CodeGen::emitIrCall(FuncDef &def, const IRFunction &ir, const IRInst &in,
       emit("\tsext.w\ta0, a0");
       emitStoreMem("sd", "a0", "sp", off);
     } else {
-      optional<int32_t> ic = irTraceConstI(ir, av, instIdx);
+      optional<int32_t> ic = cgcIrTraceConstI(ir, av, instIdx);
       if (ic) {
         emit("\tli\ta0, " + to_string(*ic));
       } else {
@@ -2007,7 +2007,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     }
     return;
   case IROp::Add: {
-    if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
+    if (auto kv = cgcIrTraceConstI(ir, in.v, instIdx)) {
       int32_t k = *kv;
       if (fitsImm12(static_cast<int>(k))) {
         emitIrLoadVreg(in.u, false);
@@ -2021,7 +2021,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         return;
       }
     }
-    if (auto ku = irTraceConstI(ir, in.u, instIdx)) {
+    if (auto ku = cgcIrTraceConstI(ir, in.u, instIdx)) {
       int32_t k = *ku;
       if (fitsImm12(static_cast<int>(k))) {
         emitIrLoadVreg(in.v, false);
@@ -2048,7 +2048,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   }
   case IROp::Sub: {
-    if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
+    if (auto kv = cgcIrTraceConstI(ir, in.v, instIdx)) {
       int64_t nk = -static_cast<int64_t>(*kv);
       if (nk >= -2048 && nk <= 2047) {
         emitIrLoadVreg(in.u, false);
@@ -2075,7 +2075,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   }
   case IROp::Mul: {
-    if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
+    if (auto kv = cgcIrTraceConstI(ir, in.v, instIdx)) {
       int32_t k = *kv;
       if (k == 0) {
         emit("\tli\ta0, 0");
@@ -2084,7 +2084,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         return;
       }
       emitIrLoadVreg(in.u, false);
-      if (emitMulByConst(*this, k)) {
+      if (cgcEmitMulByConst(*this, k)) {
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
         return;
@@ -2096,7 +2096,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       markInt(in.dst);
       return;
     }
-    if (auto ku = irTraceConstI(ir, in.u, instIdx)) {
+    if (auto ku = cgcIrTraceConstI(ir, in.u, instIdx)) {
       int32_t k = *ku;
       if (k == 0) {
         emit("\tli\ta0, 0");
@@ -2105,7 +2105,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         return;
       }
       emitIrLoadVreg(in.v, false);
-      if (emitMulByConstExtended(*this, k)) {
+      if (cgcEmitMulByConstExtended(*this, k)) {
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
         return;
@@ -2152,7 +2152,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     markInt(in.dst);
     return;
   case IROp::Div: {
-    if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
+    if (auto kv = cgcIrTraceConstI(ir, in.v, instIdx)) {
       int32_t k = *kv;
       if (k == 1) {
         emitIrLoadVreg(in.u, false);
@@ -2169,7 +2169,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
       }
       // SysY 截断除法：IR 发射不用「移位+偏置」捷径（对 /256、负数 crc 会错）。
       emitIrLoadVreg(in.u, false);
-      if (emitSDivByConst(*this, k)) {
+      if (cgcEmitSDivByConst(*this, k)) {
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
         return;
@@ -2189,7 +2189,7 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
     return;
   }
   case IROp::Rem: {
-    if (auto kv = irTraceConstI(ir, in.v, instIdx)) {
+    if (auto kv = cgcIrTraceConstI(ir, in.v, instIdx)) {
       int32_t k = *kv;
       if (k == 1 || k == -1) {
         emit("\tli\ta0, 0");
@@ -2197,9 +2197,9 @@ void CodeGen::emitIrInst(FuncDef &def, const IRFunction &ir, const IRInst &in,
         markInt(in.dst);
         return;
       }
-      // SysY 截断取模：须 remw / emitSRemByConst，不用无符号掩码 % 2^k 捷径。
+      // SysY 截断取模：须 remw / cgcEmitSRemByConst，不用无符号掩码 % 2^k 捷径。
       emitIrLoadVreg(in.u, false);
-      if (emitSRemByConst(*this, k)) {
+      if (cgcEmitSRemByConst(*this, k)) {
         emitIrStoreVreg(in.dst, false);
         markInt(in.dst);
         return;
@@ -2407,7 +2407,7 @@ void CodeGen::emitStoreParams(FuncDef &def) {
     for (const Param &p : def.params) {
       types.push_back(ParamType{p.base, p.isArray, p.dims});
     }
-    auto locs = computeArgLocations(types, false, types.size(), nullptr);
+    auto locs = cgcComputeArgLocations(types, false, types.size(), nullptr);
     for (size_t i = 0; i < def.params.size(); ++i) {
       const Param &p = def.params[i];
       const ArgLoc &loc = locs[i];
@@ -2655,7 +2655,7 @@ void CodeGen::emitAssign(AssignStmt &stmt) {
         }
         return;
       }
-      const bool spillT4 = assignRhsMayClobberAddrRegT4(stmt.rhs.get());
+      const bool spillT4 = cgcAssignRhsMayClobberAddrRegT4(stmt.rhs.get());
       emitLValAddress(stmt.lhs.get());
       emit("\tmv\tt4, a0");
       if (spillT4) {
@@ -2721,12 +2721,12 @@ void CodeGen::emitIf(IfStmt &stmt) {
     emit(endLabel + ":");
   }
 
-static bool indexIsScalarIv(const Expr *e, const string &name) {
+static bool cgcIndexIsScalarIv(const Expr *e, const string &name) {
   auto *lv = dynamic_cast<const LValExpr *>(e);
   return lv && lv->indices.empty() && lv->name == name;
 }
 
-static void scanExprForRowBase(Expr *e, const string &outerIv, const string &innerIv,
+static void cgcScanExprForRowBase(Expr *e, const string &outerIv, const string &innerIv,
                                vector<Symbol *> &out) {
   if (!e) {
     return;
@@ -2734,8 +2734,8 @@ static void scanExprForRowBase(Expr *e, const string &outerIv, const string &inn
   if (e->kind == ExprKind::LVal) {
     auto *lv = static_cast<LValExpr *>(e);
     if (lv->symbol && lv->symbol->isArray && lv->indices.size() == 2 &&
-        indexIsScalarIv(lv->indices[0].get(), outerIv) &&
-        indexIsScalarIv(lv->indices[1].get(), innerIv)) {
+        cgcIndexIsScalarIv(lv->indices[0].get(), outerIv) &&
+        cgcIndexIsScalarIv(lv->indices[1].get(), innerIv)) {
       Symbol *sym = lv->symbol;
       for (Symbol *s : out) {
         if (s == sym) {
@@ -2745,57 +2745,57 @@ static void scanExprForRowBase(Expr *e, const string &outerIv, const string &inn
       out.push_back(sym);
     }
     for (auto &ix : lv->indices) {
-      scanExprForRowBase(ix.get(), outerIv, innerIv, out);
+      cgcScanExprForRowBase(ix.get(), outerIv, innerIv, out);
     }
     return;
   }
   if (e->kind == ExprKind::Unary) {
-    scanExprForRowBase(static_cast<UnaryExpr *>(e)->expr.get(), outerIv, innerIv,
+    cgcScanExprForRowBase(static_cast<UnaryExpr *>(e)->expr.get(), outerIv, innerIv,
                        out);
     return;
   }
   if (e->kind == ExprKind::Binary) {
     auto *b = static_cast<BinaryExpr *>(e);
-    scanExprForRowBase(b->lhs.get(), outerIv, innerIv, out);
-    scanExprForRowBase(b->rhs.get(), outerIv, innerIv, out);
+    cgcScanExprForRowBase(b->lhs.get(), outerIv, innerIv, out);
+    cgcScanExprForRowBase(b->rhs.get(), outerIv, innerIv, out);
     return;
   }
   if (e->kind == ExprKind::Call) {
     auto *c = static_cast<CallExpr *>(e);
     for (auto &a : c->args) {
-      scanExprForRowBase(a.get(), outerIv, innerIv, out);
+      cgcScanExprForRowBase(a.get(), outerIv, innerIv, out);
     }
   }
 }
 
-static void scanStmtForRowBase(Stmt *s, const string &outerIv, const string &innerIv,
+static void cgcScanStmtForRowBase(Stmt *s, const string &outerIv, const string &innerIv,
                                vector<Symbol *> &out) {
   if (!s) {
     return;
   }
   switch (s->kind) {
   case StmtKind::Assign:
-    scanExprForRowBase(static_cast<AssignStmt *>(s)->lhs.get(), outerIv, innerIv, out);
-    scanExprForRowBase(static_cast<AssignStmt *>(s)->rhs.get(), outerIv, innerIv, out);
+    cgcScanExprForRowBase(static_cast<AssignStmt *>(s)->lhs.get(), outerIv, innerIv, out);
+    cgcScanExprForRowBase(static_cast<AssignStmt *>(s)->rhs.get(), outerIv, innerIv, out);
     return;
   case StmtKind::Expr:
-    scanExprForRowBase(static_cast<ExprStmt *>(s)->expr.get(), outerIv, innerIv, out);
+    cgcScanExprForRowBase(static_cast<ExprStmt *>(s)->expr.get(), outerIv, innerIv, out);
     return;
   case StmtKind::Block:
     for (auto &it : static_cast<BlockStmt *>(s)->items) {
-      scanStmtForRowBase(it.get(), outerIv, innerIv, out);
+      cgcScanStmtForRowBase(it.get(), outerIv, innerIv, out);
     }
     return;
   case StmtKind::If: {
     auto *ifs = static_cast<IfStmt *>(s);
-    scanStmtForRowBase(ifs->thenStmt.get(), outerIv, innerIv, out);
+    cgcScanStmtForRowBase(ifs->thenStmt.get(), outerIv, innerIv, out);
     if (ifs->elseStmt) {
-      scanStmtForRowBase(ifs->elseStmt.get(), outerIv, innerIv, out);
+      cgcScanStmtForRowBase(ifs->elseStmt.get(), outerIv, innerIv, out);
     }
     return;
   }
   case StmtKind::While:
-    scanStmtForRowBase(static_cast<WhileStmt *>(s)->body.get(), outerIv, innerIv, out);
+    cgcScanStmtForRowBase(static_cast<WhileStmt *>(s)->body.get(), outerIv, innerIv, out);
     return;
   default:
     return;
@@ -2816,7 +2816,7 @@ bool CodeGen::extractWhileLtIv(const Expr *cond, string *iv) const {
   return false;
 }
 
-static bool extractIvFromSplitWhile(const WhileStmt *w, string *iv) {
+static bool cgcExtractIvFromSplitWhile(const WhileStmt *w, string *iv) {
   auto *one = dynamic_cast<const NumberExpr *>(w->cond.get());
   if (!one || one->isFloat || one->intVal != 1) {
     return false;
@@ -2852,7 +2852,7 @@ static bool extractIvFromSplitWhile(const WhileStmt *w, string *iv) {
 void CodeGen::collectRowBaseSyms(Stmt *body, const string &outerIv,
                                  const string &innerIv,
                                  vector<Symbol *> &out) const {
-  scanStmtForRowBase(body, outerIv, innerIv, out);
+  cgcScanStmtForRowBase(body, outerIv, innerIv, out);
 }
 
 void CodeGen::emitRowBaseSetups(const vector<Symbol *> &syms,
@@ -2887,10 +2887,10 @@ void CodeGen::emitRowBaseSetups(const vector<Symbol *> &syms,
       emit("\tlw\ta0, 0(a0)");
     }
     const int rowStrideBytes = strideForIndex(sym, 0) * 4;
-    const int lg = intLog2Positive32(static_cast<int32_t>(rowStrideBytes));
+    const int lg = cgcIntLog2Positive32(static_cast<int32_t>(rowStrideBytes));
     if (lg >= 0) {
       emit("\tslliw\tt2, a0, " + to_string(lg));
-    } else if (emitMulByConst(*this, static_cast<int32_t>(rowStrideBytes))) {
+    } else if (cgcEmitMulByConst(*this, static_cast<int32_t>(rowStrideBytes))) {
       emit("\tmv\tt2, a0");
     } else {
       emit("\tli\tt1, " + to_string(rowStrideBytes));
@@ -2909,17 +2909,17 @@ bool CodeGen::tryEmitRowBaseLValAddress(LValExpr *expr) {
     if (rb.sym != expr->symbol) {
       continue;
     }
-    if (!indexIsScalarIv(expr->indices[0].get(), rb.outerIv) ||
-        !indexIsScalarIv(expr->indices[1].get(), rb.innerIv)) {
+    if (!cgcIndexIsScalarIv(expr->indices[0].get(), rb.outerIv) ||
+        !cgcIndexIsScalarIv(expr->indices[1].get(), rb.innerIv)) {
       continue;
     }
     emitExpr(expr->indices[1].get());
     emitConvert(expr->indices[1]->type, Type::scalar(BaseType::Int));
     const int colStrideBytes = strideForIndex(expr->symbol, 1) * 4;
-    const int lg = intLog2Positive32(static_cast<int32_t>(colStrideBytes));
+    const int lg = cgcIntLog2Positive32(static_cast<int32_t>(colStrideBytes));
     if (lg >= 0) {
       emit("\tslliw\tt2, a0, " + to_string(lg));
-    } else if (emitMulByConst(*this, static_cast<int32_t>(colStrideBytes))) {
+    } else if (cgcEmitMulByConst(*this, static_cast<int32_t>(colStrideBytes))) {
       emit("\tmv\tt2, a0");
     } else {
       emit("\tli\tt1, " + to_string(colStrideBytes));
@@ -2951,7 +2951,7 @@ void CodeGen::emitWhile(WhileStmt &stmt) {
     string loopIv;
     bool trackIv = optO1_ && extractWhileLtIv(stmt.cond.get(), &loopIv);
     if (!trackIv && optO1_) {
-      trackIv = extractIvFromSplitWhile(&stmt, &loopIv);
+      trackIv = cgcExtractIvFromSplitWhile(&stmt, &loopIv);
     }
     if (trackIv) {
       loopIvStack_.push_back(loopIv);
@@ -2997,7 +2997,7 @@ bool CodeGen::tryEmitTailCallReturn(ReturnStmt &stmt) {
       const ParamType &p = fn->params[i];
       Expr *arg = call->args[i].get();
       if (p.isArray || p.base != BaseType::Int || !arg->type.isIntScalar() ||
-          !exprHasNoCall(arg) || exprUsesArrayAddress(arg)) {
+          !cgcExprHasNoCall(arg) || cgcExprUsesArrayAddress(arg)) {
         return false;
       }
     }
@@ -3222,7 +3222,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
 
     // Register-based integer arithmetic path (avoids push/pop)
     if (optO1_ && !useFloat && !compare &&
-        exprIsLeaf(expr->lhs.get()) && exprIsLeaf(expr->rhs.get())) {
+        cgcExprIsLeaf(expr->lhs.get()) && cgcExprIsLeaf(expr->rhs.get())) {
       // Constant RHS: evaluate LHS and apply immediate or loaded constant
       if (expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int) {
         int32_t k = constAsInt(expr->rhs->constVal);
@@ -3261,7 +3261,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             return;
           }
           emitExpr(expr->lhs.get());
-          if (!emitMulByConst(*this, k)) {
+          if (!cgcEmitMulByConst(*this, k)) {
             emit("\tli\tt3, " + to_string(static_cast<int>(k)));
             emit("\tmulw\ta0, a0, t3");
           }
@@ -3278,7 +3278,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             return;
           }
           emitExpr(expr->lhs.get());
-          if (optO1_ && emitSDivByConst(*this, k)) {
+          if (optO1_ && cgcEmitSDivByConst(*this, k)) {
             return;
           }
           emit("\tmv\tt2, a0");
@@ -3292,7 +3292,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             return;
           }
           emitExpr(expr->lhs.get());
-          if (optO1_ && emitSRemByConst(*this, k)) {
+          if (optO1_ && cgcEmitSRemByConst(*this, k)) {
             return;
           }
           emit("\tmv\tt2, a0");
@@ -3324,7 +3324,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             return;
           }
           emitExpr(expr->rhs.get());
-          if (!emitMulByConst(*this, k)) {
+          if (!cgcEmitMulByConst(*this, k)) {
             emit("\tli\tt3, " + to_string(static_cast<int>(k)));
             emit("\tmulw\ta0, a0, t3");
           }
@@ -3353,7 +3353,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
     // t4 surviving outer emitExpr (e.g. emitAssign already spills t4 around RHS).
     if (optO1_ && !useFloat && !compare) {
       // RHS leaf: evaluate LHS first, save to t4, evaluate leaf RHS, combine
-      if (exprIsLeaf(expr->rhs.get())) {
+      if (cgcExprIsLeaf(expr->rhs.get())) {
         emitExpr(expr->lhs.get());
         emit("\tmv\tt4, a0");
         emitExpr(expr->rhs.get());
@@ -3383,7 +3383,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
               emit("\tli\ta0, 0");
             } else {
               emit("\tmv\ta0, t4");
-              if (!emitMulByConst(*this, k)) {
+              if (!cgcEmitMulByConst(*this, k)) {
                 emit("\tli\tt3, " + to_string(static_cast<int>(k)));
                 emit("\tmulw\ta0, t4, t3");
               }
@@ -3400,7 +3400,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             } else if (k == -1) {
               emit("\tnegw\ta0, a0");
             } else if (k != 0) {
-              if (optO1_ && emitSDivByConst(*this, k)) {
+              if (optO1_ && cgcEmitSDivByConst(*this, k)) {
               } else {
                 emit("\tmv\tt2, a0");
                 emit("\tli\ta0, " + to_string(static_cast<int>(k)));
@@ -3417,7 +3417,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             if (k == 1 || k == -1) {
               emit("\tli\ta0, 0");
             } else if (k != 0) {
-              if (optO1_ && emitSRemByConst(*this, k)) {
+              if (optO1_ && cgcEmitSRemByConst(*this, k)) {
               } else {
                 emit("\tmv\tt2, a0");
                 emit("\tli\ta0, " + to_string(static_cast<int>(k)));
@@ -3431,7 +3431,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         return;
       }
       // LHS leaf: evaluate RHS first, save to t4, evaluate leaf LHS, combine
-      if (exprIsLeaf(expr->lhs.get())) {
+      if (cgcExprIsLeaf(expr->lhs.get())) {
         emitExpr(expr->rhs.get());
         emit("\tmv\tt4, a0");
         emitExpr(expr->lhs.get());
@@ -3452,7 +3452,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
               emit("\tli\ta0, 0");
             } else {
               emit("\tmv\ta0, t4");
-              if (!emitMulByConst(*this, k)) {
+              if (!cgcEmitMulByConst(*this, k)) {
                 emit("\tli\tt3, " + to_string(static_cast<int>(k)));
                 emit("\tmulw\ta0, t3, a0");
               }
@@ -3468,7 +3468,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             } else if (k == -1) {
               emit("\tnegw\ta0, a0");
             } else if (k != 0) {
-              if (optO1_ && emitSDivByConst(*this, k)) {
+              if (optO1_ && cgcEmitSDivByConst(*this, k)) {
               } else {
                 emit("\tdivw\ta0, a0, t4");
               }
@@ -3482,7 +3482,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
             if (k == 1 || k == -1) {
               emit("\tli\ta0, 0");
             } else if (k != 0) {
-              if (optO1_ && emitSRemByConst(*this, k)) {
+              if (optO1_ && cgcEmitSRemByConst(*this, k)) {
               } else {
                 emit("\tremw\ta0, a0, t4");
               }
@@ -3496,7 +3496,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
     }
     // T4-based path for integer comparisons with one leaf side
     if (optO1_ && !useFloat && compare) {
-      if (exprIsLeaf(expr->rhs.get())) {
+      if (cgcExprIsLeaf(expr->rhs.get())) {
         emitExpr(expr->lhs.get());
         emit("\tmv\tt4, a0");
         emitExpr(expr->rhs.get());
@@ -3519,7 +3519,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
         }
         return;
       }
-      if (exprIsLeaf(expr->lhs.get())) {
+      if (cgcExprIsLeaf(expr->lhs.get())) {
         emitExpr(expr->rhs.get());
         emit("\tmv\tt4, a0");
         emitExpr(expr->lhs.get());
@@ -3546,9 +3546,9 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
 
     // Disabled for correctness: recursive RHS codegen may also use t5 and clobber
     // the saved LHS value. Re-enable only with explicit register-use tracking.
-    if (kEnableRecursiveT5BinaryPath && optO1_ && !useFloat && !compare &&
-        exprHasNoCall(expr->rhs.get()) &&
-        !exprUsesArrayAddress(expr->rhs.get())) {
+    if (cgcEnableRecursiveT5BinaryPath && optO1_ && !useFloat && !compare &&
+        cgcExprHasNoCall(expr->rhs.get()) &&
+        !cgcExprUsesArrayAddress(expr->rhs.get())) {
       emitExpr(expr->lhs.get());
       emit("\tmv\tt5, a0");
       emitExpr(expr->rhs.get());
@@ -3565,9 +3565,9 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
       }
       return;
     }
-    if (kEnableRecursiveT5BinaryPath && optO1_ && !useFloat && compare &&
-        exprHasNoCall(expr->rhs.get()) &&
-        !exprUsesArrayAddress(expr->rhs.get())) {
+    if (cgcEnableRecursiveT5BinaryPath && optO1_ && !useFloat && compare &&
+        cgcExprHasNoCall(expr->rhs.get()) &&
+        !cgcExprUsesArrayAddress(expr->rhs.get())) {
       emitExpr(expr->lhs.get());
       emit("\tmv\tt5, a0");
       emitExpr(expr->rhs.get());
@@ -3645,7 +3645,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
                op == "*" && expr->lhs->isConst && expr->lhs->constVal.type == BaseType::Int) {
       int32_t k = constAsInt(expr->lhs->constVal);
       emit("\tmv\ta0, a1");
-      if (!emitMulByConst(*this, k)) {
+      if (!cgcEmitMulByConst(*this, k)) {
         emit("\tli\tt3, " + to_string(static_cast<int>(k)));
         emit("\tmulw\ta0, a1, t3");
       }
@@ -3653,14 +3653,14 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
                expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
                op == "*") {
       int32_t k = constAsInt(expr->rhs->constVal);
-      if (!emitMulByConst(*this, k)) {
+      if (!cgcEmitMulByConst(*this, k)) {
         emit("\tmulw\ta0, a0, a1");
       }
     } else if (optO1_ && expr->lhs->type.isIntScalar() && expr->rhs->type.isIntScalar() &&
                expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
                op == "/") {
       int32_t k = constAsInt(expr->rhs->constVal);
-      if (emitSDivByConst(*this, k)) {
+      if (cgcEmitSDivByConst(*this, k)) {
         /* optimized by magic multiply */
       } else {
         emit("\tdivw\ta0, a0, a1");
@@ -3688,7 +3688,7 @@ void CodeGen::emitBinary(BinaryExpr *expr) {
                expr->rhs->isConst && expr->rhs->constVal.type == BaseType::Int &&
                op == "%") {
       int32_t k = constAsInt(expr->rhs->constVal);
-      if (emitSRemByConst(*this, k)) {
+      if (cgcEmitSRemByConst(*this, k)) {
         /* optimized by magic multiply */
       } else {
         emit("\tremw\ta0, a0, a1");
@@ -3811,14 +3811,14 @@ void CodeGen::emitCond(Expr *expr, const string &trueLabel, const string &falseL
           }
           return;
         }
-        if (exprIsLeaf(bin->rhs.get())) {
+        if (cgcExprIsLeaf(bin->rhs.get())) {
           emitExpr(bin->lhs.get());
           emit("\tmv\tt4, a0");
           emitExpr(bin->rhs.get());
           branchCompare(bin->op, "t4", "a0");
           return;
         }
-        if (exprIsLeaf(bin->lhs.get())) {
+        if (cgcExprIsLeaf(bin->lhs.get())) {
           emitExpr(bin->rhs.get());
           emit("\tmv\tt4, a0");
           emitExpr(bin->lhs.get());
@@ -3899,14 +3899,14 @@ bool CodeGen::tryEmitCondBranchFalse(Expr *expr, const string &falseLabel) {
       }
       return true;
     }
-    if (exprIsLeaf(bin->rhs.get())) {
+    if (cgcExprIsLeaf(bin->rhs.get())) {
       emitExpr(bin->lhs.get());
       emit("\tmv\tt4, a0");
       emitExpr(bin->rhs.get());
       branchFalse(op, "t4", "a0");
       return true;
     }
-    if (exprIsLeaf(bin->lhs.get())) {
+    if (cgcExprIsLeaf(bin->lhs.get())) {
       emitExpr(bin->rhs.get());
       emit("\tmv\tt4, a0");
       emitExpr(bin->lhs.get());
@@ -3979,16 +3979,16 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
       return;
     }
     if (optO1_ && expr->indices.size() == 1 &&
-        exprHasNoCall(expr->indices[0].get()) &&
-        !exprUsesArrayAddress(expr->indices[0].get())) {
+        cgcExprHasNoCall(expr->indices[0].get()) &&
+        !cgcExprUsesArrayAddress(expr->indices[0].get())) {
       emit("\tmv\tt5, a0");
       emitExpr(expr->indices[0].get());
       emitConvert(expr->indices[0]->type, Type::scalar(BaseType::Int));
       int strideBytes = strideForIndex(sym, 0) * 4;
-      int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
+      int lg = cgcIntLog2Positive32(static_cast<int32_t>(strideBytes));
       if (lg >= 0) {
         emit("\tslliw\tt2, a0, " + to_string(lg));
-      } else if (emitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
+      } else if (cgcEmitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
         emit("\tmv\tt2, a0");
       } else {
         emit("\tli\tt1, " + to_string(strideBytes));
@@ -3999,7 +3999,7 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
     }
     bool simpleIndices = true;
     for (auto &ix : expr->indices) {
-      if (!exprIsLeaf(ix.get())) {
+      if (!cgcExprIsLeaf(ix.get())) {
         simpleIndices = false;
         break;
       }
@@ -4011,10 +4011,10 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
         emitExpr(expr->indices[i].get());
         emitConvert(expr->indices[i]->type, Type::scalar(BaseType::Int));
         int strideBytes = strideForIndex(sym, i) * 4;
-        int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
+        int lg = cgcIntLog2Positive32(static_cast<int32_t>(strideBytes));
         if (lg >= 0) {
           emit("\tslliw\tt2, a0, " + to_string(lg));
-        } else if (emitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
+        } else if (cgcEmitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
           emit("\tmv\tt2, a0");
         } else {
           emit("\tli\tt1, " + to_string(strideBytes));
@@ -4027,7 +4027,7 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
     }
     bool safeIndexTemps = optO1_;
     for (auto &ix : expr->indices) {
-      if (!exprHasNoCall(ix.get()) || exprUsesArrayAddress(ix.get())) {
+      if (!cgcExprHasNoCall(ix.get()) || cgcExprUsesArrayAddress(ix.get())) {
         safeIndexTemps = false;
         break;
       }
@@ -4039,10 +4039,10 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
         emitExpr(expr->indices[i].get());
         emitConvert(expr->indices[i]->type, Type::scalar(BaseType::Int));
         int strideBytes = strideForIndex(sym, i) * 4;
-        int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
+        int lg = cgcIntLog2Positive32(static_cast<int32_t>(strideBytes));
         if (lg >= 0) {
           emit("\tslliw\tt2, a0, " + to_string(lg));
-        } else if (emitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
+        } else if (cgcEmitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
           emit("\tmv\tt2, a0");
         } else {
           emit("\tli\tt1, " + to_string(strideBytes));
@@ -4063,10 +4063,10 @@ void CodeGen::emitLValAddress(LValExpr *expr) {
       emitConvert(expr->indices[i]->type, Type::scalar(BaseType::Int));
       int strideBytes = strideForIndex(sym, i) * 4;
       if (optO1_ && strideBytes > 0) {
-        int lg = intLog2Positive32(static_cast<int32_t>(strideBytes));
+        int lg = cgcIntLog2Positive32(static_cast<int32_t>(strideBytes));
         if (lg >= 0) {
           emit("\tslliw\ta0, a0, " + to_string(lg));
-        } else if (emitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
+        } else if (cgcEmitMulByConst(*this, static_cast<int32_t>(strideBytes))) {
           /* scaled offset in a0 */
         } else {
           emit("\tli\tt3, " + to_string(strideBytes));
@@ -4096,13 +4096,13 @@ int CodeGen::strideForIndex(Symbol *sym, size_t index) {
     return index + 1 < sym->dims.size() ? product(sym->dims, index + 1) : 1;
   }
 
-static bool isBinaryIntFn(const Function *fn, const char *name) {
+static bool cgcIsBinaryIntFn(const Function *fn, const char *name) {
   return fn && !fn->runtime && fn->name == name && fn->ret == BaseType::Int &&
          fn->params.size() == 2 && !fn->params[0].isArray && !fn->params[1].isArray &&
          fn->params[0].base == BaseType::Int && fn->params[1].base == BaseType::Int;
 }
 
-static bool stmtTreeContainsWhile(const Stmt *s) {
+static bool cgcStmtTreeContainsWhile(const Stmt *s) {
   if (!s) {
     return false;
   }
@@ -4111,35 +4111,35 @@ static bool stmtTreeContainsWhile(const Stmt *s) {
   }
   if (auto *b = dynamic_cast<const BlockStmt *>(s)) {
     for (const auto &st : b->items) {
-      if (stmtTreeContainsWhile(st.get())) {
+      if (cgcStmtTreeContainsWhile(st.get())) {
         return true;
       }
     }
   }
   if (auto *ifs = dynamic_cast<const IfStmt *>(s)) {
-    return stmtTreeContainsWhile(ifs->thenStmt.get()) ||
-           (ifs->elseStmt && stmtTreeContainsWhile(ifs->elseStmt.get()));
+    return cgcStmtTreeContainsWhile(ifs->thenStmt.get()) ||
+           (ifs->elseStmt && cgcStmtTreeContainsWhile(ifs->elseStmt.get()));
   }
   return false;
 }
 
 // Huffman：32 次 while 模拟位运算；crypto 等同名函数为 return a+b 等，不可按名字降级。
-static bool funcIsBitwiseSimulator(const Function *fn) {
+static bool cgcFuncIsBitwiseSimulator(const Function *fn) {
   if (!fn || !fn->def || !fn->def->body) {
     return false;
   }
-  if (!isBinaryIntFn(fn, "_and") && !isBinaryIntFn(fn, "_or") &&
-      !isBinaryIntFn(fn, "_xor")) {
+  if (!cgcIsBinaryIntFn(fn, "_and") && !cgcIsBinaryIntFn(fn, "_or") &&
+      !cgcIsBinaryIntFn(fn, "_xor")) {
     return false;
   }
-  return stmtTreeContainsWhile(fn->def->body.get());
+  return cgcStmtTreeContainsWhile(fn->def->body.get());
 }
 
-static bool funcIsRotIfChain(const Function *fn) {
+static bool cgcFuncIsRotIfChain(const Function *fn) {
   if (!fn || !fn->def || !fn->def->body || fn->def->body->items.empty()) {
     return false;
   }
-  if (!isBinaryIntFn(fn, "rotlN") && !isBinaryIntFn(fn, "rotrN")) {
+  if (!cgcIsBinaryIntFn(fn, "rotlN") && !cgcIsBinaryIntFn(fn, "rotrN")) {
     return false;
   }
   return fn->def->body->items[0]->kind == StmtKind::If;
@@ -4151,20 +4151,20 @@ bool CodeGen::tryEmitBuiltinBitwiseCall(CallExpr *expr) {
   }
   Function *fn = expr->function;
   const char *opc = nullptr;
-  if (isBinaryIntFn(fn, "_and")) {
+  if (cgcIsBinaryIntFn(fn, "_and")) {
     opc = "and";
-  } else if (isBinaryIntFn(fn, "_or")) {
+  } else if (cgcIsBinaryIntFn(fn, "_or")) {
     opc = "or";
-  } else if (isBinaryIntFn(fn, "_xor")) {
+  } else if (cgcIsBinaryIntFn(fn, "_xor")) {
     opc = "xor";
   } else {
     return false;
   }
-  if (!funcIsBitwiseSimulator(fn)) {
+  if (!cgcFuncIsBitwiseSimulator(fn)) {
     return false;
   }
   for (const auto &arg : expr->args) {
-    if (!arg->type.isIntScalar() || !exprHasNoCall(arg.get())) {
+    if (!arg->type.isIntScalar() || !cgcExprHasNoCall(arg.get())) {
       return false;
     }
   }
@@ -4182,12 +4182,12 @@ bool CodeGen::tryEmitBuiltinRotCall(CallExpr *expr) {
     return false;
   }
   Function *fn = expr->function;
-  if (!funcIsRotIfChain(fn)) {
+  if (!cgcFuncIsRotIfChain(fn)) {
     return false;
   }
   const bool isLeft = fn->name == "rotlN";
   for (const auto &arg : expr->args) {
-    if (!arg->type.isIntScalar() || !exprHasNoCall(arg.get())) {
+    if (!arg->type.isIntScalar() || !cgcExprHasNoCall(arg.get())) {
       return false;
     }
   }
@@ -4217,7 +4217,7 @@ bool CodeGen::tryEmitIrBuiltinCall(const IRFunction &ir, const IRInst &in,
     return false;
   }
   const string &c = in.callee;
-  Function *fn = lookupFunctionAsm(semantic_, c);
+  Function *fn = cgcLookupFunctionAsm(semantic_, c);
   const char *opc = nullptr;
   if (c == "_and") {
     opc = "and";
@@ -4231,15 +4231,15 @@ bool CodeGen::tryEmitIrBuiltinCall(const IRFunction &ir, const IRInst &in,
   if (!opc && !isLeft && !isRight) {
     return false;
   }
-  if (opc && !funcIsBitwiseSimulator(fn)) {
+  if (opc && !cgcFuncIsBitwiseSimulator(fn)) {
     return false;
   }
-  if ((isLeft || isRight) && !funcIsRotIfChain(fn)) {
+  if ((isLeft || isRight) && !cgcFuncIsRotIfChain(fn)) {
     return false;
   }
 
   auto loadArg = [&](int av) {
-  if (optional<int32_t> ic = irTraceConstI(ir, av, instIdx)) {
+  if (optional<int32_t> ic = cgcIrTraceConstI(ir, av, instIdx)) {
       emit("\tli\ta0, " + to_string(*ic));
     } else {
       emitIrLoadVreg(av, false);
@@ -4302,15 +4302,15 @@ bool CodeGen::tryEmitInlineCall(CallExpr *expr) {
       paramSyms.push_back(p.symbol);
     }
 
-    ReturnStmt *ret = singleReturnStmt(def);
-    if (!ret || exprNodeCount(ret->expr.get()) > 12 ||
-        !inlineReturnExprEligible(ret->expr.get(), paramSyms)) {
+    ReturnStmt *ret = cgcSingleReturnStmt(def);
+    if (!ret || cgcExprNodeCount(ret->expr.get()) > 12 ||
+        !cgcInlineReturnExprEligible(ret->expr.get(), paramSyms)) {
       return false;
     }
 
     for (auto &arg : expr->args) {
-      if (!arg->type.isIntScalar() || !exprHasNoCall(arg.get()) ||
-          exprUsesArrayAddress(arg.get())) {
+      if (!arg->type.isIntScalar() || !cgcExprHasNoCall(arg.get()) ||
+          cgcExprUsesArrayAddress(arg.get())) {
         return false;
       }
     }
@@ -4385,7 +4385,7 @@ void CodeGen::emitCall(CallExpr *expr) {
     }
 
     int stackSlots = 0;
-    auto locs = computeArgLocations(params, fn->variadic, namedCount, &stackSlots);
+    auto locs = cgcComputeArgLocations(params, fn->variadic, namedCount, &stackSlots);
 
     bool twoIntRegPath =
         optO1_ && !fn->injectLineArgument && !fn->variadic && args.size() == 2 &&
@@ -4398,7 +4398,7 @@ void CodeGen::emitCall(CallExpr *expr) {
         if ((!p.isArray && p.base != BaseType::Int) ||
             (p.isArray && !args[i]->type.isPointer) ||
             (!p.isArray && !args[i]->type.isIntScalar()) ||
-            !exprHasNoCall(args[i]) || exprUsesArrayAddress(args[i])) {
+            !cgcExprHasNoCall(args[i]) || cgcExprUsesArrayAddress(args[i])) {
           twoIntRegPath = false;
           break;
         }
@@ -4429,9 +4429,9 @@ void CodeGen::emitCall(CallExpr *expr) {
     bool allArgsLeaf = true;
     if (noNestedCall) {
       for (size_t i = 0; i < args.size() && noNestedCall; ++i) {
-        if (!exprHasNoCall(args[i])) noNestedCall = false;
-        if (exprUsesArrayAddress(args[i])) noNestedCall = false;
-        if (!exprIsLeaf(args[i])) allArgsLeaf = false;
+        if (!cgcExprHasNoCall(args[i])) noNestedCall = false;
+        if (cgcExprUsesArrayAddress(args[i])) noNestedCall = false;
+        if (!cgcExprIsLeaf(args[i])) allArgsLeaf = false;
       }
       if (noNestedCall) {
         // Count safe registers needed: t4-t6 = 3 int; ft0-ft7 = 8 float

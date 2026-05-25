@@ -96,18 +96,30 @@
 | `codegen/CodeGen.cpp` | `cgAstIsFloat`, `cgPreferFloat` |
 | `ir_expr_gvn.cpp` | `irgvnMakeKey`, `irgvnInBlock`, … |
 
+### 批次 6
+
+| 文件 | 重命名示例 |
+|------|------------|
+| `cfg/HIRToCFG.cpp` | `HtcLowerer`, `htcBuildSymbolInfo`, `htcTypeDims`, … |
+| `codegen/OpBase.cpp` | `obUpdateDFN`, `obDomFind`, `obGetBlockID`（dom 辅助；`bbmap` 未动） |
+| `codegen.cpp` | `cgcEmitSDivByConst`, `cgcExprContainsCall`, `cgcEnableIrBackend`, … |
+| `ir_build.cpp` | `irbStmtIrShapeOk`, `irbStrideFor`, … |
+| `ir_opt.cpp` | `iroHoistLoopInvariantCFG`, `iroFindRoot`, … |
+| `ir_loop_opt.cpp` | `irlpPromoteScalarLocalsInRange`, … |
+| `ir_mem2reg.cpp` | `irMem2regComputeDomFrontier` |
+| `hir/HIRBuilder.cpp` | `hrbBuildExpr`, `hrbBuildFunction`, … |
+
 ## 暂不动（高风险）
 
 - `mlir_rv/Schedule.cpp`, `InstCombine.cpp` — 指令/阶段顺序敏感
-- `cfg/CFGToLegacy.cpp`, `codegen/OpBase.cpp` — 结构桥接
+- `cfg/CFGToLegacy.cpp` — 结构桥接（`OpBase` 仅已改 dom 局部 helper）
 - `mlir_rv/StrengthReduct.cpp` — 已单独修 sort；MUL/REM 默认关
 - `opt/LICM.cpp` — `variant` 与 `VariantAttr` 易误伤
 
 ## 后续可选（仍仅 helper 命名）
 
 - `dialect_parse/Lexer.cpp`, `Parser.cpp`, `Sema.cpp`（无独立 static helper 时收益小）
-- `cfg/HIRToCFG.cpp`（`Lowerer` 类体量大，需谨慎）
-- `codegen.cpp` / `codegen/OpBase.cpp`（helper 多且与 codegen 路径敏感）
+- `ir_regalloc.cpp`, `rv/rv_asm.cpp`, `utils/Matcher.cpp`
 - `opt/Reassociate.cpp`, `opt/DSE.cpp` / `DLE.cpp`（多为成员函数）
 
 ## 评测前

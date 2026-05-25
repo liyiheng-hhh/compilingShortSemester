@@ -8,7 +8,7 @@
 using namespace std;
 
 // 基本块内标量 Local：StoreLocal 后 LoadLocal 改为 Copy（简易 mem2reg，通用、保守）
-static void irPromoteScalarLocalsInRange(IRFunction &fn, size_t begin, size_t end) {
+static void irlpPromoteScalarLocalsInRange(IRFunction &fn, size_t begin, size_t end) {
   if (end <= begin) {
     return;
   }
@@ -36,15 +36,15 @@ static void irPromoteScalarLocalsInRange(IRFunction &fn, size_t begin, size_t en
   }
 }
 
-static void irPromoteScalarLocalsByBlocks(IRFunction &fn) {
+static void irlpPromoteScalarLocalsByBlocks(IRFunction &fn) {
   irRefreshCFG(fn);
   if (fn.blocks.empty()) {
-    irPromoteScalarLocalsInRange(fn, 0, fn.insts.size());
+    irlpPromoteScalarLocalsInRange(fn, 0, fn.insts.size());
     return;
   }
   for (const IRBlock &blk : fn.blocks) {
     if (blk.end > blk.begin) {
-      irPromoteScalarLocalsInRange(fn, blk.begin, blk.end);
+      irlpPromoteScalarLocalsInRange(fn, blk.begin, blk.end);
     }
   }
 }
@@ -54,5 +54,5 @@ void irOptimizeLoopsAndScalars(IRFunction &fn, const O1Profile &prof) {
   if (envFlagTruthy("SYSY_CC_NO_IR_LOOP_OPT")) {
     return;
   }
-  irPromoteScalarLocalsByBlocks(fn);
+  irlpPromoteScalarLocalsByBlocks(fn);
 }

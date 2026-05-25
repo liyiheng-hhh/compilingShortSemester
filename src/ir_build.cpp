@@ -10,13 +10,13 @@
 
 using namespace std;
 
-static bool exprHasLandLor(Expr *e);
-static bool stmtIrShapeOk(Stmt *s);
-static bool blockIrShapeOk(const BlockStmt &block);
+static bool irbExprHasLandLor(Expr *e);
+static bool irbStmtIrShapeOk(Stmt *s);
+static bool irbBlockIrShapeOk(const BlockStmt &block);
 
-bool irExprHasLogicalShortCircuit(Expr *e) { return exprHasLandLor(e); }
+bool irExprHasLogicalShortCircuit(Expr *e) { return irbExprHasLandLor(e); }
 
-static bool exprHasLandLor(Expr *e) {
+static bool irbExprHasLandLor(Expr *e) {
   if (!e) {
     return false;
   }
@@ -25,15 +25,15 @@ static bool exprHasLandLor(Expr *e) {
     if (b->op == "&&" || b->op == "||") {
       return true;
     }
-    return exprHasLandLor(b->lhs.get()) || exprHasLandLor(b->rhs.get());
+    return irbExprHasLandLor(b->lhs.get()) || irbExprHasLandLor(b->rhs.get());
   }
   if (e->kind == ExprKind::Unary) {
-    return exprHasLandLor(static_cast<UnaryExpr *>(e)->expr.get());
+    return irbExprHasLandLor(static_cast<UnaryExpr *>(e)->expr.get());
   }
   if (e->kind == ExprKind::Call) {
     auto *c = static_cast<CallExpr *>(e);
     for (auto &a : c->args) {
-      if (exprHasLandLor(a.get())) {
+      if (irbExprHasLandLor(a.get())) {
         return true;
       }
     }
@@ -42,7 +42,7 @@ static bool exprHasLandLor(Expr *e) {
   if (e->kind == ExprKind::LVal) {
     auto *lv = static_cast<LValExpr *>(e);
     for (auto &ix : lv->indices) {
-      if (exprHasLandLor(ix.get())) {
+      if (irbExprHasLandLor(ix.get())) {
         return true;
       }
     }
@@ -51,7 +51,7 @@ static bool exprHasLandLor(Expr *e) {
   return false;
 }
 
-static int irMaxLocalArrayElems() {
+static int irbMaxLocalArrayElems() {
   const char *v = getenv("SYSY_IR_MAX_LOCAL_ARRAY_ELEMS");
   if (!v || v[0] == '\0') {
     // 默认放宽到 1M 元素（约 4MB），让 01_mm1 / matmul / conv2d 等大数组用例也能走 IR 后端
@@ -69,7 +69,7 @@ static int irMaxLocalArrayElems() {
   return static_cast<int>(n);
 }
 
-static int localArrayElemCount(Symbol *sym) {
+static int irbLocalArrayElemCount(Symbol *sym) {
   if (!sym || !sym->isArray || sym->isParam || !sym->needsStorage) {
     return 0;
   }
@@ -90,12 +90,12 @@ static int localArrayElemCount(Symbol *sym) {
 }
 
 // 统计局部数组元素总数；超过预算则不宜走 IR（栈帧/LICM 压力）。
-static bool blockLocalArraysWithinBudget(const BlockStmt &block, int &totalElems, int budget) {
+static bool irbBlockLocalArraysWithinBudget(const BlockStmt &block, int &totalElems, int budget) {
   for (const auto &sp : block.items) {
     Stmt *s = sp.get();
     if (s->kind == StmtKind::Decl) {
       for (VarDef &vd : static_cast<DeclStmt *>(s)->defs) {
-        const int n = localArrayElemCount(vd.symbol);
+        const int n = irbLocalArrayElemCount(vd.symbol);
         if (n <= 0) {
           continue;
         }
@@ -105,7 +105,7 @@ static bool blockLocalArraysWithinBudget(const BlockStmt &block, int &totalElems
         }
       }
     } else if (s->kind == StmtKind::Block) {
-      if (!blockLocalArraysWithinBudget(*static_cast<BlockStmt *>(s), totalElems, budget)) {
+      if (!irbBlockLocalArraysWithinBudget(*static_cast<BlockStmt *>(s), totalElems, budget)) {
         return false;
       }
     }
@@ -113,18 +113,18 @@ static bool blockLocalArraysWithinBudget(const BlockStmt &block, int &totalElems
   return true;
 }
 
-static bool stmtIrShapeOk(Stmt *s);
+static bool irbStmtIrShapeOk(Stmt *s);
 
-static bool blockIrShapeOk(const BlockStmt &block) {
+static bool irbBlockIrShapeOk(const BlockStmt &block) {
   for (const auto &sp : block.items) {
-    if (!stmtIrShapeOk(sp.get())) {
+    if (!irbStmtIrShapeOk(sp.get())) {
       return false;
     }
   }
   return true;
 }
 
-static bool stmtIrShapeOk(Stmt *s) {
+static bool irbStmtIrShapeOk(Stmt *s) {
   if (!s) {
     return true;
   }
@@ -133,7 +133,7 @@ static bool stmtIrShapeOk(Stmt *s) {
     auto *d = static_cast<DeclStmt *>(s);
     for (VarDef &vd : d->defs) {
       if (vd.init) {
-        if (!vd.init->isList && vd.init->expr && exprHasLandLor(vd.init->expr.get())) {
+        if (!vd.init->isList && vd.init->expr && irbExprHasLandLor(vd.init->expr.get())) {
           return false;
         }
         if (vd.init->isList) {
@@ -144,21 +144,21 @@ static bool stmtIrShapeOk(Stmt *s) {
     return true;
   }
   case StmtKind::Block:
-    return blockIrShapeOk(*static_cast<BlockStmt *>(s));
+    return irbBlockIrShapeOk(*static_cast<BlockStmt *>(s));
   case StmtKind::Expr: {
     auto *es = static_cast<ExprStmt *>(s);
-    if (es->expr && exprHasLandLor(es->expr.get())) {
+    if (es->expr && irbExprHasLandLor(es->expr.get())) {
       return false;
     }
     return true;
   }
   case StmtKind::Assign: {
     auto *as = static_cast<AssignStmt *>(s);
-    if (exprHasLandLor(as->rhs.get())) {
+    if (irbExprHasLandLor(as->rhs.get())) {
       return false;
     }
     for (auto &ix : as->lhs->indices) {
-      if (exprHasLandLor(ix.get())) {
+      if (irbExprHasLandLor(ix.get())) {
         return false;
       }
     }
@@ -166,30 +166,30 @@ static bool stmtIrShapeOk(Stmt *s) {
   }
   case StmtKind::If: {
     auto *ifs = static_cast<IfStmt *>(s);
-    if (exprHasLandLor(ifs->cond.get())) {
+    if (irbExprHasLandLor(ifs->cond.get())) {
       return false;
     }
-    if (!stmtIrShapeOk(ifs->thenStmt.get())) {
+    if (!irbStmtIrShapeOk(ifs->thenStmt.get())) {
       return false;
     }
-    if (ifs->elseStmt && !stmtIrShapeOk(ifs->elseStmt.get())) {
+    if (ifs->elseStmt && !irbStmtIrShapeOk(ifs->elseStmt.get())) {
       return false;
     }
     return true;
   }
   case StmtKind::While: {
     auto *w = static_cast<WhileStmt *>(s);
-    if (exprHasLandLor(w->cond.get())) {
+    if (irbExprHasLandLor(w->cond.get())) {
       return false;
     }
-    return stmtIrShapeOk(w->body.get());
+    return irbStmtIrShapeOk(w->body.get());
   }
   case StmtKind::Break:
   case StmtKind::Continue:
     return true;
   case StmtKind::Return: {
     auto *r = static_cast<ReturnStmt *>(s);
-    if (r->expr && exprHasLandLor(r->expr.get())) {
+    if (r->expr && irbExprHasLandLor(r->expr.get())) {
       return false;
     }
     return true;
@@ -202,19 +202,19 @@ static bool stmtIrShapeOk(Stmt *s) {
 bool irFunctionEligible(const FuncDef &def) {
   if (envFlagTruthy("SYSY_CC_NO_IR_LOCAL_ARRAY")) {
     int dummy = 0;
-    if (!blockLocalArraysWithinBudget(*def.body, dummy, 0)) {
+    if (!irbBlockLocalArraysWithinBudget(*def.body, dummy, 0)) {
       return false;
     }
   } else {
     int total = 0;
-    if (!blockLocalArraysWithinBudget(*def.body, total, irMaxLocalArrayElems())) {
+    if (!irbBlockLocalArraysWithinBudget(*def.body, total, irbMaxLocalArrayElems())) {
       return false;
     }
   }
-  return blockIrShapeOk(*def.body);
+  return irbBlockIrShapeOk(*def.body);
 }
 
-static int strideFor(Symbol *sym, size_t index) {
+static int irbStrideFor(Symbol *sym, size_t index) {
   if (sym->isParamArray) {
     return product(sym->dims, index);
   }
@@ -301,7 +301,7 @@ int IRBuilder::buildLValAddress(LValExpr *lv) {
   emitConstI(acc, 0);
   for (size_t i = 0; i < lv->indices.size(); ++i) {
     int idx = buildExpr(lv->indices[i].get());
-    int strideBytes = strideFor(sym, i) * 4;
+    int strideBytes = irbStrideFor(sym, i) * 4;
     int prod = ir->allocVreg();
     int lg = -1;
     if (strideBytes > 0 && (strideBytes & (strideBytes - 1)) == 0) {

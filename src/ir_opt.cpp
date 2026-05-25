@@ -9,7 +9,7 @@
 #include "semantic.h"
 
 // 前向声明：地址强度削弱（在文件末尾定义）
-static void irStrengthReduceAddresses(IRFunction &fn);
+static void iroStrengthReduceAddresses(IRFunction &fn);
 
 #include <algorithm>
 #include <climits>
@@ -21,7 +21,7 @@ static void irStrengthReduceAddresses(IRFunction &fn);
 
 using namespace std;
 
-static bool sideEffecting(const IRInst &in) {
+static bool iroSideEffecting(const IRInst &in) {
   switch (in.op) {
   case IROp::StoreMem:
   case IROp::StoreLocal:
@@ -34,7 +34,7 @@ static bool sideEffecting(const IRInst &in) {
 }
 
 // k > 1 且为 2 的幂时返回 log2(k)，否则 -1（用于 Mul → Sll 强度削弱）
-static int intLog2PositivePow2_32(int32_t k) {
+static int iroIntLog2PositivePow2_32(int32_t k) {
   if (k <= 1 || (k & (k - 1)) != 0) {
     return -1;
   }
@@ -47,7 +47,7 @@ static int intLog2PositivePow2_32(int32_t k) {
   return r;
 }
 
-static int findRoot(vector<int> &uf, int x) {
+static int iroFindRoot(vector<int> &uf, int x) {
   if (x < 0) {
     return x;
   }
@@ -146,7 +146,7 @@ void irRefreshCFG(IRFunction &fn) {
 
 // Single-block while: Label L; body (no inner Label); J L. Hoist LoadGlobal(s)
 // with no StoreGlobal to the same symbol in the body and no Call in the body.
-static void irHoistInvariantLoadGlobalSimpleWhile(IRFunction &fn) {
+static void iroHoistInvariantLoadGlobalSimpleWhile(IRFunction &fn) {
   // 每轮只外提一个 while；禁止 allocVreg；轮次过多会把 prelude/Copy 堆满（reduce 万行 asm）
   constexpr int kMaxRounds = 16;
   const size_t instBudget0 = fn.insts.size();
@@ -266,9 +266,9 @@ static void irHoistInvariantLoadGlobalSimpleWhile(IRFunction &fn) {
 }
 
 // 单块 while（Label L; …无内层 Label…; J L）：把循环不变、无副作用的 IR 提到 L 之后、循环体之前。
-// 与 irHoistInvariantLoadGlobalSimpleWhile 互补：覆盖纯算术、Lea*、LoadMem(基址不变且无 StoreMem)、
+// 与 iroHoistInvariantLoadGlobalSimpleWhile 互补：覆盖纯算术、Lea*、LoadMem(基址不变且无 StoreMem)、
 // LoadLocal(循环内无 StoreLocal 同 sym) 等；循环体内含 Call 时不外提 LoadGlobal/LoadMem（防别名）。
-static bool irHoistOpcodeEligibleForLICM(IROp op) {
+static bool iroHoistOpcodeEligibleForLICM(IROp op) {
   switch (op) {
   case IROp::ConstI:
   case IROp::ConstF:
@@ -305,7 +305,7 @@ static bool irHoistOpcodeEligibleForLICM(IROp op) {
   }
 }
 
-static bool irHoistOperandsInvariant(const IRInst &in, const vector<char> &invReg, int maxV) {
+static bool iroHoistOperandsInvariant(const IRInst &in, const vector<char> &invReg, int maxV) {
   auto ok = [&](int r) {
     if (r < 0) {
       return true;
@@ -354,7 +354,7 @@ static bool irHoistOperandsInvariant(const IRInst &in, const vector<char> &invRe
   }
 }
 
-static void irHoistPureInvariantSimpleWhile(IRFunction &fn) {
+static void iroHoistPureInvariantSimpleWhile(IRFunction &fn) {
   constexpr int kMaxRounds = 4096;
   for (int round = 0; round < kMaxRounds; ++round) {
     vector<IRInst> &inst = fn.insts;
@@ -425,10 +425,10 @@ static void irHoistPureInvariantSimpleWhile(IRFunction &fn) {
           continue;
         }
         const IRInst &in = inst[k];
-        if (!irHoistOpcodeEligibleForLICM(in.op)) {
+        if (!iroHoistOpcodeEligibleForLICM(in.op)) {
           continue;
         }
-        if (!irHoistOperandsInvariant(in, invReg, maxV)) {
+        if (!iroHoistOperandsInvariant(in, invReg, maxV)) {
           continue;
         }
         if (hasCall) {
@@ -503,7 +503,7 @@ static void irHoistPureInvariantSimpleWhile(IRFunction &fn) {
 
 // ---------- CFG 上的循环不变量外提（多块循环、内层 Label）----------
 
-static void irBuildPredecessors(const IRFunction &fn, vector<vector<int>> &pred) {
+static void iroBuildPredecessors(const IRFunction &fn, vector<vector<int>> &pred) {
   const int nb = static_cast<int>(fn.blocks.size());
   pred.assign(static_cast<size_t>(nb), {});
   for (int b = 0; b < nb; ++b) {
@@ -516,7 +516,7 @@ static void irBuildPredecessors(const IRFunction &fn, vector<vector<int>> &pred)
 }
 
 // dom[b][a]==1 表示：从入口块 0 到块 b 的每条路径都经过块 a（即 a 支配 b）。dom[0] 固定为仅块 0 支配入口。
-static void irComputeDominators(const IRFunction &fn, const vector<vector<int>> &pred,
+static void iroComputeDominators(const IRFunction &fn, const vector<vector<int>> &pred,
                                   vector<vector<char>> &dom) {
   const int nb = static_cast<int>(fn.blocks.size());
   if (nb <= 0) {
@@ -560,7 +560,7 @@ static void irComputeDominators(const IRFunction &fn, const vector<vector<int>> 
   }
 }
 
-static void irDefiningBlockPerVreg(const IRFunction &fn, vector<int> &defBlock) {
+static void iroDefiningBlockPerVreg(const IRFunction &fn, vector<int> &defBlock) {
   const int nv = fn.nextVreg;
   const int nb = static_cast<int>(fn.blocks.size());
   defBlock.assign(max(nv, 0), -1);
@@ -585,7 +585,7 @@ struct IrCfgLoop {
 };
 
 // 背边 tail->header 且 header 支配 tail 的自然循环（Cooper：从 tail 沿 pred 回溯，不穿过 header）。
-static void irNaturalLoopBlocks(int nb, const vector<vector<int>> &pred, int header, int tail,
+static void iroNaturalLoopBlocks(int nb, const vector<vector<int>> &pred, int header, int tail,
                                 unordered_set<int> &outBlocks) {
   outBlocks.clear();
   outBlocks.insert(tail);
@@ -605,7 +605,7 @@ static void irNaturalLoopBlocks(int nb, const vector<vector<int>> &pred, int hea
 }
 
 // 只保留被循环头支配的块，剔除假回边/不可约图回溯到的函数入口等。
-static void irFilterLoopBlocksByHeaderDom(int nb, const vector<vector<char>> &dom, int header,
+static void iroFilterLoopBlocksByHeaderDom(int nb, const vector<vector<char>> &dom, int header,
                                           unordered_set<int> &blocks) {
   vector<int> rm;
   for (int bb : blocks) {
@@ -618,7 +618,7 @@ static void irFilterLoopBlocksByHeaderDom(int nb, const vector<vector<char>> &do
   }
 }
 
-static void irCollectLoopMemorySummary(const IRFunction &fn, const unordered_set<int> &loopBlks,
+static void iroCollectLoopMemorySummary(const IRFunction &fn, const unordered_set<int> &loopBlks,
                                        bool &hasCall, bool &hasStoreMem,
                                        unordered_set<Symbol *> &storeLocalSym,
                                        unordered_set<Symbol *> &storeGlobalSym) {
@@ -651,7 +651,7 @@ static void irCollectLoopMemorySummary(const IRFunction &fn, const unordered_set
 }
 
 // 在支配关系与「定义块支配所有 latch」条件下外提不变量；插入位置为循环头块首条 Label 之后（每轮迭代执行一次，与单块 LICM 一致）。
-static void irHoistLoopInvariantCFG(IRFunction &fn) {
+static void iroHoistLoopInvariantCFG(IRFunction &fn) {
   // 外提会改指令序列与 CFG；用迭代重建支配/循环，禁止尾递归自调（小图上也会无限递归栈溢出）。
   // 嵌套循环每轮只处理一个 loop 且会复制指令到外层头；4096 轮会把 reduce 等撑到万行 asm。
   constexpr int kMaxRounds = 16;
@@ -676,15 +676,15 @@ static void irHoistLoopInvariantCFG(IRFunction &fn) {
   }
 
   vector<vector<int>> pred;
-  irBuildPredecessors(fn, pred);
+  iroBuildPredecessors(fn, pred);
   vector<vector<char>> dom;
-  irComputeDominators(fn, pred, dom);
+  iroComputeDominators(fn, pred, dom);
   if (static_cast<int>(dom.size()) != nb) {
     return;
   }
 
   vector<int> defBlock;
-  irDefiningBlockPerVreg(fn, defBlock);
+  iroDefiningBlockPerVreg(fn, defBlock);
 
   // 按 header 合并背边与自然循环体
   unordered_map<int, IrCfgLoop> loops;
@@ -698,8 +698,8 @@ static void irHoistLoopInvariantCFG(IRFunction &fn) {
         continue;
       }
       unordered_set<int> body;
-      irNaturalLoopBlocks(nb, pred, s, b, body);
-      irFilterLoopBlocksByHeaderDom(nb, dom, s, body);
+      iroNaturalLoopBlocks(nb, pred, s, b, body);
+      iroFilterLoopBlocksByHeaderDom(nb, dom, s, body);
       if (body.size() <= 1) {
         continue;
       }
@@ -765,7 +765,7 @@ static void irHoistLoopInvariantCFG(IRFunction &fn) {
     bool hasStoreMem = false;
     unordered_set<Symbol *> storeLocalSym;
     unordered_set<Symbol *> storeGlobalSym;
-    irCollectLoopMemorySummary(fn, loop.blocks, hasCall, hasStoreMem, storeLocalSym,
+    iroCollectLoopMemorySummary(fn, loop.blocks, hasCall, hasStoreMem, storeLocalSym,
                                storeGlobalSym);
 
     vector<char> invReg(static_cast<size_t>(maxV), 0);
@@ -800,10 +800,10 @@ static void irHoistLoopInvariantCFG(IRFunction &fn) {
             continue;
           }
           const IRInst &in = inst[ii];
-          if (!irHoistOpcodeEligibleForLICM(in.op)) {
+          if (!iroHoistOpcodeEligibleForLICM(in.op)) {
             continue;
           }
-          if (!irHoistOperandsInvariant(in, invReg, maxV)) {
+          if (!iroHoistOperandsInvariant(in, invReg, maxV)) {
             continue;
           }
           if (hasCall) {
@@ -872,40 +872,40 @@ static void irHoistLoopInvariantCFG(IRFunction &fn) {
   }
 }
 
-static uint64_t mix64(uint64_t h, uint64_t x) {
+static uint64_t iroMix64(uint64_t h, uint64_t x) {
   h ^= x + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
   return h;
 }
 
 // 指令队列指纹（用于 IR 固定点外层迭代：CSE / Copy / DCE 多轮后才收敛）。
-static uint64_t irInstructionFingerprint(const IRFunction &fn) {
+static uint64_t iroInstructionFingerprint(const IRFunction &fn) {
   uint64_t h = 14695981039346656037ULL;
   for (const IRInst &in : fn.insts) {
-    h = mix64(h, static_cast<uint64_t>(static_cast<int>(in.op)));
-    h = mix64(h, static_cast<uint64_t>(static_cast<unsigned>(in.dst + 73131)));
-    h = mix64(h, static_cast<uint64_t>(static_cast<unsigned>(in.u + 73131)));
-    h = mix64(h, static_cast<uint64_t>(static_cast<unsigned>(in.v + 73131)));
-    h = mix64(h, static_cast<uint64_t>(static_cast<uint32_t>(in.immI)));
+    h = iroMix64(h, static_cast<uint64_t>(static_cast<int>(in.op)));
+    h = iroMix64(h, static_cast<uint64_t>(static_cast<unsigned>(in.dst + 73131)));
+    h = iroMix64(h, static_cast<uint64_t>(static_cast<unsigned>(in.u + 73131)));
+    h = iroMix64(h, static_cast<uint64_t>(static_cast<unsigned>(in.v + 73131)));
+    h = iroMix64(h, static_cast<uint64_t>(static_cast<uint32_t>(in.immI)));
     uint32_t fb = floatBits(in.immF);
-    h = mix64(h, static_cast<uint64_t>(fb));
-    h = mix64(h, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(static_cast<void *>(in.sym))));
-    h = mix64(h, static_cast<uint64_t>(in.isFloat ? 1 : 0));
+    h = iroMix64(h, static_cast<uint64_t>(fb));
+    h = iroMix64(h, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(static_cast<void *>(in.sym))));
+    h = iroMix64(h, static_cast<uint64_t>(in.isFloat ? 1 : 0));
     size_t nargs = in.args.size();
-    h = mix64(h, static_cast<uint64_t>(nargs));
+    h = iroMix64(h, static_cast<uint64_t>(nargs));
     for (int a : in.args) {
-      h = mix64(h, static_cast<uint64_t>(static_cast<unsigned>(a + 73131)));
+      h = iroMix64(h, static_cast<uint64_t>(static_cast<unsigned>(a + 73131)));
     }
   }
   return h;
 }
 
-static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
+static void iroOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
   if (prof.irSimpleLicm) {
-    irHoistInvariantLoadGlobalSimpleWhile(fn);
-    irHoistPureInvariantSimpleWhile(fn);
+    iroHoistInvariantLoadGlobalSimpleWhile(fn);
+    iroHoistPureInvariantSimpleWhile(fn);
   }
   if (prof.irCfgLicm) {
-    irHoistLoopInvariantCFG(fn);
+    iroHoistLoopInvariantCFG(fn);
   }
   irRefreshCFG(fn);
 
@@ -932,7 +932,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     if (r >= static_cast<int>(copyUF.size())) {
       return r;
     }
-    return findRoot(copyUF, r);
+    return iroFindRoot(copyUF, r);
   };
 
   struct Key {
@@ -975,7 +975,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     cp.u = it->second;
     out.push_back(cp);
     if (dst < static_cast<int>(copyUF.size())) {
-      copyUF[dst] = findRoot(copyUF, it->second);
+      copyUF[dst] = iroFindRoot(copyUF, it->second);
     }
     return true;
   };
@@ -1008,7 +1008,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     if (r < 0 || r >= static_cast<int>(knownInt.size())) {
       return nullopt;
     }
-    int root = findRoot(copyUF, r);
+    int root = iroFindRoot(copyUF, r);
     if (root < 0 || root >= static_cast<int>(knownInt.size())) {
       return nullopt;
     }
@@ -1019,7 +1019,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     if (r < 0 || r >= static_cast<int>(knownFloat.size())) {
       return nullopt;
     }
-    int root = findRoot(copyUF, r);
+    int root = iroFindRoot(copyUF, r);
     if (root < 0 || root >= static_cast<int>(knownFloat.size())) {
       return nullopt;
     }
@@ -1038,7 +1038,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     if (in.op == IROp::StoreMem || in.op == IROp::Call) {
       fwdStore.clear();
     }
-    if (sideEffecting(in)) {
+    if (iroSideEffecting(in)) {
       cse.clear();
     }
     if (in.op == IROp::Label) {
@@ -1107,7 +1107,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
           cp.u = remap(it->second);
           out.push_back(cp);
           if (in.dst >= 0 && in.dst < static_cast<int>(copyUF.size())) {
-            copyUF[in.dst] = findRoot(copyUF, remap(it->second));
+            copyUF[in.dst] = iroFindRoot(copyUF, remap(it->second));
           }
           continue;
         }
@@ -1127,7 +1127,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
           cp.u = remap(it->second);
           out.push_back(cp);
           if (in.dst >= 0 && in.dst < static_cast<int>(copyUF.size())) {
-            copyUF[in.dst] = findRoot(copyUF, remap(it->second));
+            copyUF[in.dst] = iroFindRoot(copyUF, remap(it->second));
           }
           continue;
         }
@@ -1217,7 +1217,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
       cp.u = it->second;
       out.push_back(cp);
       if (in.dst >= 0 && in.dst < static_cast<int>(copyUF.size())) {
-        copyUF[in.dst] = findRoot(copyUF, it->second);
+        copyUF[in.dst] = iroFindRoot(copyUF, it->second);
       }
       return true;
     };
@@ -1229,7 +1229,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
       cp.u = src;
       out.push_back(cp);
       if (dst >= 0 && dst < static_cast<int>(copyUF.size())) {
-        copyUF[dst] = findRoot(copyUF, src);
+        copyUF[dst] = iroFindRoot(copyUF, src);
       }
     };
 
@@ -1404,7 +1404,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
           return false;
         }
         int32_t ak = static_cast<int32_t>(-static_cast<int64_t>(negK));
-        int shamt = intLog2PositivePow2_32(ak);
+        int shamt = iroIntLog2PositivePow2_32(ak);
         if (shamt <= 0) {
           return false;
         }
@@ -1433,7 +1433,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
         break;
       }
       if (ci && *ci > 1) {
-        int shamt = intLog2PositivePow2_32(*ci);
+        int shamt = iroIntLog2PositivePow2_32(*ci);
         if (shamt > 0) {
           IRInst sh;
           sh.op = IROp::Sll;
@@ -1449,7 +1449,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
         }
       }
       if (cj && *cj > 1) {
-        int shamt = intLog2PositivePow2_32(*cj);
+        int shamt = iroIntLog2PositivePow2_32(*cj);
         if (shamt > 0) {
           IRInst sh;
           sh.op = IROp::Sll;
@@ -1825,7 +1825,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
           cp.isFloat = in.isFloat;
           out.push_back(cp);
           if (in.dst < static_cast<int>(copyUF.size())) {
-            copyUF[in.dst] = findRoot(copyUF, remap(mf->second));
+            copyUF[in.dst] = iroFindRoot(copyUF, remap(mf->second));
           }
           folded = true;
           break;
@@ -1843,7 +1843,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
       break;
     }
 
-    if (sideEffecting(in)) {
+    if (iroSideEffecting(in)) {
       cse.clear();
     }
 
@@ -1871,7 +1871,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
     vector<IRInst> live;
     live.reserve(fn.insts.size());
     for (auto &inst : fn.insts) {
-      if (!sideEffecting(inst) && inst.dst >= 0 && inst.dst < nv &&
+      if (!iroSideEffecting(inst) && inst.dst >= 0 && inst.dst < nv &&
           useCount[inst.dst] == 0) {
         changed = true;
         continue;
@@ -1884,7 +1884,7 @@ static void irOptimizeBlockOneRound(IRFunction &fn, const O1Profile &prof) {
   irRefreshCFG(fn);
 }
 
-static Function *irLookupFunction(const Semantic &sem, const string &callee) {
+static Function *iroLookupFunction(const Semantic &sem, const string &callee) {
   for (const auto &kv : sem.functions()) {
     if (kv.second && kv.second->asmName == callee) {
       return kv.second;
@@ -1893,7 +1893,7 @@ static Function *irLookupFunction(const Semantic &sem, const string &callee) {
   return nullptr;
 }
 
-static ReturnStmt *irSingleReturnStmt(FuncDef *def) {
+static ReturnStmt *iroSingleReturnStmt(FuncDef *def) {
   if (!def || !def->body || def->body->items.size() != 1) {
     return nullptr;
   }
@@ -1905,7 +1905,7 @@ static ReturnStmt *irSingleReturnStmt(FuncDef *def) {
   return ret->expr ? ret : nullptr;
 }
 
-static bool irScalarIntLVal(Expr *e, Symbol *&symOut) {
+static bool iroScalarIntLVal(Expr *e, Symbol *&symOut) {
   if (!e || e->kind != ExprKind::LVal) {
     return false;
   }
@@ -1918,7 +1918,7 @@ static bool irScalarIntLVal(Expr *e, Symbol *&symOut) {
   return true;
 }
 
-static bool irScalarIntConst(Expr *e, int32_t &valOut) {
+static bool iroScalarIntConst(Expr *e, int32_t &valOut) {
   if (!e || e->kind != ExprKind::Number) {
     return false;
   }
@@ -1931,13 +1931,13 @@ static bool irScalarIntConst(Expr *e, int32_t &valOut) {
 }
 
 // 内联 return param % global 或 return global % param（如 hash）
-static bool irTryInlineModGlobalCall(IRFunction &fn, const IRInst &call,
+static bool iroTryInlineModGlobalCall(IRFunction &fn, const IRInst &call,
                                      FuncDef *calleeDef, vector<IRInst> &out) {
   if (call.args.size() != 1 || call.callArgPtr.size() != 1 ||
       call.callArgPtr[0] != 0) {
     return false;
   }
-  ReturnStmt *ret = irSingleReturnStmt(calleeDef);
+  ReturnStmt *ret = iroSingleReturnStmt(calleeDef);
   if (!ret || calleeDef->params.size() != 1 || calleeDef->params[0].isArray ||
       calleeDef->params[0].base != BaseType::Int || !calleeDef->params[0].symbol) {
     return false;
@@ -1952,7 +1952,7 @@ static bool irTryInlineModGlobalCall(IRFunction &fn, const IRInst &call,
   }
   Symbol *lhs = nullptr;
   Symbol *rhs = nullptr;
-  if (!irScalarIntLVal(bin->lhs.get(), lhs) || !irScalarIntLVal(bin->rhs.get(), rhs)) {
+  if (!iroScalarIntLVal(bin->lhs.get(), lhs) || !iroScalarIntLVal(bin->rhs.get(), rhs)) {
     return false;
   }
   Symbol *globalSym = nullptr;
@@ -1983,13 +1983,13 @@ static bool irTryInlineModGlobalCall(IRFunction &fn, const IRInst &call,
 }
 
 // 内联 return param % const 或 return const % param
-static bool irTryInlineModConstCall(IRFunction &fn, const IRInst &call,
+static bool iroTryInlineModConstCall(IRFunction &fn, const IRInst &call,
                                     FuncDef *calleeDef, vector<IRInst> &out) {
   if (call.args.size() != 1 || call.callArgPtr.size() != 1 ||
       call.callArgPtr[0] != 0) {
     return false;
   }
-  ReturnStmt *ret = irSingleReturnStmt(calleeDef);
+  ReturnStmt *ret = iroSingleReturnStmt(calleeDef);
   if (!ret || calleeDef->params.size() != 1 || calleeDef->params[0].isArray ||
       calleeDef->params[0].base != BaseType::Int || !calleeDef->params[0].symbol) {
     return false;
@@ -2007,11 +2007,11 @@ static bool irTryInlineModConstCall(IRFunction &fn, const IRInst &call,
   int32_t modConst = 0;
   int argVreg = call.args[0];
   bool ok = false;
-  if (irScalarIntLVal(bin->lhs.get(), lhs) && lhs == paramSym &&
-      irScalarIntConst(bin->rhs.get(), modConst)) {
+  if (iroScalarIntLVal(bin->lhs.get(), lhs) && lhs == paramSym &&
+      iroScalarIntConst(bin->rhs.get(), modConst)) {
     ok = true;
-  } else if (irScalarIntLVal(bin->rhs.get(), rhs) && rhs == paramSym &&
-             irScalarIntConst(bin->lhs.get(), modConst)) {
+  } else if (iroScalarIntLVal(bin->rhs.get(), rhs) && rhs == paramSym &&
+             iroScalarIntConst(bin->lhs.get(), modConst)) {
     ok = true;
   }
   if (!ok || modConst == 0 || modConst == -1) {
@@ -2033,19 +2033,19 @@ static bool irTryInlineModConstCall(IRFunction &fn, const IRInst &call,
 }
 
 // 内联 return param（单参数透传）
-static bool irTryInlineIdentityCall(IRFunction &fn, const IRInst &call,
+static bool iroTryInlineIdentityCall(IRFunction &fn, const IRInst &call,
                                     FuncDef *calleeDef, vector<IRInst> &out) {
   if (call.args.size() != 1 || call.callArgPtr[0] != 0 || call.dst < 0) {
     return false;
   }
-  ReturnStmt *ret = irSingleReturnStmt(calleeDef);
+  ReturnStmt *ret = iroSingleReturnStmt(calleeDef);
   if (!ret || calleeDef->params.size() != 1 || calleeDef->params[0].isArray ||
       calleeDef->params[0].base != BaseType::Int || !calleeDef->params[0].symbol) {
     return false;
   }
   Symbol *paramSym = calleeDef->params[0].symbol;
   Symbol *retSym = nullptr;
-  if (!irScalarIntLVal(ret->expr.get(), retSym) || retSym != paramSym) {
+  if (!iroScalarIntLVal(ret->expr.get(), retSym) || retSym != paramSym) {
     return false;
   }
   IRInst cp;
@@ -2056,22 +2056,22 @@ static bool irTryInlineIdentityCall(IRFunction &fn, const IRInst &call,
   return true;
 }
 
-static bool irTryInlineOneCall(IRFunction &fn, const IRInst &call, FuncDef *calleeDef,
+static bool iroTryInlineOneCall(IRFunction &fn, const IRInst &call, FuncDef *calleeDef,
                                vector<IRInst> &out) {
-  if (irTryInlineModGlobalCall(fn, call, calleeDef, out)) {
+  if (iroTryInlineModGlobalCall(fn, call, calleeDef, out)) {
     return true;
   }
-  if (irTryInlineModConstCall(fn, call, calleeDef, out)) {
+  if (iroTryInlineModConstCall(fn, call, calleeDef, out)) {
     return true;
   }
-  if (irTryInlineIdentityCall(fn, call, calleeDef, out)) {
+  if (iroTryInlineIdentityCall(fn, call, calleeDef, out)) {
     return true;
   }
   return false;
 }
 
 // 基本块内同一 global 的重复 LoadGlobal → Copy（hashmod 等；利于后续 CSE/LICM）
-static void irCanonicalizeLoadGlobalInBlocks(IRFunction &fn) {
+static void iroCanonicalizeLoadGlobalInBlocks(IRFunction &fn) {
   irRefreshCFG(fn);
   if (fn.blocks.empty()) {
     return;
@@ -2107,7 +2107,7 @@ static void irCanonicalizeLoadGlobalInBlocks(IRFunction &fn) {
   }
 }
 
-static void irInlineTrivialCalls(IRFunction &fn, const Semantic &sem) {
+static void iroInlineTrivialCalls(IRFunction &fn, const Semantic &sem) {
   if (envFlagTruthy("SYSY_CC_NO_IR_INLINE")) {
     return;
   }
@@ -2118,14 +2118,14 @@ static void irInlineTrivialCalls(IRFunction &fn, const Semantic &sem) {
       rebuilt.push_back(in);
       continue;
     }
-    Function *fnSym = irLookupFunction(sem, in.callee);
+    Function *fnSym = iroLookupFunction(sem, in.callee);
     if (!fnSym || fnSym->runtime || fnSym->variadic || fnSym->injectLineArgument ||
         fnSym->ret != BaseType::Int || !fnSym->def) {
       rebuilt.push_back(in);
       continue;
     }
     vector<IRInst> repl;
-    if (irTryInlineOneCall(fn, in, fnSym->def, repl)) {
+    if (iroTryInlineOneCall(fn, in, fnSym->def, repl)) {
       rebuilt.insert(rebuilt.end(), repl.begin(), repl.end());
     } else {
       rebuilt.push_back(in);
@@ -2143,8 +2143,8 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
     return;
   }
   if (semantic) {
-    irInlineTrivialCalls(fn, *semantic);
-    irCanonicalizeLoadGlobalInBlocks(fn);
+    iroInlineTrivialCalls(fn, *semantic);
+    iroCanonicalizeLoadGlobalInBlocks(fn);
     irRefreshCFG(fn);
   }
   // SSA Mem2Reg：默认开启；显式关闭：SYSY_CC_NO_MEM2REG=1
@@ -2163,9 +2163,9 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
     maxOuter = min(maxOuter, 8);
   }
   for (int outer = 0; outer < maxOuter; ++outer) {
-    const uint64_t before = irInstructionFingerprint(fn);
-    irOptimizeBlockOneRound(fn, prof);
-    if (irInstructionFingerprint(fn) == before) {
+    const uint64_t before = iroInstructionFingerprint(fn);
+    iroOptimizeBlockOneRound(fn, prof);
+    if (iroInstructionFingerprint(fn) == before) {
       break;
     }
   }
@@ -2175,7 +2175,7 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
 
   // 地址强度削弱：当前实现会破坏基本块边界，默认关闭
   if (envFlagTruthy("SYSY_CC_ENABLE_ADDR_SR")) {
-    irStrengthReduceAddresses(fn);
+    iroStrengthReduceAddresses(fn);
     irRefreshCFG(fn);
   }
   // 指令调度：当前实现会破坏 CFG/寄存器生命周期，默认关闭。
@@ -2186,7 +2186,7 @@ void irOptimizeBlock(IRFunction &fn, const O1Profile &prof, const Semantic *sema
   }
 }
 
-static void irAugmentLastUseWithCFG(IRFunction &fn, vector<size_t> &lastUse) {
+static void iroAugmentLastUseWithCFG(IRFunction &fn, vector<size_t> &lastUse) {
   irRefreshCFG(fn);
   const int nb = static_cast<int>(fn.blocks.size());
   const int nv = static_cast<int>(fn.nextVreg);
@@ -2372,7 +2372,7 @@ void irAssignSlots(IRFunction &fn) {
       if (a >= 0 && a < nv) lastUse[static_cast<size_t>(a)] = idx;
     }
   }
-  irAugmentLastUseWithCFG(fn, lastUse);
+  iroAugmentLastUseWithCFG(fn, lastUse);
 
   // Linear scan slot assignment: reuse slots after last use
   vector<int> slotFreeAt; // slot → freed after instruction index
@@ -2444,7 +2444,7 @@ int irSlotCount(const IRFunction &fn) {
   // 简单的地址强度削弱：针对大矩阵内层循环，把 (iv * stride) 形式的地址计算
   // 变成指针自增，避免每轮都做昂贵的 mulw。
   // 保守实现，只对明显有重复地址计算的块生效。
-  static void irStrengthReduceAddresses(IRFunction &fn) {
+  static void iroStrengthReduceAddresses(IRFunction &fn) {
     if (fn.blocks.size() < 2) return;
 
     size_t memOps = 0;

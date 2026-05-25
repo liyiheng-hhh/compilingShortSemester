@@ -584,31 +584,31 @@ UnionFind puf;
 Best pbest;
 
 
-void updateDFN(BasicBlock *current) {
+void obUpdateDFN(BasicBlock *current) {
   dfn[current] = num++;
   vertex.push_back(current);
   for (auto v : current->succs) {
     if (!dfn.count(v)) {
       parents[v] = current;
-      updateDFN(v);
+      obUpdateDFN(v);
     }
   }
 }
 
-void updatePDFN(BasicBlock *current) {
+void obUpdatePDFN(BasicBlock *current) {
   pdfn[current] = pnum++;
   pvertex.push_back(current);
   for (auto v : current->preds) {
     if (!pdfn.count(v)) {
       pparents[v] = current;
-      updatePDFN(v);
+      obUpdatePDFN(v);
     }
   }
 }
 
-BasicBlock* find(BasicBlock *v) {
+BasicBlock* obDomFind(BasicBlock *v) {
   if (uf[v] != v) {
-    BasicBlock* u = find(uf[v]);
+    BasicBlock* u = obDomFind(uf[v]);
     if (dfn[sdom[best[uf[v]]]] < dfn[sdom[best[v]]])
       best[v] = best[uf[v]];
     uf[v] = u;
@@ -616,9 +616,9 @@ BasicBlock* find(BasicBlock *v) {
   return uf[v];
 }
 
-BasicBlock* pfind(BasicBlock* v) {
+BasicBlock* obPdomFind(BasicBlock* v) {
   if (puf[v] != v) {
-    BasicBlock* u = pfind(puf[v]);
+    BasicBlock* u = obPdomFind(puf[v]);
     if (pdfn[psdom[pbest[puf[v]]]] < pdfn[psdom[pbest[v]]])
       pbest[v] = pbest[puf[v]];
     puf[v] = u;
@@ -628,11 +628,11 @@ BasicBlock* pfind(BasicBlock* v) {
 
 
 // Links `w` to `v` (setting the father of `w` to `v`).
-void link(BasicBlock *v, BasicBlock *w) {
+void obDomLink(BasicBlock *v, BasicBlock *w) {
   uf[w] = v;
 }
 
-void plink(BasicBlock *v, BasicBlock *w) {
+void obPdomPlink(BasicBlock *v, BasicBlock *w) {
   puf[w] = v;
 }
 
@@ -663,7 +663,7 @@ void Region::updateDoms() {
   std::map<BasicBlock*, std::vector<BasicBlock*>> bsdom;
 
   auto entry = getFirstBlock();
-  updateDFN(entry);
+  obUpdateDFN(entry);
 
   for (auto bb : bbs) {
     sdom[bb] = bb;
@@ -682,7 +682,7 @@ void Region::updateDoms() {
       if (dfn[v] < dfn[bb])
         u = v;
       else {
-        find(v);
+        obDomFind(v);
         u = best[v];
       }
       if (dfn[sdom[u]] < dfn[sdom[bb]])
@@ -693,10 +693,10 @@ void Region::updateDoms() {
     auto parent = parents.count(bb) ? parents[bb] : nullptr;
     if (!parent)
       continue;
-    link(parent, bb);
+    obDomLink(parent, bb);
 
     for (auto v : bsdom[parent]) {
-      find(v);
+      obDomFind(v);
       v->idom = sdom[best[v]] == sdom[v] ? parent : best[v];
     }
   }
@@ -780,7 +780,7 @@ void Region::updatePDoms() {
 
   std::map<BasicBlock*, std::vector<BasicBlock*>> pbsdom;
 
-  updatePDFN(exit);
+  obUpdatePDFN(exit);
 
   for (auto bb : bbs) {
     psdom[bb] = bb;
@@ -797,7 +797,7 @@ void Region::updatePDoms() {
       if (pdfn[v] < pdfn[bb])
         u = v;
       else {
-        pfind(v);
+        obPdomFind(v);
         u = pbest[v];
       }
       if (pdfn[psdom[u]] < pdfn[psdom[bb]])
@@ -805,10 +805,10 @@ void Region::updatePDoms() {
     }
 
     pbsdom[psdom[bb]].push_back(bb);
-    plink(pparents[bb], bb);
+    obPdomPlink(pparents[bb], bb);
 
     for (auto *v : pbsdom[pparents[bb]]) {
-      pfind(v);
+      obPdomFind(v);
       v->ipdom = (psdom[pbest[v]] == psdom[v]) ? pparents[bb] : pbest[v];
     }
   }
@@ -933,7 +933,7 @@ void Region::showLiveIn() {
   std::cerr << "===== live info ends =====\n\n\n";
 }
 
-static int getBlockID(BasicBlock *bb) {
+static int obGetBlockID(BasicBlock *bb) {
   if (!bbmap.count(bb))
     bbmap[bb] = bbid++;
   return bbmap[bb];
@@ -947,18 +947,18 @@ void Region::dump(std::ostream &os, int depth) {
     if (bbs.size() != 1) {
       auto bb = *it;
       indent(os, depth * 2 - 2);
-      os << "bb" << getBlockID(bb) << ":     // preds = [ ";
+      os << "bb" << obGetBlockID(bb) << ":     // preds = [ ";
       for (auto x : bb->preds)
-        os << getBlockID(x) << " ";
+        os << obGetBlockID(x) << " ";
       
       os << "]; dom frontier = [ ";
       for (auto x : bb->getDominanceFrontier())
-        os << getBlockID(x) << " ";
+        os << obGetBlockID(x) << " ";
       
       os << "]";
       
       if (bb->idom)
-        os << "; idom = " << getBlockID(bb->idom);
+        os << "; idom = " << obGetBlockID(bb->idom);
       os << "\n";
     }
     auto &bb = *it;
