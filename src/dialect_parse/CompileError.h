@@ -1,10 +1,8 @@
-#ifndef COMPILE_ERROR_H
-#define COMPILE_ERROR_H
+#ifndef DIALECT_COMPILE_ERROR_H
+#define DIALECT_COMPILE_ERROR_H
 
-// compiler2026-x phase-1 (header layout)
 #include <stdexcept>
 #include <string>
-
 
 namespace sys {
 
@@ -13,6 +11,8 @@ public:
   explicit CompileError(const std::string &msg): std::runtime_error(msg) {}
 };
 
+using ParseFailure = CompileError;
+
 }
 
-#endif
+#endif  // DIALECT_COMPILE_ERROR_H

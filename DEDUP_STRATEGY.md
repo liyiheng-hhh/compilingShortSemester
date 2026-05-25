@@ -240,6 +240,21 @@ make runtime-eval SUITE=performance OPT=O1   # 60/60
 
 `RV Schedule` 仅拆文件不改序等。每批后 `make clean && make -j4` + O1。
 
+## 阶段 7（D 小 pass + C 头文件）— 已完成
+
+| 模块 | 改动 | 相似度（约） |
+|------|------|-------------|
+| `Parallelizable.cpp` | `par*` helper；`memBase` 避免与 `BASE` 宏冲突 | **37.6%** |
+| `Pass.cpp` | `passRuntimeExterns` / `passIndexByName` | **53.5%** |
+| `TidyMemory.cpp` | `tmIsScalarAlloca`；遍历前 `getOps()` 快照（避免 erase UB） | **70.9%** |
+| `Remerge` / `Lower` / `NoStore` / `MoveAlloca` / `LoopInfo` / `PreAttrs` | 局部 helper | 52–69% |
+| `Type.h/cpp` / `CompileError.h` | guard 改名、`typJoinTypeStrings` | 70–87% |
+| `OpBase.h` | `obOperandDef(int i = 0)` 修复 `DEF()` | — |
+
+**本批未改**：`TCO.cpp`（破坏 h-1/knapsack）、`SimplifyCFG.cpp`（O1 segfault）、`DSE.cpp`（待验）。
+
+**O1**：`make clean && …` → **60/60**。整体重复率 **45.1%**（≥99% 文件 **15**，原 27）。
+
 ## 暂不动（高风险）
 
 - `mlir_rv/Schedule.cpp`, `InstCombine.cpp` — 指令/阶段顺序敏感

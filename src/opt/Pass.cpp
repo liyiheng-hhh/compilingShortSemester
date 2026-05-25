@@ -1,61 +1,50 @@
 #include "Pass.h"
 #include "../codegen/Attrs.h"
 
+#include <set>
 
-// compiler2026-x phase-1 (pass surface)
+// compiler2026-x phase-D (trivial opt dedup)
 
 using namespace sys;
 
-bool sys::isExtern(const std::string &name) {
-  static std::set<std::string> externs = {
-    "getint",
-    "getch",
-    "getfloat",
-    "getarray",
-    "getfarray",
-    "putint",
-    "putch",
-    "putfloat",
-    "putarray",
-    "putfarray",
-    "_sysy_starttime",
-    "_sysy_stoptime",
-    "starttime",
-    "stoptime",
+namespace {
+
+const std::set<std::string> &passRuntimeExterns() {
+  static const std::set<std::string> names = {
+    "getint", "getch", "getfloat", "getarray", "getfarray",
+    "putint", "putch", "putfloat", "putarray", "putfarray",
+    "_sysy_starttime", "_sysy_stoptime", "starttime", "stoptime",
   };
-  return externs.count(name);
+  return names;
+}
+
+template <class OpTy>
+static std::map<std::string, OpTy*> passIndexByName(ModuleOp *module) {
+  std::map<std::string, OpTy*> out;
+  for (auto op : module->getRegion()->getFirstBlock()->getOps()) {
+    if (auto typed = dyn_cast<OpTy>(op))
+      out[NAME(op)] = typed;
+  }
+  return out;
+}
+
+} // namespace
+
+bool sys::isExtern(const std::string &name) {
+  return passRuntimeExterns().count(name);
 }
 
 std::map<std::string, FuncOp*> Pass::getFunctionMap() {
-  std::map<std::string, FuncOp*> funcs;
-
-  auto region = module->getRegion();
-  auto block = region->getFirstBlock();
-  for (auto op : block->getOps()) {
-    if (auto func = dyn_cast<FuncOp>(op))
-      funcs[NAME(op)] = func;
-  }
-  
-  return funcs;
+  return passIndexByName<FuncOp>(module);
 }
 
 std::map<std::string, GlobalOp*> Pass::getGlobalMap() {
-  std::map<std::string, GlobalOp*> funcs;
-
-  auto region = module->getRegion();
-  auto block = region->getFirstBlock();
-  for (auto op : block->getOps()) {
-    if (auto glob = dyn_cast<GlobalOp>(op))
-      funcs[NAME(op)] = glob;
-  }
-  
-  return funcs;
+  return passIndexByName<GlobalOp>(module);
 }
 
 std::vector<FuncOp*> Pass::collectFuncs() {
   std::vector<FuncOp*> result;
-  auto toplevel = module->getRegion()->getFirstBlock()->getOps();
-  for (auto op : toplevel) {
+  for (auto op : module->getRegion()->getFirstBlock()->getOps()) {
     if (auto fn = dyn_cast<FuncOp>(op))
       result.push_back(fn);
   }
@@ -64,8 +53,7 @@ std::vector<FuncOp*> Pass::collectFuncs() {
 
 std::vector<GlobalOp*> Pass::collectGlobals() {
   std::vector<GlobalOp*> result;
-  auto toplevel = module->getRegion()->getFirstBlock()->getOps();
-  for (auto op : toplevel) {
+  for (auto op : module->getRegion()->getFirstBlock()->getOps()) {
     if (auto glob = dyn_cast<GlobalOp>(op))
       result.push_back(glob);
   }
@@ -74,7 +62,6 @@ std::vector<GlobalOp*> Pass::collectGlobals() {
 
 DomTree Pass::getDomTree(Region *region) {
   region->updateDoms();
-
   DomTree tree;
   for (auto bb : region->getBlocks()) {
     if (auto idom = bb->getIdom())
@@ -85,43 +72,40 @@ DomTree Pass::getDomTree(Region *region) {
 
 void Pass::cleanup() {
   Op::release();
-  
-  // Put phi's types right.
   runRewriter([&](PhiOp *op) {
     if (op->getResultType() == Value::f32)
       return false;
-
     for (auto operand : op->getOperands()) {
       if (operand.defining->getResultType() == Value::f32) {
         op->setResultType(Value::f32);
         return true;
       }
     }
-
     return false;
   });
 }
 
 Op *Pass::nonalloca(Region *region) {
   auto entry = region->getFirstBlock();
-  Op *nonalloca = entry->getFirstOp();
-  while (!nonalloca->atBack()) {
-    if (isa<AllocaOp>(nonalloca))
-      nonalloca = nonalloca->nextOp();
-    else break;
+  Op *cursor = entry->getFirstOp();
+  while (!cursor->atBack()) {
+    if (isa<AllocaOp>(cursor))
+      cursor = cursor->nextOp();
+    else
+      break;
   }
-  if (nonalloca->atBack())
-    nonalloca = entry->nextBlock()->getFirstOp();
-  return nonalloca;
+  if (cursor->atBack())
+    cursor = entry->nextBlock()->getFirstOp();
+  return cursor;
 }
 
 Op *Pass::nonphi(BasicBlock *bb) {
-  Op *nonphi = bb->getFirstOp();
-  while (!nonphi->atBack()) {
-    if (isa<PhiOp>(nonphi))
-      nonphi = nonphi->nextOp();
-    else break;
+  Op *cursor = bb->getFirstOp();
+  while (!cursor->atBack()) {
+    if (isa<PhiOp>(cursor))
+      cursor = cursor->nextOp();
+    else
+      break;
   }
-  // A basic block should have at least one op, so it's safe.
-  return nonphi;
+  return cursor;
 }

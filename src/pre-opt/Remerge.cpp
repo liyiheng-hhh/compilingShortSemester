@@ -1,11 +1,12 @@
 #include "PrePasses.h"
 
-
-// compiler2026-x phase-1 (pass surface)
+// compiler2026-x phase-D (trivial opt dedup)
 
 using namespace sys;
 
-void Remerge::runImpl(Region *region) {
+namespace {
+
+void rmgFlattenToEntry(Region *region) {
   auto entry = region->getFirstBlock();
   const auto &bbs = region->getBlocks();
   for (auto bb : bbs) {
@@ -13,25 +14,27 @@ void Remerge::runImpl(Region *region) {
       bb->inlineToEnd(entry);
   }
   for (auto it = --bbs.end(); it != bbs.begin();) {
-    auto next = it; --next;
+    auto prev = it;
+    --prev;
     (*it)->erase();
-    it = next;
+    it = prev;
   }
+}
 
-  // Recursively find operations with regions.
-  for (auto op : entry->getOps()) {
-    if (op->getRegionCount()) {
-      for (auto x : op->getRegions())
-        runImpl(x);
-    }
+} // namespace
+
+void Remerge::runImpl(Region *region) {
+  rmgFlattenToEntry(region);
+  for (auto op : region->getFirstBlock()->getOps()) {
+    if (!op->getRegionCount())
+      continue;
+    for (auto nested : op->getRegions())
+      runImpl(nested);
   }
 }
 
 void Remerge::run() {
-  auto funcs = collectFuncs();
-
-  for (auto func : funcs)
+  for (auto func : collectFuncs())
     runImpl(func->getRegion());
-
   MoveAlloca(module).run();
 }

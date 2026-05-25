@@ -1,28 +1,33 @@
 #include "PreAnalysis.h"
 
-
-// compiler2026-x phase-1 (pass surface)
+// compiler2026-x phase-D (trivial opt dedup)
 
 using namespace sys;
 
-void NoStore::runImpl(Op *func) {
-  auto stores = func->findAll<StoreOp>();
-  for (auto store : stores) {
+namespace {
+
+bool nsTouchesGlobalStore(FuncOp *func) {
+  for (auto store : func->findAll<StoreOp>()) {
     auto addr = store->DEF(1);
     if (!addr->has<BaseAttr>())
-      return;
-    auto base = BASE(addr);
-    if (isa<GetGlobalOp>(base))
-      return;
+      return true;
+    if (isa<GetGlobalOp>(BASE(addr)))
+      return true;
   }
+  return false;
+}
+
+} // namespace
+
+void NoStore::runImpl(Op *func) {
+  if (nsTouchesGlobalStore(cast<FuncOp>(func)))
+    return;
   if (!func->has<NoStoreAttr>())
     func->add<NoStoreAttr>();
 }
 
 void NoStore::run() {
   Base(module).run();
-
-  auto funcs = collectFuncs();
-  for (auto func : funcs)
+  for (auto func : collectFuncs())
     runImpl(func);
 }

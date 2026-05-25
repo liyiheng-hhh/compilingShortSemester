@@ -1,35 +1,36 @@
 #include "PreAttrs.h"
 #include <sstream>
 
-
-// compiler2026-x phase-1 (pass surface)
+// compiler2026-x phase-D (trivial opt dedup)
 
 using namespace sys;
 
-std::string SubscriptAttr::toString() {
+namespace {
+
+std::string attrJoinInts(const std::vector<int> &vals) {
+  if (vals.empty())
+    return "";
   std::stringstream ss;
-  ss << "<subscript = ";
-  if (subscript.size() > 0)
-    ss << subscript[0];
-  for (int i = 1; i < subscript.size(); i++)
-    ss << ", " << subscript[i];
-  ss << ">";
+  ss << vals[0];
+  for (size_t i = 1; i < vals.size(); ++i)
+    ss << ", " << vals[i];
   return ss.str();
 }
 
-// Defined in OpBase.cpp.
+} // namespace
+
+std::string SubscriptAttr::toString() {
+  return "<subscript = " + attrJoinInts(subscript) + ">";
+}
+
 std::string getValueNumber(Value value);
 
 std::string BaseAttr::toString() {
-  std::stringstream ss;
-  ss << "<base = " << getValueNumber(base->getResult()) << ">";
-  return ss.str();
+  return "<base = " + getValueNumber(base->getResult()) + ">";
 }
 
 std::string ParallelizableAttr::toString() {
-  std::stringstream ss;
   if (!accum)
     return "<parallelizable>";
-  ss << "<parallel accum = " << getValueNumber(accum->getResult()) << ">";
-  return ss.str();
+  return "<parallel accum = " + getValueNumber(accum->getResult()) + ">";
 }

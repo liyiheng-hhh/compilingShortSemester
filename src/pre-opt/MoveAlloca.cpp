@@ -1,18 +1,13 @@
 #include "PrePasses.h"
 
-
-// compiler2026-x phase-1 (pass surface)
+// compiler2026-x phase-D (trivial opt dedup)
 
 using namespace sys;
 
 void MoveAlloca::run() {
-  auto funcs = collectFuncs();
-  
-  for (auto func : funcs) {
-    auto allocas = func->findAll<AllocaOp>();
-    auto region = func->getRegion();
-    auto begin = region->insert(region->getFirstBlock());
-    for (auto alloca : allocas)
-      alloca->moveToEnd(begin);
+  for (auto func : collectFuncs()) {
+    auto prologue = func->getRegion()->insert(func->getRegion()->getFirstBlock());
+    for (auto slot : func->findAll<AllocaOp>())
+      slot->moveToEnd(prologue);
   }
 }

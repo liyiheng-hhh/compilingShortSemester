@@ -1,11 +1,8 @@
-// compiler2026-x phase-C (header layout)
-#ifndef TYPE_H
-#define TYPE_H
+#ifndef DIALECT_TYPE_H
+#define DIALECT_TYPE_H
 
-// compiler2026-x phase-1 (header layout)
 #include <string>
 #include <vector>
-
 
 namespace sys {
 
@@ -14,7 +11,6 @@ class Type {
 public:
   int getID() const { return id; }
   virtual std::string toString() const = 0;
-
   virtual ~Type() {}
   Type(int id): id(id) {}
 };
@@ -22,10 +18,7 @@ public:
 template<class T, int TypeID>
 class TypeImpl : public Type {
 public:
-  static bool classof(Type *ty) {
-    return ty->getID() == TypeID;
-  }
-
+  static bool classof(Type *ty) { return ty->getID() == TypeID; }
   TypeImpl(): Type(TypeID) {}
 };
 
@@ -47,36 +40,29 @@ public:
 class PointerType : public TypeImpl<PointerType, __LINE__> {
 public:
   Type *pointee;
-
   PointerType(Type *pointee): pointee(pointee) {}
-
   std::string toString() const override { return pointee->toString() + "*"; }
 };
+
+class ASTNode;
 
 class FunctionType : public TypeImpl<FunctionType, __LINE__> {
 public:
   Type *ret;
   std::vector<Type*> params;
-
-  FunctionType(Type *ret, std::vector<Type*> params):
-    ret(ret), params(params) {}
-
+  FunctionType(Type *ret, std::vector<Type*> params): ret(ret), params(params) {}
   std::string toString() const override;
 };
 
-class ASTNode;
 class ArrayType : public TypeImpl<ArrayType, __LINE__> {
 public:
   Type *base;
   std::vector<int> dims;
-
-  ArrayType(Type *base, std::vector<int> dims):
-    base(base), dims(dims) {}
-
+  ArrayType(Type *base, std::vector<int> dims): base(base), dims(dims) {}
   std::string toString() const override;
   int getSize() const;
 };
 
 }
 
-#endif
+#endif  // DIALECT_TYPE_H

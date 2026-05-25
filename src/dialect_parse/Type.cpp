@@ -4,12 +4,13 @@
 
 using namespace sys;
 
-std::string interleave(const std::vector<Type*> &types) {
+namespace {
+
+std::string typJoinTypeStrings(const std::vector<Type*> &types) {
   std::stringstream ss;
   for (auto x : types)
     ss << x->toString() << ", ";
   auto str = ss.str();
-  // Remove the extra ", " at the end
   if (str.size() > 2) {
     str.pop_back();
     str.pop_back();
@@ -17,20 +18,22 @@ std::string interleave(const std::vector<Type*> &types) {
   return str;
 }
 
+} // namespace
+
 std::string FunctionType::toString() const {
-  return "(" + interleave(params) + ") -> " + ret->toString();
+  return "(" + typJoinTypeStrings(params) + ") -> " + ret->toString();
 }
 
 std::string ArrayType::toString() const {
   std::stringstream ss(base->toString());
-  for (auto x : dims)
-    ss << "[" << x << "]";
+  for (auto dim : dims)
+    ss << "[" << dim << "]";
   return ss.str();
 }
 
 int ArrayType::getSize() const {
   int size = 1;
-  for (auto x : dims)
-    size *= x;
+  for (auto dim : dims)
+    size *= dim;
   return size;
 }
