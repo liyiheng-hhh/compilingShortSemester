@@ -1,8 +1,29 @@
 // compiler2026-x phase-2 (semantic split)
+// compiler2026-x phase-3 (semantic const helpers)
 
 #include "semantic.h"
 
 using namespace std;
+
+namespace {
+
+size_t semInitSpan(const vector<int> &dims, size_t depth) {
+  return depth >= dims.size() ? 1 : product(dims, depth);
+}
+
+size_t semPickInitChildDepth(const vector<int> &dims, size_t depth, int flatIndex) {
+  size_t childDepth = min(depth + 1, dims.size());
+  while (childDepth < dims.size()) {
+    int childSize = product(dims, childDepth);
+    if (childSize == 0 || flatIndex % childSize == 0) {
+      break;
+    }
+    ++childDepth;
+  }
+  return childDepth;
+}
+
+}  // namespace
 
 ConstValue Semantic::zeroConst(BaseType base) {
     ConstValue v;
@@ -36,14 +57,14 @@ int Semantic::fillConstAggregate(InitVal *init, const vector<int> &dims, size_t 
       return start + 1;
     }
 
-    int subSize = depth >= dims.size() ? 1 : product(dims, depth);
+    int subSize = semInitSpan(dims, depth);
     if (init->list.empty()) {
       return start + subSize;
     }
     int idx = start;
     for (auto &child : init->list) {
       if (child->isList) {
-        size_t childDepth = chooseInitChildDepth(dims, depth, idx);
+        size_t childDepth = semPickInitChildDepth(dims, depth, idx);
         idx = fillConstAggregate(child.get(), dims, childDepth, idx, values, base);
       } else {
         idx = fillConstAggregate(child.get(), dims, dims.size(), idx, values, base);
@@ -56,13 +77,5 @@ int Semantic::fillConstAggregate(InitVal *init, const vector<int> &dims, size_t 
   }
 
 size_t Semantic::chooseInitChildDepth(const vector<int> &dims, size_t depth, int flatIndex) {
-    size_t childDepth = min(depth + 1, dims.size());
-    while (childDepth < dims.size()) {
-      int childSize = product(dims, childDepth);
-      if (childSize == 0 || flatIndex % childSize == 0) {
-        break;
-      }
-      ++childDepth;
-    }
-    return childDepth;
+    return semPickInitChildDepth(dims, depth, flatIndex);
   }

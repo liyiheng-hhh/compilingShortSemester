@@ -171,11 +171,26 @@ make runtime-eval SUITE=performance OPT=O1   # 60/60
 | SysY 前端 | `parser.cpp` + `parser_expr.cpp`；`semantic.cpp` + `semantic_const.cpp` + `semantic_visit.cpp` |
 | `dialect_parse` | `ParserConst.cpp` + `Parser.cpp`；`SemaTypes.cpp` + `Sema.cpp` |
 
-`lexer.cpp` / `dialect_parse/Lexer.cpp` 暂未拆（体量较小、收益有限）。
-
 ### 验收
 
 同阶段 1；**改后务必 `make clean && make -j4`**。O1 performance **60/60**。
+
+## 阶段 3（lexer 拆分 + 前端 helper 前缀）— 已完成
+
+**目标**：降低与 pure-rv 同名/同构源文件（`lexer.cpp`、`parser.cpp`、`semantic*.cpp`）的逐行相似度。
+
+| 模块 | 改动 |
+|------|------|
+| SysY `lexer` | `lexer.cpp`（驱动）+ `lexer_io.cpp`（`lxIsIdent*`、skip）+ `lexer_scan.cpp`（`lxKeywordTable`、scan*） |
+| `dialect_parse/Lexer` | `Lexer.cpp`（`hasMore`）+ `LexerKeywords.cpp`（`dplxKeywordMap`）+ `LexerNext.cpp`（`nextToken`） |
+| `parser` | `parser_util.cpp`：`parIsBTypeKind`、`parIsFuncHeaderStart`；`parser_expr.cpp`：`parIsUnaryOpToken` |
+| `semantic` | `semantic_const.cpp`：`semInitSpan`、`semPickInitChildDepth`（`chooseInitChildDepth` 委托） |
+
+公开 API（`Lexer::run`、`Parser::parseProgram`、`Semantic::run` 等）未改。
+
+### 验收
+
+同阶段 1 / 2；O1 performance **60/60**。
 
 ## 暂不动（高风险）
 
@@ -186,8 +201,8 @@ make runtime-eval SUITE=performance OPT=O1   # 60/60
 
 ## 后续可选（仍仅 helper 命名）
 
-- `dialect_parse/Lexer.cpp`、`src/lexer.cpp`（可再拆 scan 辅助）
-- `src/lexer.cpp` / `src/parser.cpp` 与 pure-rv 同名文件：后续可做 helper 前缀或 AST 访问器命名
+- `semantic_visit.cpp` / `codegen.cpp` 中更多 `sem*`/`cgc*` 局部 helper（勿动公开 pass 名）
+- `dialect_parse/Parser.cpp` / `Sema.cpp` 按功能再拆 TU
 - `rv/Schedule.cpp`（指令调度顺序敏感）
 - `cfg/CFGToLegacy.cpp`（结构桥接）
 - `opt/Reassociate.cpp`, `opt/DSE.cpp` / `DLE.cpp`（多为成员函数）

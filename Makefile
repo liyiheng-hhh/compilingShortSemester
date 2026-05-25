@@ -6,7 +6,8 @@ CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra
 SY_DIRS ?= examples
 
 SRCDIR := src
-SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/parser.cpp \
+SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/lexer_io.cpp \
+	$(SRCDIR)/lexer_scan.cpp $(SRCDIR)/parser.cpp $(SRCDIR)/parser_util.cpp \
 	$(SRCDIR)/parser_expr.cpp \
 	$(SRCDIR)/semantic.cpp $(SRCDIR)/semantic_const.cpp $(SRCDIR)/semantic_visit.cpp \
 	$(SRCDIR)/codegen.cpp $(SRCDIR)/ir_build.cpp $(SRCDIR)/ir_opt.cpp \
@@ -36,7 +37,8 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/pa
 	$(SRCDIR)/mlir_rv/Dump.cpp \
 	$(SRCDIR)/rv_mlir_pipeline.cpp \
 	$(SRCDIR)/dialect_pipeline.cpp $(SRCDIR)/dialect_fallback.cpp \
-	$(SRCDIR)/dialect_parse/Lexer.cpp $(SRCDIR)/dialect_parse/ParserConst.cpp \
+	$(SRCDIR)/dialect_parse/Lexer.cpp $(SRCDIR)/dialect_parse/LexerKeywords.cpp \
+	$(SRCDIR)/dialect_parse/LexerNext.cpp $(SRCDIR)/dialect_parse/ParserConst.cpp \
 	$(SRCDIR)/dialect_parse/Parser.cpp $(SRCDIR)/dialect_parse/SemaTypes.cpp \
 	$(SRCDIR)/dialect_parse/Sema.cpp $(SRCDIR)/dialect_parse/KnapsackDp.cpp \
 	$(SRCDIR)/dialect_parse/Type.cpp \

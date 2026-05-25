@@ -55,10 +55,6 @@ CompileError Parser::error(const string &message) const {
     return CompileError(os.str());
   }
 
-bool Parser::isBType(TokenKind kind) {
-    return kind == TokenKind::KwInt || kind == TokenKind::KwFloat;
-  }
-
 BaseType Parser::parseBType() {
     if (match(TokenKind::KwInt)) {
       return BaseType::Int;
@@ -74,16 +70,6 @@ BaseType Parser::parseFuncType() {
       return BaseType::Void;
     }
     return parseBType();
-  }
-
-bool Parser::isFuncDefAhead() const {
-    if (tok().kind == TokenKind::KwConst) {
-      return false;
-    }
-    if (!(tok().kind == TokenKind::KwVoid || isBType(tok().kind))) {
-      return false;
-    }
-    return tok(1).kind == TokenKind::Ident && tok(2).kind == TokenKind::LParen;
   }
 
 unique_ptr<DeclStmt> Parser::parseDecl() {

@@ -1,8 +1,18 @@
 // compiler2026-x phase-2 (parser split)
+// compiler2026-x phase-3 (parser expr helpers)
 
 #include "parser.h"
 
 using namespace std;
+
+namespace {
+
+bool parIsUnaryOpToken(TokenKind kind, bool allowBang) {
+  return kind == TokenKind::Plus || kind == TokenKind::Minus ||
+         (allowBang && kind == TokenKind::Bang);
+}
+
+}  // namespace
 
 ExprPtr Parser::parseExp() {
   // SysY 2022: Exp → AddExp；语义：单目不出现 '!'
@@ -64,8 +74,7 @@ ExprPtr Parser::parsePrimary() {
   }
 
 ExprPtr Parser::parseUnary(bool allowBang) {
-    if (check(TokenKind::Plus) || check(TokenKind::Minus) ||
-        (allowBang && check(TokenKind::Bang))) {
+    if (parIsUnaryOpToken(tok().kind, allowBang)) {
       const Token &opTok = tokens_[pos_++];
       return make_unique<UnaryExpr>(opTok.line, opTok.text,
                                     parseUnary(allowBang));
