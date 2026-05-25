@@ -8,7 +8,7 @@ namespace sys::cfg {
 
 namespace {
 
-bool isLegalHIRKind(dhir::OpKind kind) {
+bool cfgLegIsLegalHIRKind(dhir::OpKind kind) {
   switch (kind) {
   case dhir::OpKind::Module:
   case dhir::OpKind::Func:
@@ -34,7 +34,7 @@ bool isLegalHIRKind(dhir::OpKind kind) {
   return false;
 }
 
-bool isLegalCFGKind(OpKind kind) {
+bool cfgLegIsLegalCFGKind(OpKind kind) {
   switch (kind) {
   case OpKind::Nop:
   case OpKind::Call:
@@ -51,7 +51,7 @@ bool isLegalCFGKind(OpKind kind) {
   return false;
 }
 
-size_t productDims(const std::vector<int> &dims) {
+size_t cfgLegProductDims(const std::vector<int> &dims) {
   if (dims.empty())
     return 1;
   size_t prod = 1;
@@ -60,24 +60,24 @@ size_t productDims(const std::vector<int> &dims) {
   return prod;
 }
 
-bool isArrayLike(const SymbolInfo &sym) {
+bool cfgLegIsArrayLike(const SymbolInfo &sym) {
   return !sym.dims.empty() || sym.type == dhir::TypeKind::Array || sym.type == dhir::TypeKind::Pointer;
 }
 
-bool isMemoryInst(const Inst &inst) {
+bool cfgLegIsMemoryInst(const Inst &inst) {
   return inst.kind == OpKind::Load || inst.kind == OpKind::Store;
 }
 
-bool visitHIR(const dhir::Op *op, std::vector<std::string> &errors) {
+bool cfgLegVisitHIR(const dhir::Op *op, std::vector<std::string> &errors) {
   if (!op)
     return true;
   bool ok = true;
-  if (!isLegalHIRKind(op->kind)) {
+  if (!cfgLegIsLegalHIRKind(op->kind)) {
     errors.push_back("hir legality: illegal op kind");
     ok = false;
   }
   for (const auto &child : op->children)
-    ok = visitHIR(child.get(), errors) && ok;
+    ok = cfgLegVisitHIR(child.get(), errors) && ok;
   return ok;
 }
 
@@ -89,7 +89,7 @@ bool verifyHIRLegalSet(const dhir::Module &module, std::vector<std::string> &err
     errors.push_back("hir legality: null module root");
     return false;
   }
-  return visitHIR(module.root.get(), errors);
+  return cfgLegVisitHIR(module.root.get(), errors);
 }
 
 bool verifyCFGLegalSet(const Module &module, std::vector<std::string> &errors) {
@@ -104,7 +104,7 @@ bool verifyCFGLegalSet(const Module &module, std::vector<std::string> &errors) {
       ok = false;
     }
     if (!global.intArrayInit.empty() || !global.floatArrayInit.empty()) {
-      size_t expected = productDims(global.dims);
+      size_t expected = cfgLegProductDims(global.dims);
       if (expected == 0)
         expected = 1;
       if (!global.intArrayInit.empty()) {
@@ -149,11 +149,11 @@ bool verifyCFGLegalSet(const Module &module, std::vector<std::string> &errors) {
     }
     for (const auto &bb : func.blocks) {
       for (const auto &inst : bb.insts) {
-        if (!isLegalCFGKind(inst.kind)) {
+        if (!cfgLegIsLegalCFGKind(inst.kind)) {
           errors.push_back("cfg legality: illegal inst kind in func @" + func.name);
           ok = false;
         }
-        if (isMemoryInst(inst)) {
+        if (cfgLegIsMemoryInst(inst)) {
           if (inst.symbol.empty()) {
             errors.push_back("cfg legality: empty memory symbol in func @" + func.name);
             ok = false;
@@ -180,7 +180,7 @@ bool verifyCFGLegalSet(const Module &module, std::vector<std::string> &errors) {
             errors.push_back("cfg legality: insufficient stride info for '" + inst.symbol + "' in func @" + func.name);
             ok = false;
           }
-          if (indexed && isArrayLike(it->second)) {
+          if (indexed && cfgLegIsArrayLike(it->second)) {
             if (!it->second.dims.empty() && indexCount > it->second.dims.size()) {
               errors.push_back("cfg legality: too many indices for '" + inst.symbol + "' in func @" + func.name);
               ok = false;

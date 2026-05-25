@@ -19,21 +19,21 @@ constexpr int kDpRows = 51;
 constexpr int kDpCols = 256;
 constexpr const char *kDpTable = "__knapsack_dp";
 
-static ExprPtr makeInt(int line, int32_t v) {
+static ExprPtr kdpMakeInt(int line, int32_t v) {
   return make_unique<NumberExpr>(line, v);
 }
 
-static unique_ptr<LValExpr> makeLv(int line, const string &name) {
+static unique_ptr<LValExpr> kdpMakeLv(int line, const string &name) {
   return make_unique<LValExpr>(line, name);
 }
 
-static unique_ptr<LValExpr> makeLv1(int line, const string &arr, ExprPtr idx) {
+static unique_ptr<LValExpr> kdpMakeLv1(int line, const string &arr, ExprPtr idx) {
   auto lv = make_unique<LValExpr>(line, arr);
   lv->indices.push_back(std::move(idx));
   return lv;
 }
 
-static unique_ptr<LValExpr> makeLv2(int line, const string &arr, ExprPtr i,
+static unique_ptr<LValExpr> kdpMakeLv2(int line, const string &arr, ExprPtr i,
                                     ExprPtr j) {
   auto lv = make_unique<LValExpr>(line, arr);
   lv->indices.push_back(std::move(i));
@@ -41,37 +41,37 @@ static unique_ptr<LValExpr> makeLv2(int line, const string &arr, ExprPtr i,
   return lv;
 }
 
-static ExprPtr makeBin(int line, const string &op, ExprPtr a, ExprPtr b) {
+static ExprPtr kdpMakeBin(int line, const string &op, ExprPtr a, ExprPtr b) {
   return make_unique<BinaryExpr>(line, op, std::move(a), std::move(b));
 }
 
-static ExprPtr makeIm1(int line, const string &i) {
-  return makeBin(line, "-", makeLv(line, i), makeInt(line, 1));
+static ExprPtr kdpMakeIm1(int line, const string &i) {
+  return kdpMakeBin(line, "-", kdpMakeLv(line, i), kdpMakeInt(line, 1));
 }
 
-static StmtPtr makeAssign(int line, unique_ptr<LValExpr> lhs, ExprPtr rhs) {
+static StmtPtr kdpMakeAssign(int line, unique_ptr<LValExpr> lhs, ExprPtr rhs) {
   return make_unique<AssignStmt>(line, std::move(lhs), std::move(rhs));
 }
 
-static StmtPtr makeAssignName(int line, const string &name, ExprPtr rhs) {
-  return makeAssign(line, makeLv(line, name), std::move(rhs));
+static StmtPtr kdpMakeAssignName(int line, const string &name, ExprPtr rhs) {
+  return kdpMakeAssign(line, kdpMakeLv(line, name), std::move(rhs));
 }
 
-static StmtPtr makeWhile(int line, ExprPtr cond, unique_ptr<BlockStmt> body) {
+static StmtPtr kdpMakeWhile(int line, ExprPtr cond, unique_ptr<BlockStmt> body) {
   return make_unique<WhileStmt>(line, std::move(cond), std::move(body));
 }
 
-static StmtPtr makeIf(int line, ExprPtr cond, StmtPtr thenS, StmtPtr elseS) {
+static StmtPtr kdpMakeIf(int line, ExprPtr cond, StmtPtr thenS, StmtPtr elseS) {
   return make_unique<IfStmt>(line, std::move(cond), std::move(thenS),
                               std::move(elseS));
 }
 
-static StmtPtr makeInc(int line, const string &iv) {
-  return makeAssignName(line, iv,
-                        makeBin(line, "+", makeLv(line, iv), makeInt(line, 1)));
+static StmtPtr kdpMakeInc(int line, const string &iv) {
+  return kdpMakeAssignName(line, iv,
+                        kdpMakeBin(line, "+", kdpMakeLv(line, iv), kdpMakeInt(line, 1)));
 }
 
-static StmtPtr makeLocalDecl(int line, const string &name) {
+static StmtPtr kdpMakeLocalDecl(int line, const string &name) {
   auto d = make_unique<DeclStmt>(line, false, BaseType::Int);
   VarDef vd;
   vd.name = name;
@@ -80,11 +80,11 @@ static StmtPtr makeLocalDecl(int line, const string &name) {
   return d;
 }
 
-static bool isKnapsackNaiveCall(const CallExpr *c) {
+static bool kdpIsKnapsackNaiveCall(const CallExpr *c) {
   return c && c->name == "knapsack_naive" && c->args.size() == 2;
 }
 
-static bool matchKnapsackFunc(const FuncDef *f) {
+static bool kdpMatchKnapsackFunc(const FuncDef *f) {
   if (!f || f->name != "knapsack_naive" || f->ret != BaseType::Int ||
       f->params.size() != 2) {
     return false;
@@ -97,7 +97,7 @@ static bool matchKnapsackFunc(const FuncDef *f) {
   return true;
 }
 
-static bool globalsLookLikeKnapsack(const Program &program) {
+static bool kdpGlobalsLookLikeKnapsack(const Program &program) {
   bool hasW = false, hasV = false;
   for (const auto &item : program.items) {
     if (!item.decl) {
@@ -115,62 +115,62 @@ static bool globalsLookLikeKnapsack(const Program &program) {
   return hasW && hasV;
 }
 
-static StmtPtr buildInitRow0(int line) {
+static StmtPtr kdpBuildInitRow0(int line) {
   auto outer = make_unique<BlockStmt>(line);
   auto wBody = make_unique<BlockStmt>(line);
-  wBody->items.push_back(makeAssign(
-      line, makeLv2(line, kDpTable, makeInt(line, 0), makeLv(line, "w")),
-      makeInt(line, 0)));
-  wBody->items.push_back(makeInc(line, "w"));
+  wBody->items.push_back(kdpMakeAssign(
+      line, kdpMakeLv2(line, kDpTable, kdpMakeInt(line, 0), kdpMakeLv(line, "w")),
+      kdpMakeInt(line, 0)));
+  wBody->items.push_back(kdpMakeInc(line, "w"));
 
-  outer->items.push_back(makeAssignName(line, "w", makeInt(line, 0)));
-  outer->items.push_back(makeWhile(
-      line, makeBin(line, "<=", makeLv(line, "w"), makeLv(line, "W")),
+  outer->items.push_back(kdpMakeAssignName(line, "w", kdpMakeInt(line, 0)));
+  outer->items.push_back(kdpMakeWhile(
+      line, kdpMakeBin(line, "<=", kdpMakeLv(line, "w"), kdpMakeLv(line, "W")),
       std::move(wBody)));
   return outer;
 }
 
-static StmtPtr buildDpLoops(int line) {
+static StmtPtr kdpBuildDpLoops(int line) {
   auto elseBlk = make_unique<BlockStmt>(line);
-  elseBlk->items.push_back(makeLocalDecl(line, "without"));
-  elseBlk->items.push_back(makeLocalDecl(line, "with"));
-  elseBlk->items.push_back(makeAssignName(
+  elseBlk->items.push_back(kdpMakeLocalDecl(line, "without"));
+  elseBlk->items.push_back(kdpMakeLocalDecl(line, "with"));
+  elseBlk->items.push_back(kdpMakeAssignName(
       line, "without",
-      makeLv2(line, kDpTable, makeIm1(line, "i"), makeLv(line, "w"))));
-  elseBlk->items.push_back(makeAssignName(
+      kdpMakeLv2(line, kDpTable, kdpMakeIm1(line, "i"), kdpMakeLv(line, "w"))));
+  elseBlk->items.push_back(kdpMakeAssignName(
       line, "with",
-      makeBin(line, "+", makeLv1(line, "value", makeIm1(line, "i")),
-              makeLv2(line, kDpTable, makeIm1(line, "i"),
-                      makeBin(line, "-", makeLv(line, "w"),
-                              makeLv1(line, "weight", makeIm1(line, "i")))))));
-  elseBlk->items.push_back(makeIf(
-      line, makeBin(line, ">", makeLv(line, "with"), makeLv(line, "without")),
-      makeAssign(line, makeLv2(line, kDpTable, makeLv(line, "i"), makeLv(line, "w")),
-                 makeLv(line, "with")),
-      makeAssign(line, makeLv2(line, kDpTable, makeLv(line, "i"), makeLv(line, "w")),
-                 makeLv(line, "without"))));
+      kdpMakeBin(line, "+", kdpMakeLv1(line, "value", kdpMakeIm1(line, "i")),
+              kdpMakeLv2(line, kDpTable, kdpMakeIm1(line, "i"),
+                      kdpMakeBin(line, "-", kdpMakeLv(line, "w"),
+                              kdpMakeLv1(line, "weight", kdpMakeIm1(line, "i")))))));
+  elseBlk->items.push_back(kdpMakeIf(
+      line, kdpMakeBin(line, ">", kdpMakeLv(line, "with"), kdpMakeLv(line, "without")),
+      kdpMakeAssign(line, kdpMakeLv2(line, kDpTable, kdpMakeLv(line, "i"), kdpMakeLv(line, "w")),
+                 kdpMakeLv(line, "with")),
+      kdpMakeAssign(line, kdpMakeLv2(line, kDpTable, kdpMakeLv(line, "i"), kdpMakeLv(line, "w")),
+                 kdpMakeLv(line, "without"))));
 
   auto wBody = make_unique<BlockStmt>(line);
-  wBody->items.push_back(makeIf(
+  wBody->items.push_back(kdpMakeIf(
       line,
-      makeBin(line, ">", makeLv1(line, "weight", makeIm1(line, "i")), makeLv(line, "w")),
-      makeAssign(line, makeLv2(line, kDpTable, makeLv(line, "i"), makeLv(line, "w")),
-                 makeLv2(line, kDpTable, makeIm1(line, "i"), makeLv(line, "w"))),
+      kdpMakeBin(line, ">", kdpMakeLv1(line, "weight", kdpMakeIm1(line, "i")), kdpMakeLv(line, "w")),
+      kdpMakeAssign(line, kdpMakeLv2(line, kDpTable, kdpMakeLv(line, "i"), kdpMakeLv(line, "w")),
+                 kdpMakeLv2(line, kDpTable, kdpMakeIm1(line, "i"), kdpMakeLv(line, "w"))),
       std::move(elseBlk)));
-  wBody->items.push_back(makeInc(line, "w"));
+  wBody->items.push_back(kdpMakeInc(line, "w"));
 
   auto iBody = make_unique<BlockStmt>(line);
-  iBody->items.push_back(makeAssignName(line, "w", makeInt(line, 0)));
-  iBody->items.push_back(makeWhile(
-      line, makeBin(line, "<=", makeLv(line, "w"), makeLv(line, "W")),
+  iBody->items.push_back(kdpMakeAssignName(line, "w", kdpMakeInt(line, 0)));
+  iBody->items.push_back(kdpMakeWhile(
+      line, kdpMakeBin(line, "<=", kdpMakeLv(line, "w"), kdpMakeLv(line, "W")),
       std::move(wBody)));
-  iBody->items.push_back(makeInc(line, "i"));
+  iBody->items.push_back(kdpMakeInc(line, "i"));
 
   auto outer = make_unique<BlockStmt>(line);
-  outer->items.push_back(makeLocalDecl(line, "i"));
-  outer->items.push_back(makeAssignName(line, "i", makeInt(line, 1)));
-  outer->items.push_back(makeWhile(
-      line, makeBin(line, "<=", makeLv(line, "i"), makeLv(line, "N")),
+  outer->items.push_back(kdpMakeLocalDecl(line, "i"));
+  outer->items.push_back(kdpMakeAssignName(line, "i", kdpMakeInt(line, 1)));
+  outer->items.push_back(kdpMakeWhile(
+      line, kdpMakeBin(line, "<=", kdpMakeLv(line, "i"), kdpMakeLv(line, "N")),
       std::move(iBody)));
   return outer;
 }
@@ -195,8 +195,8 @@ void applyKnapsackDpPass(Program &program) {
       mainFn = item.func.get();
     }
   }
-  if (!knapsack || !mainFn || !matchKnapsackFunc(knapsack) ||
-      !globalsLookLikeKnapsack(program)) {
+  if (!knapsack || !mainFn || !kdpMatchKnapsackFunc(knapsack) ||
+      !kdpGlobalsLookLikeKnapsack(program)) {
     return;
   }
 
@@ -219,14 +219,14 @@ void applyKnapsackDpPass(Program &program) {
         continue;
       }
       auto *ce = dynamic_cast<CallExpr *>(vd.init->expr.get());
-      if (!isKnapsackNaiveCall(ce)) {
+      if (!kdpIsKnapsackNaiveCall(ce)) {
         continue;
       }
       foundCall = true;
       line = vd.line;
       resultDeclIdx = i;
-      vd.init->expr = makeLv2(vd.line, kDpTable, makeLv(vd.line, "N"),
-                              makeLv(vd.line, "W"));
+      vd.init->expr = kdpMakeLv2(vd.line, kDpTable, kdpMakeLv(vd.line, "N"),
+                              kdpMakeLv(vd.line, "W"));
     }
   }
   if (!foundCall) {
@@ -250,8 +250,8 @@ void applyKnapsackDpPass(Program &program) {
     VarDef vd;
     vd.name = kDpTable;
     vd.line = line;
-    vd.dims.push_back(makeInt(line, kDpRows));
-    vd.dims.push_back(makeInt(line, kDpCols));
+    vd.dims.push_back(kdpMakeInt(line, kDpRows));
+    vd.dims.push_back(kdpMakeInt(line, kDpCols));
     gi.decl->defs.push_back(std::move(vd));
     size_t insertAt = 0;
     for (size_t i = 0; i < program.items.size(); ++i) {
@@ -265,10 +265,10 @@ void applyKnapsackDpPass(Program &program) {
   }
 
   vector<StmtPtr> inject;
-  inject.push_back(makeLocalDecl(line, "w"));
-  inject.push_back(makeLocalDecl(line, "i"));
-  inject.push_back(buildInitRow0(line));
-  inject.push_back(buildDpLoops(line));
+  inject.push_back(kdpMakeLocalDecl(line, "w"));
+  inject.push_back(kdpMakeLocalDecl(line, "i"));
+  inject.push_back(kdpBuildInitRow0(line));
+  inject.push_back(kdpBuildDpLoops(line));
   mainBody->items.insert(mainBody->items.begin() + static_cast<ptrdiff_t>(resultDeclIdx),
                          std::make_move_iterator(inject.begin()),
                          std::make_move_iterator(inject.end()));

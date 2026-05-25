@@ -19,7 +19,7 @@ namespace {
 
 // Real lowering context for Stage 2.
 // Now supports both textual debug output AND real IRInst emission into IRFunction.
-struct LowerCtx {
+struct HlowCtx {
   int nextVreg = 0;
   int nextLabel = 0;
   std::vector<std::string> lowered;   // textual debug
@@ -72,10 +72,10 @@ struct LowerCtx {
   }
 };
 
-static void lowerOp(const Op *op, LowerCtx &ctx);
+static void hlowOp(const Op *op, HlowCtx &ctx);
 
 // Expression lowering: Arith / Load / Store / Const → real IRInst + vreg
-static int lowerExpr(const Op *op, LowerCtx &ctx) {
+static int hlowExpr(const Op *op, HlowCtx &ctx) {
   if (!op) return -1;
 
   switch (op->kind) {
@@ -94,8 +94,8 @@ static int lowerExpr(const Op *op, LowerCtx &ctx) {
       }
     case OpKind::Arith:
       {
-        int lhs = lowerExpr(op->children.size() > 0 ? op->children[0].get() : nullptr, ctx);
-        int rhs = lowerExpr(op->children.size() > 1 ? op->children[1].get() : nullptr, ctx);
+        int lhs = hlowExpr(op->children.size() > 0 ? op->children[0].get() : nullptr, ctx);
+        int rhs = hlowExpr(op->children.size() > 1 ? op->children[1].get() : nullptr, ctx);
         int dst = ctx.allocVreg();
 
         // Map common symbols to IROp. Default to Add if unknown.
@@ -112,26 +112,26 @@ static int lowerExpr(const Op *op, LowerCtx &ctx) {
       }
     case OpKind::Load:
       {
-        int addr = lowerExpr(op->children.size() > 0 ? op->children[0].get() : nullptr, ctx);
+        int addr = hlowExpr(op->children.size() > 0 ? op->children[0].get() : nullptr, ctx);
         int dst = ctx.allocVreg();
         ctx.emitInst(IROp::LoadMem, dst, addr);
         return dst;
       }
     case OpKind::Store:
       {
-        int addr = lowerExpr(op->children.size() > 0 ? op->children[0].get() : nullptr, ctx);
-        int val  = lowerExpr(op->children.size() > 1 ? op->children[1].get() : nullptr, ctx);
+        int addr = hlowExpr(op->children.size() > 0 ? op->children[0].get() : nullptr, ctx);
+        int val  = hlowExpr(op->children.size() > 1 ? op->children[1].get() : nullptr, ctx);
         ctx.emitInst(IROp::StoreMem, -1, addr, val);
         return -1;
       }
     default:
-      for (const auto &c : op->children) lowerExpr(c.get(), ctx);
+      for (const auto &c : op->children) hlowExpr(c.get(), ctx);
       return -1;
   }
 }
 
 // Control-flow lowering: While / For / If → real Label + Beqz + J
-static void lowerCF(const Op *op, LowerCtx &ctx) {
+static void hlowCF(const Op *op, HlowCtx &ctx) {
   if (!op) return;
 
   switch (op->kind) {
@@ -144,12 +144,12 @@ static void lowerCF(const Op *op, LowerCtx &ctx) {
 
         int condV = -1;
         if (!op->children.empty()) {
-          condV = lowerExpr(op->children[0].get(), ctx);
+          condV = hlowExpr(op->children[0].get(), ctx);
         }
         ctx.emitBeqz(condV, exitL);
 
         for (size_t i = 1; i < op->children.size(); ++i) {
-          lowerOp(op->children[i].get(), ctx);
+          hlowOp(op->children[i].get(), ctx);
         }
         ctx.emitJump(header);
         ctx.emitLabel(exitL);
@@ -162,40 +162,40 @@ static void lowerCF(const Op *op, LowerCtx &ctx) {
 
         int condV = -1;
         if (!op->children.empty()) {
-          condV = lowerExpr(op->children[0].get(), ctx);
+          condV = hlowExpr(op->children[0].get(), ctx);
         }
         ctx.emitBeqz(condV, elseL);
 
-        if (op->children.size() > 1) lowerOp(op->children[1].get(), ctx);
+        if (op->children.size() > 1) hlowOp(op->children[1].get(), ctx);
         ctx.emitJump(endL);
 
         ctx.emitLabel(elseL);
-        if (op->children.size() > 2) lowerOp(op->children[2].get(), ctx);
+        if (op->children.size() > 2) hlowOp(op->children[2].get(), ctx);
         ctx.emitLabel(endL);
         break;
       }
     default:
-      lowerOp(op, ctx);
+      hlowOp(op, ctx);
       break;
   }
 }
 
-static void lowerOp(const Op *op, LowerCtx &ctx) {
+static void hlowOp(const Op *op, HlowCtx &ctx) {
   if (!op) return;
 
   switch (op->kind) {
     case OpKind::Func:
     case OpKind::Block:
-      for (const auto &c : op->children) lowerOp(c.get(), ctx);
+      for (const auto &c : op->children) hlowOp(c.get(), ctx);
       break;
 
     case OpKind::While:
     case OpKind::For:
-      lowerCF(op, ctx);
+      hlowCF(op, ctx);
       break;
 
     case OpKind::If:
-      lowerCF(op, ctx);
+      hlowCF(op, ctx);
       break;
 
     case OpKind::Arith:
@@ -203,7 +203,7 @@ static void lowerOp(const Op *op, LowerCtx &ctx) {
     case OpKind::Store:
     case OpKind::ConstInt:
     case OpKind::ConstFloat:
-      lowerExpr(op, ctx);
+      hlowExpr(op, ctx);
       break;
 
     case OpKind::Return:
@@ -211,7 +211,7 @@ static void lowerOp(const Op *op, LowerCtx &ctx) {
         // Real Ret lowering
         int retVal = -1;
         if (!op->children.empty()) {
-          retVal = lowerExpr(op->children[0].get(), ctx);
+          retVal = hlowExpr(op->children[0].get(), ctx);
         }
         if (retVal >= 0) {
           ctx.emitInst(IROp::Ret, -1, retVal);
@@ -227,7 +227,7 @@ static void lowerOp(const Op *op, LowerCtx &ctx) {
         std::string callee = op->symbol.empty() ? "unknown" : op->symbol;
         std::vector<int> argVregs;
         for (const auto &c : op->children) {
-          int v = lowerExpr(c.get(), ctx);
+          int v = hlowExpr(c.get(), ctx);
           if (v >= 0) argVregs.push_back(v);
         }
         int dst = ctx.allocVreg();
@@ -243,7 +243,7 @@ static void lowerOp(const Op *op, LowerCtx &ctx) {
       }
 
     default:
-      for (const auto &c : op->children) lowerOp(c.get(), ctx);
+      for (const auto &c : op->children) hlowOp(c.get(), ctx);
       break;
   }
 }
@@ -262,7 +262,7 @@ void lowerToLegacyIR(const Module &module, std::vector<IRFunction> &outFns) {
     fn.ret = BaseType::Int;
     fn.nextVreg = 0;
 
-    LowerCtx ctx;
+    HlowCtx ctx;
     ctx.targetFn = &fn;
 
     // Simple function prologue: entry label + parameter loading placeholder
@@ -283,7 +283,7 @@ void lowerToLegacyIR(const Module &module, std::vector<IRFunction> &outFns) {
     // Lower the rest of the function body
     for (const auto &bodyChild : child->children) {
       if (bodyChild && bodyChild->kind == OpKind::VarDecl) continue;
-      lowerOp(bodyChild.get(), ctx);
+      hlowOp(bodyChild.get(), ctx);
     }
 
     // Guarantee a Ret at the end so downstream passes (regalloc, emission) are happy

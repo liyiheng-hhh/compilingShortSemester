@@ -11,7 +11,7 @@ namespace {
 
 // Detect 3-nested matmul pattern on HIR While/For.
 // We look for a Store whose rhs contains an Arith + Load(A[i][k]) inside the innermost loop.
-static bool looksLikeMatmulStore(const Op *store) {
+static bool hrsmLooksLikeMatmulStore(const Op *store) {
   if (!store || store->kind != OpKind::Store || store->children.size() < 2) return false;
   const Op *rhs = store->children.back().get();
   if (!rhs || rhs->kind != OpKind::Arith) return false;
@@ -26,13 +26,13 @@ static bool looksLikeMatmulStore(const Op *store) {
 // Real hoist transformation on a While/For node:
 // We insert a synthetic VarDecl that represents the hoisted A[i][k] value
 // at the beginning of the loop body. This makes subsequent loads redundant.
-static bool hoistAikFromLoop(Op *loopOp) {
+static bool hrsmHoistAikFromLoop(Op *loopOp) {
   if (!loopOp || (loopOp->kind != OpKind::While && loopOp->kind != OpKind::For)) return false;
 
   bool changed = false;
   for (size_t i = 0; i < loopOp->children.size(); ++i) {
     Op *ch = loopOp->children[i].get();
-    if (ch->kind == OpKind::Store && looksLikeMatmulStore(ch)) {
+    if (ch->kind == OpKind::Store && hrsmLooksLikeMatmulStore(ch)) {
       // Actual transformation: create hoisted load node
       auto hoist = std::make_unique<Op>(OpKind::VarDecl, nullptr);
       hoist->symbol = "__hir_aik";
@@ -45,20 +45,20 @@ static bool hoistAikFromLoop(Op *loopOp) {
       ++i; // skip the newly inserted node
     } else if (ch->kind == OpKind::While || ch->kind == OpKind::For ||
                ch->kind == OpKind::Block) {
-      if (hoistAikFromLoop(ch)) changed = true;
+      if (hrsmHoistAikFromLoop(ch)) changed = true;
     }
   }
   return changed;
 }
 
-static bool optimizeFuncOp(Op *funcOp) {
+static bool hrsmOptimizeFuncOp(Op *funcOp) {
   if (!funcOp || funcOp->kind != OpKind::Func) return false;
 
   bool changed = false;
   for (auto &child : funcOp->children) {
     if (child->kind == OpKind::While || child->kind == OpKind::For ||
         child->kind == OpKind::Block) {
-      if (hoistAikFromLoop(child.get())) {
+      if (hrsmHoistAikFromLoop(child.get())) {
         changed = true;
       }
     }
@@ -75,7 +75,7 @@ bool applyRowScratchMatmulOnHIR(Module &module) {
 
   // Walk top-level children (usually Func Ops)
   for (auto &child : module.root->children) {
-    if (optimizeFuncOp(child.get())) {
+    if (hrsmOptimizeFuncOp(child.get())) {
       anyChange = true;
     }
   }

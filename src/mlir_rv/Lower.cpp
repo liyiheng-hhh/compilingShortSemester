@@ -7,7 +7,7 @@
 using namespace sys::rv;
 using namespace sys;
 
-static void remapAliasAttrBases(FuncOp *func, const std::map<Op *, Op *> &repl) {
+static void rvLowerRemapAliasAttrBases(FuncOp *func, const std::map<Op *, Op *> &repl) {
   if (repl.empty()) return;
   for (auto *bb : func->getRegion()->getBlocks()) {
     for (auto *op : bb->getOps()) {
@@ -27,7 +27,7 @@ static void remapAliasAttrBases(FuncOp *func, const std::map<Op *, Op *> &repl) 
 
 // Combines all alloca's into a SubSpOp.
 // Also rewrites load/stores with sp-offset.
-static void rewriteAlloca(FuncOp *func) {
+static void rvLowerRewriteAlloca(FuncOp *func) {
   Builder builder;
 
   auto region = func->getRegion();
@@ -64,12 +64,12 @@ static void rewriteAlloca(FuncOp *func) {
     op->erase();
   }
 
-  remapAliasAttrBases(func, aliasBaseRemap);
+  rvLowerRemapAliasAttrBases(func, aliasBaseRemap);
   func->add<StackOffsetAttr>(total);
 }
 
 // Move block-local constants before their first use (fixes latch-defined loop constants).
-static void hoistBlockConstants(FuncOp *func) {
+static void rvLowerHoistBlockConstants(FuncOp *func) {
   for (auto *bb : func->getRegion()->getBlocks()) {
     for (;;) {
       std::vector<Op *> order;
@@ -468,7 +468,7 @@ void Lower::run() {
 
   auto funcs = collectFuncs();
   for (auto func : funcs) {
-    rewriteAlloca(func);
-    hoistBlockConstants(func);
+    rvLowerRewriteAlloca(func);
+    rvLowerHoistBlockConstants(func);
   }
 }

@@ -262,7 +262,7 @@ bool ConstLoopUnroll::runImpl(LoopInfo *loop) {
   return true;
 }
 
-static void postorder(LoopInfo *loop, std::vector<LoopInfo*> &order) {
+static void lunPostorder(LoopInfo *loop, std::vector<LoopInfo*> &order) {
   for (auto subloop : loop->subloops)
     order.push_back(subloop);
   order.push_back(loop);
@@ -287,7 +287,7 @@ void ConstLoopUnroll::run() {
       std::vector<LoopInfo*> order;
       for (auto loop : forest.getLoops()) {
         if (!loop->getParent())
-          postorder(loop, order);
+          lunPostorder(loop, order);
       }
 
       for (auto loop : order) {

@@ -7,7 +7,7 @@ namespace {
 // Walk and mark While/For as candidates for interchange/tiling/unroll.
 // Real implementation would reorder children or duplicate body nodes.
 
-static bool transformLoops(Op *op) {
+static bool hltTransformLoops(Op *op) {
   if (!op) return false;
   bool changed = false;
   if (op->kind == OpKind::While || op->kind == OpKind::For) {
@@ -18,7 +18,7 @@ static bool transformLoops(Op *op) {
     changed = true;
   }
   for (auto &c : op->children) {
-    if (transformLoops(c.get())) changed = true;
+    if (hltTransformLoops(c.get())) changed = true;
   }
   return changed;
 }
@@ -27,17 +27,17 @@ static bool transformLoops(Op *op) {
 
 bool tryLoopInterchangeOnHIR(Module &module) {
   if (!module.root) return false;
-  return transformLoops(module.root.get());
+  return hltTransformLoops(module.root.get());
 }
 
 bool tryLoopTilingOnHIR(Module &module, int /*tileSize*/) {
   if (!module.root) return false;
-  return transformLoops(module.root.get());
+  return hltTransformLoops(module.root.get());
 }
 
 bool tryLoopUnrollOnHIR(Module &module, int /*factor*/) {
   if (!module.root) return false;
-  return transformLoops(module.root.get());
+  return hltTransformLoops(module.root.get());
 }
 
 } // namespace sys::hir

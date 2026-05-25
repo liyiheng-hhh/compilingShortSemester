@@ -12,19 +12,19 @@
 using namespace sys;
 using namespace sys::rv;
 
-static std::map<BasicBlock*, int> bbcount;
-static int id = 0;
+static std::map<BasicBlock*, int> rvDumpBbCount;
+static int rvDumpBbNextId = 0;
 
-static std::string floatLiteral(float value) {
+static std::string rvDumpFloatLiteral(float value) {
   std::ostringstream oss;
   oss << std::setprecision(std::numeric_limits<float>::max_digits10) << value;
   return oss.str();
 }
 
 int getCount(BasicBlock *bb) {
-  if (!bbcount.count(bb))
-    bbcount[bb] = id++;
-  return bbcount[bb];
+  if (!rvDumpBbCount.count(bb))
+    rvDumpBbCount[bb] = rvDumpBbNextId++;
+  return rvDumpBbCount[bb];
 }
 
 std::ostream &operator<<(std::ostream &os, Reg reg) {
@@ -226,9 +226,9 @@ void Dump::dump(std::ostream &os, const std::string &onlyFunc) {
       }
 
       os << NAME(global) << ":\n";
-      os << "  .float " << floatLiteral(fArr->vf[0]);
+      os << "  .float " << rvDumpFloatLiteral(fArr->vf[0]);
       for (size_t i = 1; i < size / 4; i++)
-        os << ", " << floatLiteral(fArr->vf[i]);
+        os << ", " << rvDumpFloatLiteral(fArr->vf[i]);
       os << "\n";
     }
   }

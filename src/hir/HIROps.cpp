@@ -6,7 +6,7 @@ namespace sys::hir {
 
 namespace {
 
-void dumpOp(const Op *op, std::ostream &os, int depth) {
+void hirDumpOpTree(const Op *op, std::ostream &os, int depth) {
   if (!op) return;
   for (int i = 0; i < depth; i++) os << "  ";
   os << kindName(op->kind);
@@ -15,7 +15,7 @@ void dumpOp(const Op *op, std::ostream &os, int depth) {
   if (op->hasFloatValue) os << " value=" << std::setprecision(9) << op->floatValue;
   os << "\n";
   for (const auto &child : op->children)
-    dumpOp(child.get(), os, depth + 1);
+    hirDumpOpTree(child.get(), os, depth + 1);
 }
 
 }  // namespace
@@ -80,7 +80,7 @@ const char *kindName(OpKind kind) {
 
 void dump(const Module &module, std::ostream &os) {
   os << "HIR Module\n";
-  if (module.root) dumpOp(module.root.get(), os, 0);
+  if (module.root) hirDumpOpTree(module.root.get(), os, 0);
 }
 
 }  // namespace sys::hir

@@ -11,11 +11,11 @@ using namespace sys;
 
 namespace {
 
-bool astIsFloat(Type *ty) {
+bool cgAstIsFloat(Type *ty) {
   return ty && isa<FloatType>(ty);
 }
 
-bool valueIsFloat(Value v) {
+bool cgValueIsFloat(Value v) {
   if (!v.defining)
     return false;
 
@@ -23,8 +23,8 @@ bool valueIsFloat(Value v) {
   return ty == Value::f32 || ty == Value::f128;
 }
 
-bool preferFloat(Type *astTy, Value v) {
-  return astIsFloat(astTy) || valueIsFloat(v);
+bool cgPreferFloat(Type *astTy, Value v) {
+  return cgAstIsFloat(astTy) || cgValueIsFloat(v);
 }
 
 } // namespace
@@ -164,8 +164,8 @@ Value CodeGen::emitBinary(BinaryNode *node) {
 
   auto l = emitExpr(node->l);
   auto r = emitExpr(node->r);
-  bool lhsFloat = preferFloat(node->l ? node->l->type : nullptr, l);
-  bool rhsFloat = preferFloat(node->r ? node->r->type : nullptr, r);
+  bool lhsFloat = cgPreferFloat(node->l ? node->l->type : nullptr, l);
+  bool rhsFloat = cgPreferFloat(node->r ? node->r->type : nullptr, r);
   if (!lhsFloat && !rhsFloat) {
     switch (node->kind) {
     case BinaryNode::Add:
@@ -228,7 +228,7 @@ Value CodeGen::emitUnary(UnaryNode *node) {
   case UnaryNode::Not:
     return builder.create<NotOp>({ value });
   case UnaryNode::Minus:
-    if (preferFloat(node->type, value))
+    if (cgPreferFloat(node->type, value))
       return builder.create<MinusFOp>({ value });
     else
       return builder.create<MinusOp>({ value });
@@ -251,7 +251,7 @@ Value CodeGen::emitExpr(ASTNode *node) {
     return builder.create<FloatOp>({ new FloatAttr(lfloat->value) });
 
   if (auto ref = dyn_cast<VarRefNode>(node)) {
-    bool isFloat = astIsFloat(node->type) || astIsFloat(ref->type);
+    bool isFloat = cgAstIsFloat(node->type) || cgAstIsFloat(ref->type);
     Value::Type resultTy = isFloat ? Value::f32 : Value::i32;
 
     if (!symbols.count(ref->name)) {
@@ -291,7 +291,7 @@ Value CodeGen::emitExpr(ASTNode *node) {
     if (name == "stoptime")
       name = "_sysy_stoptime";
 
-    bool isFP = astIsFloat(call->type);
+    bool isFP = cgAstIsFloat(call->type);
     auto callOp = builder.create<CallOp>(isFP ? Value::f32 : Value::i32, args, {
       new NameAttr(name),
     });

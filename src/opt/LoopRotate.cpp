@@ -3,7 +3,7 @@
 
 using namespace sys;
 
-static void postorder(LoopInfo *loop, std::vector<LoopInfo*> &loops) {
+static void lrotPostorder(LoopInfo *loop, std::vector<LoopInfo*> &loops) {
   for (auto subloop : loop->subloops)
     loops.push_back(subloop);
   loops.push_back(loop);
@@ -214,7 +214,7 @@ void LoopRotate::run() {
     const auto &forest = info[func];
     for (auto toploop : forest.getLoops()) {
       std::vector<LoopInfo*> loops;
-      postorder(toploop, loops);
+      lrotPostorder(toploop, loops);
 
       for (auto loop : loops)
         runImpl(loop);

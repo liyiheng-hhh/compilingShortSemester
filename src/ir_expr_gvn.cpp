@@ -32,7 +32,7 @@ struct KeyHash {
 };
 
 // 判断操作是否支持交换律
-static bool isCommutative(IROp op) {
+static bool irgvnIsCommutative(IROp op) {
   switch (op) {
   case IROp::Add:
   case IROp::Mul:
@@ -46,7 +46,7 @@ static bool isCommutative(IROp op) {
 }
 
 // 判断是否为纯算术/比较操作（无副作用，可用于 GVN）
-static bool isPureArithmetic(IROp op) {
+static bool irgvnIsPureArithmetic(IROp op) {
   switch (op) {
   case IROp::Add:
   case IROp::Sub:
@@ -74,7 +74,7 @@ static bool isPureArithmetic(IROp op) {
 }
 
 // 创建表达式键
-static ExprKey makeKey(const IRInst &inst) {
+static ExprKey irgvnMakeKey(const IRInst &inst) {
   ExprKey k;
   k.op = inst.op;
   k.u = inst.u;
@@ -83,7 +83,7 @@ static ExprKey makeKey(const IRInst &inst) {
   k.isFloat = inst.isFloat;
 
   // 对交换律操作排序操作数
-  if (isCommutative(inst.op) && k.u > k.v) {
+  if (irgvnIsCommutative(inst.op) && k.u > k.v) {
     swap(k.u, k.v);
   }
 
@@ -91,7 +91,7 @@ static ExprKey makeKey(const IRInst &inst) {
 }
 
 // 块级 GVN
-static bool gvnInBlock(IRFunction &fn, int blockIdx) {
+static bool irgvnInBlock(IRFunction &fn, int blockIdx) {
   const auto &blk = fn.blocks[blockIdx];
   unordered_map<ExprKey, int, KeyHash> exprMap;  // key -> vreg
   bool changed = false;
@@ -100,7 +100,7 @@ static bool gvnInBlock(IRFunction &fn, int blockIdx) {
     auto &inst = fn.insts[idx];
 
     // 跳过非纯算术指令
-    if (!isPureArithmetic(inst.op)) {
+    if (!irgvnIsPureArithmetic(inst.op)) {
       // 控制流边界清除 GVN 表（保守但安全）
       if (inst.op == IROp::Label || inst.op == IROp::J ||
           inst.op == IROp::Beqz || inst.op == IROp::Call) {
@@ -110,7 +110,7 @@ static bool gvnInBlock(IRFunction &fn, int blockIdx) {
     }
 
     // 构建表达式键
-    ExprKey key = makeKey(inst);
+    ExprKey key = irgvnMakeKey(inst);
 
     // 查找是否已有等价表达式
     auto it = exprMap.find(key);
@@ -138,7 +138,7 @@ bool irExprGvnAcrossBlocks(IRFunction &fn) {
   bool changed = false;
 
   for (size_t b = 0; b < fn.blocks.size(); ++b) {
-    changed |= gvnInBlock(fn, static_cast<int>(b));
+    changed |= irgvnInBlock(fn, static_cast<int>(b));
   }
 
   return changed;

@@ -71,6 +71,31 @@
 | `cfg/CFGOps.cpp` | `cfgTypeName`, `cfgDumpSymbol`, `cfgMemBaseName`（公开 `isTerminator`/`dump` 不变） |
 | `dialect_hir/DhirBuilder.cpp` | `dhirBinarySymbol`, `dhirNodeIsCmp`, `dhirAssignTargetName` |
 
+### 批次 5
+
+| 文件 | 重命名示例 |
+|------|------------|
+| `pre-opt/RaiseToFor.cpp` | `rtfForCond`, `rtfForCondLe`, `rtfConstIncr` |
+| `knapsack_dp.cpp` | `kdpBuildDpLoops`, `kdpMatchKnapsackFunc`, … |
+| `loop_tiling.cpp` | `ltileBuildTiled2D`, `LtileOuterLoopHead`, `ltileTryTile2DNest`, … |
+| `loop_interchange.cpp` | `lixTryInterchangeGemmIjk`, `LixOuterLoopHead`, … |
+| `opt/SynthConstArray.cpp` | `scaConstIncr` |
+| `dialect_fallback.cpp` | `dfbBasenameOnly` |
+| `dialect_pipeline.cpp` | `dpipeAppendPreOptPasses`, `dpipeUseStructuredCodegen`, … |
+| `cfg/CFGLegality.cpp` | `cfgLegVisitHIR`, `cfgLegIsMemoryInst`（公开 `verify*` 不变） |
+| `dialect_hir/DhirOps.cpp` | `dhirDumpOpTree` |
+| `hir/HIROps.cpp` | `hirDumpOpTree` |
+| `hir/HIRRowScratchMatmul.cpp` | `hrsmHoistAikFromLoop`, … |
+| `hir/HIRLowering.cpp` | `HlowCtx`, `hlowOp`, `hlowExpr` |
+| `hir/HIRLoopTransform.cpp` | `hltTransformLoops` |
+| `opt/Verify.cpp` | `verifyCheckDom` |
+| `opt/LoopUnroll.cpp` / `LoopRotate.cpp` | `lunPostorder`, `lrotPostorder` |
+| `mlir_rv/Lower.cpp` | `rvLowerRewriteAlloca`, … |
+| `mlir_rv/Dump.cpp` | `rvDumpFloatLiteral`, `rvDumpBbCount` |
+| `rv_mlir_pipeline.cpp` | `rvmpEnvFlag`, `rvmpRunPass` |
+| `codegen/CodeGen.cpp` | `cgAstIsFloat`, `cgPreferFloat` |
+| `ir_expr_gvn.cpp` | `irgvnMakeKey`, `irgvnInBlock`, … |
+
 ## 暂不动（高风险）
 
 - `mlir_rv/Schedule.cpp`, `InstCombine.cpp` — 指令/阶段顺序敏感
@@ -80,9 +105,10 @@
 
 ## 后续可选（仍仅 helper 命名）
 
-- `dialect_parse/Lexer.cpp`, `Parser.cpp`, `Sema.cpp` 内 lambda/局部逻辑（无独立 helper 时收益小）
+- `dialect_parse/Lexer.cpp`, `Parser.cpp`, `Sema.cpp`（无独立 static helper 时收益小）
+- `cfg/HIRToCFG.cpp`（`Lowerer` 类体量大，需谨慎）
+- `codegen.cpp` / `codegen/OpBase.cpp`（helper 多且与 codegen 路径敏感）
 - `opt/Reassociate.cpp`, `opt/DSE.cpp` / `DLE.cpp`（多为成员函数）
-- `pre-opt/TidyMemory.cpp`, `MoveAlloca.cpp`, `RaiseToFor.cpp`（静态 Rule 名）
 
 ## 评测前
 

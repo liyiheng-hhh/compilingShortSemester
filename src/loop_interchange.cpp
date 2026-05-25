@@ -10,7 +10,7 @@ using std::string;
 using std::unique_ptr;
 using std::vector;
 
-static void copyExprMeta(Expr *dst, const Expr *src) {
+static void lixCopyExprMeta(Expr *dst, const Expr *src) {
   if (!dst || !src) {
     return;
   }
@@ -19,7 +19,7 @@ static void copyExprMeta(Expr *dst, const Expr *src) {
   dst->constVal = src->constVal;
 }
 
-static ExprPtr cloneExpr(const Expr *e) {
+static ExprPtr lixCloneExpr(const Expr *e) {
   if (!e) {
     return nullptr;
   }
@@ -44,20 +44,20 @@ static ExprPtr cloneExpr(const Expr *e) {
     auto c = make_unique<LValExpr>(lv->line, lv->name);
     c->symbol = lv->symbol;
     for (const auto &ix : lv->indices) {
-      c->indices.push_back(cloneExpr(ix.get()));
+      c->indices.push_back(lixCloneExpr(ix.get()));
     }
     out = std::move(c);
     break;
   }
   case ExprKind::Unary: {
     auto *u = static_cast<const UnaryExpr *>(e);
-    out = make_unique<UnaryExpr>(u->line, u->op, cloneExpr(u->expr.get()));
+    out = make_unique<UnaryExpr>(u->line, u->op, lixCloneExpr(u->expr.get()));
     break;
   }
   case ExprKind::Binary: {
     auto *b = static_cast<const BinaryExpr *>(e);
-    out = make_unique<BinaryExpr>(b->line, b->op, cloneExpr(b->lhs.get()),
-                                    cloneExpr(b->rhs.get()));
+    out = make_unique<BinaryExpr>(b->line, b->op, lixCloneExpr(b->lhs.get()),
+                                    lixCloneExpr(b->rhs.get()));
     break;
   }
   case ExprKind::Call: {
@@ -65,7 +65,7 @@ static ExprPtr cloneExpr(const Expr *e) {
     auto n = make_unique<CallExpr>(c->line, c->name);
     n->function = c->function;
     for (const auto &a : c->args) {
-      n->args.push_back(cloneExpr(a.get()));
+      n->args.push_back(lixCloneExpr(a.get()));
     }
     out = std::move(n);
     break;
@@ -73,31 +73,31 @@ static ExprPtr cloneExpr(const Expr *e) {
   default:
     return nullptr;
   }
-  copyExprMeta(out.get(), e);
+  lixCopyExprMeta(out.get(), e);
   return out;
 }
 
-static unique_ptr<LValExpr> cloneLValExpr(const LValExpr *lv) {
+static unique_ptr<LValExpr> lixCloneLValExpr(const LValExpr *lv) {
   if (!lv) {
     return nullptr;
   }
-  return unique_ptr<LValExpr>(static_cast<LValExpr *>(cloneExpr(lv).release()));
+  return unique_ptr<LValExpr>(static_cast<LValExpr *>(lixCloneExpr(lv).release()));
 }
 
-static unique_ptr<AssignStmt> cloneAssign(const AssignStmt *as) {
+static unique_ptr<AssignStmt> lixCloneAssign(const AssignStmt *as) {
   if (!as || !as->lhs) {
     return nullptr;
   }
-  return make_unique<AssignStmt>(as->line, cloneLValExpr(as->lhs.get()),
-                                 cloneExpr(as->rhs.get()));
+  return make_unique<AssignStmt>(as->line, lixCloneLValExpr(as->lhs.get()),
+                                 lixCloneExpr(as->rhs.get()));
 }
 
-static bool cmpRelOp(const string &o) {
+static bool lixCmpRelOp(const string &o) {
   return o == "<" || o == "<=" || o == ">" || o == ">=";
 }
 
 // 循环交换仅对「矩形」嵌套安全：任一层界不能依赖另一层的归纳变量（例如 j < i 时禁止交换）。
-static bool exprUsesVarName(const Expr *e, const string &name) {
+static bool lixExprUsesVarName(const Expr *e, const string &name) {
   if (!e) {
     return false;
   }
@@ -108,23 +108,23 @@ static bool exprUsesVarName(const Expr *e, const string &name) {
       return true;
     }
     for (const auto &ix : lv->indices) {
-      if (exprUsesVarName(ix.get(), name)) {
+      if (lixExprUsesVarName(ix.get(), name)) {
         return true;
       }
     }
     return false;
   }
   case ExprKind::Unary:
-    return exprUsesVarName(static_cast<const UnaryExpr *>(e)->expr.get(), name);
+    return lixExprUsesVarName(static_cast<const UnaryExpr *>(e)->expr.get(), name);
   case ExprKind::Binary: {
     auto *b = static_cast<const BinaryExpr *>(e);
-    return exprUsesVarName(b->lhs.get(), name) ||
-           exprUsesVarName(b->rhs.get(), name);
+    return lixExprUsesVarName(b->lhs.get(), name) ||
+           lixExprUsesVarName(b->rhs.get(), name);
   }
   case ExprKind::Call: {
     auto *c = static_cast<const CallExpr *>(e);
     for (const auto &a : c->args) {
-      if (exprUsesVarName(a.get(), name)) {
+      if (lixExprUsesVarName(a.get(), name)) {
         return true;
       }
     }
@@ -135,9 +135,9 @@ static bool exprUsesVarName(const Expr *e, const string &name) {
   }
 }
 
-static bool extractLoopIv(const WhileStmt *w, string *iv) {
+static bool lixExtractLoopIv(const WhileStmt *w, string *iv) {
   auto *b = dynamic_cast<const BinaryExpr *>(w->cond.get());
-  if (!b || !cmpRelOp(b->op)) {
+  if (!b || !lixCmpRelOp(b->op)) {
     return false;
   }
   auto *ll = dynamic_cast<const LValExpr *>(b->lhs.get());
@@ -158,7 +158,7 @@ static bool extractLoopIv(const WhileStmt *w, string *iv) {
   return false;
 }
 
-static bool isZeroAssignTo(const AssignStmt *as, const string &v) {
+static bool lixIsZeroAssignTo(const AssignStmt *as, const string &v) {
   if (!as || !as->lhs || as->lhs->name != v || !as->lhs->indices.empty()) {
     return false;
   }
@@ -166,10 +166,10 @@ static bool isZeroAssignTo(const AssignStmt *as, const string &v) {
   return num && !num->isFloat && num->intVal == 0;
 }
 
-static bool parseZeroInit(const Stmt *s, string *name) {
+static bool lixParseZeroInit(const Stmt *s, string *name) {
   if (auto *as = dynamic_cast<const AssignStmt *>(s)) {
     if (as->lhs && as->lhs->indices.empty() &&
-        isZeroAssignTo(as, as->lhs->name)) {
+        lixIsZeroAssignTo(as, as->lhs->name)) {
       *name = as->lhs->name;
       return true;
     }
@@ -186,26 +186,26 @@ static bool parseZeroInit(const Stmt *s, string *name) {
   return false;
 }
 
-static unique_ptr<AssignStmt> makeZeroAssign(int line, const string &v) {
+static unique_ptr<AssignStmt> lixMakeZeroAssign(int line, const string &v) {
   auto lhs = make_unique<LValExpr>(line, v);
   return make_unique<AssignStmt>(line, std::move(lhs),
                                  make_unique<NumberExpr>(line, 0));
 }
 
-static unique_ptr<AssignStmt> cloneZeroInitAsAssign(const Stmt *s) {
+static unique_ptr<AssignStmt> lixCloneZeroInitAsAssign(const Stmt *s) {
   if (auto *as = dynamic_cast<const AssignStmt *>(s)) {
-    return cloneAssign(as);
+    return lixCloneAssign(as);
   }
   string name;
   if (auto *d = dynamic_cast<const DeclStmt *>(s)) {
-    if (parseZeroInit(d, &name)) {
-      return makeZeroAssign(d->line, name);
+    if (lixParseZeroInit(d, &name)) {
+      return lixMakeZeroAssign(d->line, name);
     }
   }
   return nullptr;
 }
 
-static bool extractLtBound(const Expr *cond, string *iv, ExprPtr *limit) {
+static bool lixExtractLtBound(const Expr *cond, string *iv, ExprPtr *limit) {
   auto *b = dynamic_cast<const BinaryExpr *>(cond);
   if (!b || b->op != "<") {
     return false;
@@ -215,7 +215,7 @@ static bool extractLtBound(const Expr *cond, string *iv, ExprPtr *limit) {
       return false;
     }
     *iv = lv->name;
-    *limit = cloneExpr(b->rhs.get());
+    *limit = lixCloneExpr(b->rhs.get());
     return true;
   }
   if (auto *lv = dynamic_cast<const LValExpr *>(b->rhs.get())) {
@@ -223,36 +223,36 @@ static bool extractLtBound(const Expr *cond, string *iv, ExprPtr *limit) {
       return false;
     }
     *iv = lv->name;
-    *limit = cloneExpr(b->lhs.get());
+    *limit = lixCloneExpr(b->lhs.get());
     return true;
   }
   return false;
 }
 
-struct OuterLoopHead {
+struct LixOuterLoopHead {
   string iv;
   ExprPtr limit;
   bool ivFromDecl = false;
 };
 
-static bool matchOuterLoopHead(const Stmt *initStmt, const WhileStmt *outerW,
-                               OuterLoopHead *out) {
+static bool lixMatchOuterLoopHead(const Stmt *initStmt, const WhileStmt *outerW,
+                               LixOuterLoopHead *out) {
   if (!initStmt || !outerW || !out) {
     return false;
   }
-  if (!extractLtBound(outerW->cond.get(), &out->iv, &out->limit)) {
+  if (!lixExtractLtBound(outerW->cond.get(), &out->iv, &out->limit)) {
     return false;
   }
   out->ivFromDecl = false;
   if (auto *as = dynamic_cast<const AssignStmt *>(initStmt)) {
-    return isZeroAssignTo(as, out->iv);
+    return lixIsZeroAssignTo(as, out->iv);
   }
   if (auto *d = dynamic_cast<const DeclStmt *>(initStmt)) {
     if (d->defs.size() != 1 || d->base != BaseType::Int) {
       return false;
     }
     string name;
-    if (!parseZeroInit(d, &name) || name != out->iv) {
+    if (!lixParseZeroInit(d, &name) || name != out->iv) {
       return false;
     }
     out->ivFromDecl = true;
@@ -261,7 +261,7 @@ static bool matchOuterLoopHead(const Stmt *initStmt, const WhileStmt *outerW,
   return false;
 }
 
-static void stripDeclZeroInit(Stmt *s) {
+static void lixStripDeclZeroInit(Stmt *s) {
   if (auto *d = dynamic_cast<DeclStmt *>(s)) {
     if (d->defs.size() == 1) {
       d->defs[0].init.reset();
@@ -269,7 +269,7 @@ static void stripDeclZeroInit(Stmt *s) {
   }
 }
 
-static bool isIncByOne(const AssignStmt *as, const string &v) {
+static bool lixIsIncByOne(const AssignStmt *as, const string &v) {
   if (!as || !as->lhs || as->lhs->name != v || !as->lhs->indices.empty()) {
     return false;
   }
@@ -282,11 +282,11 @@ static bool isIncByOne(const AssignStmt *as, const string &v) {
   return l && l->name == v && l->indices.empty() && r && !r->isFloat && r->intVal == 1;
 }
 
-static const LValExpr *asScalarLVal(const Expr *e) {
+static const LValExpr *lixAsScalarLVal(const Expr *e) {
   return dynamic_cast<const LValExpr *>(e);
 }
 
-static bool isSwapTransposeAssign(const AssignStmt *as, string *symOut, string *symIn,
+static bool lixIsSwapTransposeAssign(const AssignStmt *as, string *symOut, string *symIn,
                                   string *iv1, string *iv2) {
   if (!as || !as->lhs || as->lhs->indices.size() != 2) {
     return false;
@@ -299,10 +299,10 @@ static bool isSwapTransposeAssign(const AssignStmt *as, string *symOut, string *
   const Expr *i1 = as->lhs->indices[1].get();
   const Expr *r0 = rhsLv->indices[0].get();
   const Expr *r1 = rhsLv->indices[1].get();
-  const auto *a00 = asScalarLVal(i0);
-  const auto *a01 = asScalarLVal(i1);
-  const auto *b0 = asScalarLVal(r0);
-  const auto *b1 = asScalarLVal(r1);
+  const auto *a00 = lixAsScalarLVal(i0);
+  const auto *a01 = lixAsScalarLVal(i1);
+  const auto *b0 = lixAsScalarLVal(r0);
+  const auto *b1 = lixAsScalarLVal(r1);
   if (!a00 || !a01 || !b0 || !b1) {
     return false;
   }
@@ -322,7 +322,7 @@ static bool isSwapTransposeAssign(const AssignStmt *as, string *symOut, string *
   return true;
 }
 
-static bool blockHasNestedWhile(const BlockStmt *blk) {
+static bool lixBlockHasNestedWhile(const BlockStmt *blk) {
   if (!blk) {
     return false;
   }
@@ -331,17 +331,17 @@ static bool blockHasNestedWhile(const BlockStmt *blk) {
       return true;
     }
     if (it->kind == StmtKind::Block &&
-        blockHasNestedWhile(static_cast<const BlockStmt *>(it.get()))) {
+        lixBlockHasNestedWhile(static_cast<const BlockStmt *>(it.get()))) {
       return true;
     }
     if (it->kind == StmtKind::If) {
       auto *ifs = static_cast<const IfStmt *>(it.get());
       if (ifs->thenStmt && ifs->thenStmt->kind == StmtKind::Block &&
-          blockHasNestedWhile(static_cast<const BlockStmt *>(ifs->thenStmt.get()))) {
+          lixBlockHasNestedWhile(static_cast<const BlockStmt *>(ifs->thenStmt.get()))) {
         return true;
       }
       if (ifs->elseStmt && ifs->elseStmt->kind == StmtKind::Block &&
-          blockHasNestedWhile(static_cast<const BlockStmt *>(ifs->elseStmt.get()))) {
+          lixBlockHasNestedWhile(static_cast<const BlockStmt *>(ifs->elseStmt.get()))) {
         return true;
       }
     }
@@ -349,7 +349,7 @@ static bool blockHasNestedWhile(const BlockStmt *blk) {
   return false;
 }
 
-static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
+static bool lixTryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
   if (k + 1 >= items.size()) {
     return false;
   }
@@ -359,7 +359,7 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
   }
   string outerIv;
   string outerInitIv;
-  if (!extractLoopIv(outer, &outerIv) || !parseZeroInit(items[k].get(), &outerInitIv) ||
+  if (!lixExtractLoopIv(outer, &outerIv) || !lixParseZeroInit(items[k].get(), &outerInitIv) ||
       outerInitIv != outerIv) {
     return false;
   }
@@ -373,16 +373,16 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
     }
   }
   string innerIv;
-  if (!parseZeroInit(outerBody->items[0].get(), &innerIv)) {
+  if (!lixParseZeroInit(outerBody->items[0].get(), &innerIv)) {
     return false;
   }
   auto *inner = dynamic_cast<WhileStmt *>(outerBody->items[1].get());
   auto *outerInc = dynamic_cast<AssignStmt *>(outerBody->items[2].get());
-  if (!inner || !outerInc || !isIncByOne(outerInc, outerIv)) {
+  if (!inner || !outerInc || !lixIsIncByOne(outerInc, outerIv)) {
     return false;
   }
   string innerIvLoop;
-  if (!extractLoopIv(inner, &innerIvLoop) || innerIvLoop != innerIv) {
+  if (!lixExtractLoopIv(inner, &innerIvLoop) || innerIvLoop != innerIv) {
     return false;
   }
   if (innerIv == outerIv) {
@@ -394,7 +394,7 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
     return false;
   }
   auto *innerInc = dynamic_cast<AssignStmt *>(innerBody->items.back().get());
-  if (!isIncByOne(innerInc, innerIv)) {
+  if (!lixIsIncByOne(innerInc, innerIv)) {
     return false;
   }
 
@@ -404,7 +404,7 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
 
   auto *onlyAs = static_cast<const AssignStmt *>(innerBody->items[0].get());
   string symOut, symIn, iv1, iv2;
-  if (!isSwapTransposeAssign(onlyAs, &symOut, &symIn, &iv1, &iv2)) {
+  if (!lixIsSwapTransposeAssign(onlyAs, &symOut, &symIn, &iv1, &iv2)) {
     return false;
   }
   (void)symOut;
@@ -414,29 +414,29 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
   }
 
   // 外层界含内层变量、或内层界含外层变量时，交换会改变遍历顺序 → 语义错误。
-  if (exprUsesVarName(outer->cond.get(), innerIv) ||
-      exprUsesVarName(inner->cond.get(), outerIv)) {
+  if (lixExprUsesVarName(outer->cond.get(), innerIv) ||
+      lixExprUsesVarName(inner->cond.get(), outerIv)) {
     return false;
   }
 
-  unique_ptr<AssignStmt> coreClone = cloneAssign(onlyAs);
+  unique_ptr<AssignStmt> coreClone = lixCloneAssign(onlyAs);
   if (!coreClone) {
     return false;
   }
 
   int line = outer->line;
-  unique_ptr<AssignStmt> newParentInit = cloneZeroInitAsAssign(outerBody->items[0].get());
-  unique_ptr<AssignStmt> innerOuterZero = cloneZeroInitAsAssign(items[k].get());
-  unique_ptr<AssignStmt> incOuterIv = cloneAssign(outerInc);
-  unique_ptr<AssignStmt> incInnerIv = cloneAssign(innerInc);
+  unique_ptr<AssignStmt> newParentInit = lixCloneZeroInitAsAssign(outerBody->items[0].get());
+  unique_ptr<AssignStmt> innerOuterZero = lixCloneZeroInitAsAssign(items[k].get());
+  unique_ptr<AssignStmt> incOuterIv = lixCloneAssign(outerInc);
+  unique_ptr<AssignStmt> incInnerIv = lixCloneAssign(innerInc);
   if (!newParentInit || !innerOuterZero || !incOuterIv || !incInnerIv) {
     return false;
   }
 
-  auto newOuterWhile = make_unique<WhileStmt>(line, cloneExpr(inner->cond.get()), nullptr);
+  auto newOuterWhile = make_unique<WhileStmt>(line, lixCloneExpr(inner->cond.get()), nullptr);
   auto newOuterBody = make_unique<BlockStmt>(line);
   newOuterBody->items.push_back(std::move(innerOuterZero));
-  auto newInnerWhile = make_unique<WhileStmt>(line, cloneExpr(outer->cond.get()), nullptr);
+  auto newInnerWhile = make_unique<WhileStmt>(line, lixCloneExpr(outer->cond.get()), nullptr);
   auto newInnerBody = make_unique<BlockStmt>(innerBody->line);
   newInnerBody->items.push_back(std::move(coreClone));
   newInnerBody->items.push_back(std::move(incOuterIv));
@@ -450,7 +450,7 @@ static bool tryInterchangeTransposePair(vector<StmtPtr> &items, size_t k) {
   return true;
 }
 
-static unique_ptr<LValExpr> makeArray2DLVal(int line, const string &arr,
+static unique_ptr<LValExpr> lixMakeArray2DLVal(int line, const string &arr,
                                             const string &iv0, const string &iv1) {
   auto lv = make_unique<LValExpr>(line, arr);
   lv->indices.push_back(make_unique<LValExpr>(line, iv0));
@@ -458,44 +458,44 @@ static unique_ptr<LValExpr> makeArray2DLVal(int line, const string &arr,
   return lv;
 }
 
-static bool indexIsIv(const Expr *e, const string &iv) {
+static bool lixIndexIsIv(const Expr *e, const string &iv) {
   auto *lv = dynamic_cast<const LValExpr *>(e);
   return lv && lv->name == iv && lv->indices.empty();
 }
 
-static bool matchCik(const LValExpr *lv, const string &iIv, const string &kIv,
+static bool lixMatchCik(const LValExpr *lv, const string &iIv, const string &kIv,
                      string *sym) {
   if (!lv || lv->indices.size() != 2) {
     return false;
   }
-  if (!indexIsIv(lv->indices[0].get(), iIv) ||
-      !indexIsIv(lv->indices[1].get(), kIv)) {
+  if (!lixIndexIsIv(lv->indices[0].get(), iIv) ||
+      !lixIndexIsIv(lv->indices[1].get(), kIv)) {
     return false;
   }
   *sym = lv->name;
   return true;
 }
 
-static bool matchAkj(const LValExpr *lv, const string &kIv, const string &jIv,
+static bool lixMatchAkj(const LValExpr *lv, const string &kIv, const string &jIv,
                      string *sym) {
   if (!lv || lv->indices.size() != 2) {
     return false;
   }
-  if (!indexIsIv(lv->indices[0].get(), kIv) ||
-      !indexIsIv(lv->indices[1].get(), jIv)) {
+  if (!lixIndexIsIv(lv->indices[0].get(), kIv) ||
+      !lixIndexIsIv(lv->indices[1].get(), jIv)) {
     return false;
   }
   *sym = lv->name;
   return true;
 }
 
-static bool matchAij(const LValExpr *lv, const string &iIv, const string &jIv,
+static bool lixMatchAij(const LValExpr *lv, const string &iIv, const string &jIv,
                      string *sym) {
   if (!lv || lv->indices.size() != 2) {
     return false;
   }
-  if (!indexIsIv(lv->indices[0].get(), iIv) ||
-      !indexIsIv(lv->indices[1].get(), jIv)) {
+  if (!lixIndexIsIv(lv->indices[0].get(), iIv) ||
+      !lixIndexIsIv(lv->indices[1].get(), jIv)) {
     return false;
   }
   *sym = lv->name;
@@ -503,7 +503,7 @@ static bool matchAij(const LValExpr *lv, const string &iIv, const string &jIv,
 }
 
 // sum = sum + C[i][k] * A[k][j]（many_mat_cal 内层 k 循环）
-static bool matchGemmSumAccum(const AssignStmt *as, const string &sumIv,
+static bool lixMatchGemmSumAccum(const AssignStmt *as, const string &sumIv,
                               const string &iIv, const string &jIv,
                               const string &kIv, string *cSym, string *aSym) {
   if (!as || !as->lhs || as->lhs->name != sumIv || !as->lhs->indices.empty()) {
@@ -527,12 +527,12 @@ static bool matchGemmSumAccum(const AssignStmt *as, const string &sumIv,
     return false;
   }
   string c0, a0;
-  if (matchCik(l0, iIv, kIv, &c0) && matchAkj(l1, kIv, jIv, &a0)) {
+  if (lixMatchCik(l0, iIv, kIv, &c0) && lixMatchAkj(l1, kIv, jIv, &a0)) {
     *cSym = c0;
     *aSym = a0;
     return true;
   }
-  if (matchCik(l1, iIv, kIv, &c0) && matchAkj(l0, kIv, jIv, &a0)) {
+  if (lixMatchCik(l1, iIv, kIv, &c0) && lixMatchAkj(l0, kIv, jIv, &a0)) {
     *cSym = c0;
     *aSym = a0;
     return true;
@@ -541,7 +541,7 @@ static bool matchGemmSumAccum(const AssignStmt *as, const string &sumIv,
 }
 
 // i-j-k 点积 → i-k-j：每行先清零 A[i][*]，再对 k 扫 j 累加（A[k][j] 行优先）
-static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
+static bool lixTryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
   (void)items;
   (void)k;
   // i-k-j 交换在 k==i 项上须保留原 A[i][j]；当前实现仍 WA（many_mat_cal），先关闭保正确性。
@@ -551,8 +551,8 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
     return false;
   }
   auto *outerW = dynamic_cast<WhileStmt *>(items[k + 1].get());
-  OuterLoopHead head;
-  if (!matchOuterLoopHead(items[k].get(), outerW, &head)) {
+  LixOuterLoopHead head;
+  if (!lixMatchOuterLoopHead(items[k].get(), outerW, &head)) {
     return false;
   }
   const string &iIv = head.iv;
@@ -562,17 +562,17 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
     return false;
   }
   string jIv;
-  if (!parseZeroInit(outerBody->items[0].get(), &jIv)) {
+  if (!lixParseZeroInit(outerBody->items[0].get(), &jIv)) {
     return false;
   }
   auto *midW = dynamic_cast<WhileStmt *>(outerBody->items[1].get());
   auto *outerInc = dynamic_cast<AssignStmt *>(outerBody->items[2].get());
-  if (!midW || !isIncByOne(outerInc, iIv)) {
+  if (!midW || !lixIsIncByOne(outerInc, iIv)) {
     return false;
   }
   string jIv2;
   ExprPtr jLimit;
-  if (!extractLtBound(midW->cond.get(), &jIv2, &jLimit) || jIv2 != jIv) {
+  if (!lixExtractLtBound(midW->cond.get(), &jIv2, &jLimit) || jIv2 != jIv) {
     return false;
   }
   auto *midBody = dynamic_cast<BlockStmt *>(midW->body.get());
@@ -580,11 +580,11 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
     return false;
   }
   string kIv;
-  if (!parseZeroInit(midBody->items[0].get(), &kIv)) {
+  if (!lixParseZeroInit(midBody->items[0].get(), &kIv)) {
     return false;
   }
   string sumIv;
-  if (!parseZeroInit(midBody->items[1].get(), &sumIv)) {
+  if (!lixParseZeroInit(midBody->items[1].get(), &sumIv)) {
     return false;
   }
   auto *innerW = dynamic_cast<WhileStmt *>(midBody->items[2].get());
@@ -593,18 +593,18 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
   }
   string kIv2;
   ExprPtr kLimit;
-  if (!extractLtBound(innerW->cond.get(), &kIv2, &kLimit) || kIv2 != kIv) {
+  if (!lixExtractLtBound(innerW->cond.get(), &kIv2, &kLimit) || kIv2 != kIv) {
     return false;
   }
   auto *innerBody = dynamic_cast<BlockStmt *>(innerW->body.get());
   if (!innerBody || innerBody->items.size() != 2 ||
       innerBody->items[0]->kind != StmtKind::Assign ||
-      !isIncByOne(dynamic_cast<const AssignStmt *>(innerBody->items[1].get()), kIv)) {
+      !lixIsIncByOne(dynamic_cast<const AssignStmt *>(innerBody->items[1].get()), kIv)) {
     return false;
   }
   auto *accumAs = dynamic_cast<const AssignStmt *>(innerBody->items[0].get());
   string cSym, aSym;
-  if (!matchGemmSumAccum(accumAs, sumIv, iIv, jIv, kIv, &cSym, &aSym)) {
+  if (!lixMatchGemmSumAccum(accumAs, sumIv, iIv, jIv, kIv, &cSym, &aSym)) {
     return false;
   }
   auto *storeAs = dynamic_cast<const AssignStmt *>(midBody->items[3].get());
@@ -612,7 +612,7 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
   if (!storeAs || !storeAs->lhs || storeAs->lhs->indices.size() != 2) {
     return false;
   }
-  if (!matchAij(storeAs->lhs.get(), iIv, jIv, &aOut) || aOut != aSym) {
+  if (!lixMatchAij(storeAs->lhs.get(), iIv, jIv, &aOut) || aOut != aSym) {
     return false;
   }
   auto *sumRhs = dynamic_cast<const LValExpr *>(storeAs->rhs.get());
@@ -620,11 +620,11 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
     return false;
   }
   auto *midInc = dynamic_cast<const AssignStmt *>(midBody->items[4].get());
-  if (!isIncByOne(midInc, jIv)) {
+  if (!lixIsIncByOne(midInc, jIv)) {
     return false;
   }
-  if (exprUsesVarName(jLimit.get(), iIv) || exprUsesVarName(kLimit.get(), iIv) ||
-      exprUsesVarName(kLimit.get(), jIv) || exprUsesVarName(iLimit.get(), jIv)) {
+  if (lixExprUsesVarName(jLimit.get(), iIv) || lixExprUsesVarName(kLimit.get(), iIv) ||
+      lixExprUsesVarName(kLimit.get(), jIv) || lixExprUsesVarName(iLimit.get(), jIv)) {
     return false;
   }
 
@@ -632,35 +632,35 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
   // k==i 项须用改写前的 A[i][j]：A[i][j] = C[i][i] * A[i][j]（不能先清零再累加）
   auto diagBody = make_unique<BlockStmt>(line);
   {
-    auto alhs = makeArray2DLVal(line, aSym, iIv, jIv);
-    auto cii = makeArray2DLVal(line, cSym, iIv, iIv);
-    auto arhs = makeArray2DLVal(line, aSym, iIv, jIv);
+    auto alhs = lixMakeArray2DLVal(line, aSym, iIv, jIv);
+    auto cii = lixMakeArray2DLVal(line, cSym, iIv, iIv);
+    auto arhs = lixMakeArray2DLVal(line, aSym, iIv, jIv);
     auto mul = make_unique<BinaryExpr>(line, "*", std::move(cii), std::move(arhs));
     diagBody->items.push_back(
         make_unique<AssignStmt>(line, std::move(alhs), std::move(mul)));
-    diagBody->items.push_back(cloneAssign(midInc));
+    diagBody->items.push_back(lixCloneAssign(midInc));
   }
-  auto diagWhile = make_unique<WhileStmt>(line, cloneExpr(midW->cond.get()), nullptr);
+  auto diagWhile = make_unique<WhileStmt>(line, lixCloneExpr(midW->cond.get()), nullptr);
   diagWhile->body = std::move(diagBody);
 
   // k!=i：A[i][j] = A[i][j] + C[i][k] * A[k][j]
   auto accBody = make_unique<BlockStmt>(line);
   {
-    auto alhs = makeArray2DLVal(line, aSym, iIv, jIv);
-    auto arhs = makeArray2DLVal(line, aSym, iIv, jIv);
-    auto cik = makeArray2DLVal(line, cSym, iIv, kIv);
-    auto akj = makeArray2DLVal(line, aSym, kIv, jIv);
+    auto alhs = lixMakeArray2DLVal(line, aSym, iIv, jIv);
+    auto arhs = lixMakeArray2DLVal(line, aSym, iIv, jIv);
+    auto cik = lixMakeArray2DLVal(line, cSym, iIv, kIv);
+    auto akj = lixMakeArray2DLVal(line, aSym, kIv, jIv);
     auto mul = make_unique<BinaryExpr>(line, "*", std::move(cik), std::move(akj));
     auto add = make_unique<BinaryExpr>(line, "+", std::move(arhs), std::move(mul));
     accBody->items.push_back(
         make_unique<AssignStmt>(line, std::move(alhs), std::move(add)));
-    accBody->items.push_back(cloneAssign(midInc));
+    accBody->items.push_back(lixCloneAssign(midInc));
   }
-  auto accWhile = make_unique<WhileStmt>(line, cloneExpr(midW->cond.get()), nullptr);
+  auto accWhile = make_unique<WhileStmt>(line, lixCloneExpr(midW->cond.get()), nullptr);
   accWhile->body = std::move(accBody);
 
   auto kNeiBody = make_unique<BlockStmt>(line);
-  if (StmtPtr jInit = cloneZeroInitAsAssign(outerBody->items[0].get())) {
+  if (StmtPtr jInit = lixCloneZeroInitAsAssign(outerBody->items[0].get())) {
     kNeiBody->items.push_back(std::move(jInit));
   } else {
     return false;
@@ -673,13 +673,13 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
 
   auto kBody = make_unique<BlockStmt>(line);
   kBody->items.push_back(std::move(kSkipI));
-  if (unique_ptr<AssignStmt> kInc = cloneAssign(
+  if (unique_ptr<AssignStmt> kInc = lixCloneAssign(
           dynamic_cast<const AssignStmt *>(innerBody->items[1].get()))) {
     kBody->items.push_back(std::move(kInc));
   } else {
     return false;
   }
-  auto kWhile = make_unique<WhileStmt>(line, cloneExpr(innerW->cond.get()), nullptr);
+  auto kWhile = make_unique<WhileStmt>(line, lixCloneExpr(innerW->cond.get()), nullptr);
   kWhile->body = std::move(kBody);
 
   auto newOuterBody = make_unique<BlockStmt>(line);
@@ -690,7 +690,7 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
     vj.line = jd->line;
     nd->defs.push_back(std::move(vj));
     newOuterBody->items.push_back(std::move(nd));
-  } else if (StmtPtr jz = cloneZeroInitAsAssign(outerBody->items[0].get())) {
+  } else if (StmtPtr jz = lixCloneZeroInitAsAssign(outerBody->items[0].get())) {
     newOuterBody->items.push_back(std::move(jz));
   } else {
     return false;
@@ -704,20 +704,20 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
     kd->defs.push_back(std::move(vd));
     newOuterBody->items.push_back(std::move(kd));
   }
-  if (StmtPtr kZero = cloneZeroInitAsAssign(midBody->items[0].get())) {
+  if (StmtPtr kZero = lixCloneZeroInitAsAssign(midBody->items[0].get())) {
     newOuterBody->items.push_back(std::move(kZero));
   } else {
     return false;
   }
   newOuterBody->items.push_back(std::move(kWhile));
-  newOuterBody->items.push_back(cloneAssign(outerInc));
+  newOuterBody->items.push_back(lixCloneAssign(outerInc));
 
   auto newOuterWhile =
-      make_unique<WhileStmt>(line, cloneExpr(outerW->cond.get()), nullptr);
+      make_unique<WhileStmt>(line, lixCloneExpr(outerW->cond.get()), nullptr);
   newOuterWhile->body = std::move(newOuterBody);
 
   if (head.ivFromDecl) {
-    stripDeclZeroInit(items[k].get());
+    lixStripDeclZeroInit(items[k].get());
     items.erase(items.begin() + static_cast<ptrdiff_t>(k + 1),
                 items.begin() + static_cast<ptrdiff_t>(k + 2));
     items.insert(items.begin() + static_cast<ptrdiff_t>(k + 1),
@@ -732,31 +732,31 @@ static bool tryInterchangeGemmIjk(vector<StmtPtr> &items, size_t k) {
 #endif
 }
 
-static void processBlock(BlockStmt *blk) {
+static void lixProcessBlock(BlockStmt *blk) {
   if (!blk) {
     return;
   }
   for (auto &it : blk->items) {
     if (it->kind == StmtKind::Block) {
-      processBlock(static_cast<BlockStmt *>(it.get()));
+      lixProcessBlock(static_cast<BlockStmt *>(it.get()));
     } else if (it->kind == StmtKind::While) {
-      processBlock(dynamic_cast<BlockStmt *>(static_cast<WhileStmt *>(it.get())->body.get()));
+      lixProcessBlock(dynamic_cast<BlockStmt *>(static_cast<WhileStmt *>(it.get())->body.get()));
     } else if (it->kind == StmtKind::If) {
       auto *ifs = static_cast<IfStmt *>(it.get());
       if (ifs->thenStmt && ifs->thenStmt->kind == StmtKind::Block) {
-        processBlock(static_cast<BlockStmt *>(ifs->thenStmt.get()));
+        lixProcessBlock(static_cast<BlockStmt *>(ifs->thenStmt.get()));
       }
       if (ifs->elseStmt && ifs->elseStmt->kind == StmtKind::Block) {
-        processBlock(static_cast<BlockStmt *>(ifs->elseStmt.get()));
+        lixProcessBlock(static_cast<BlockStmt *>(ifs->elseStmt.get()));
       }
     }
   }
   for (size_t i = 0; i + 1 < blk->items.size();) {
-    if (tryInterchangeGemmIjk(blk->items, i)) {
+    if (lixTryInterchangeGemmIjk(blk->items, i)) {
       ++i;
       continue;
     }
-    if (tryInterchangeTransposePair(blk->items, i)) {
+    if (lixTryInterchangeTransposePair(blk->items, i)) {
       ++i;
       continue;
     }
@@ -769,7 +769,7 @@ void loopInterchangePass(Program &program) {
     if (!item.func || !item.func->body) {
       continue;
     }
-    processBlock(item.func->body.get());
+    lixProcessBlock(item.func->body.get());
   }
   loopTilingPass(program);
 }

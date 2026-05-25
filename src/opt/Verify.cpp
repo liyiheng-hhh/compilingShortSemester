@@ -3,7 +3,7 @@
 using namespace sys;
 
 // Checks whether every operation dominates its uses.
-static void checkDom(Region *region, Op *module) {
+static void verifyCheckDom(Region *region, Op *module) {
   // Only find reachable blocks.
   std::set<BasicBlock*> reachable;
   std::vector<BasicBlock*> queue { region->getFirstBlock() };
@@ -40,7 +40,7 @@ void Verify::run() {
   for (auto func : funcs) {
     auto region = func->getRegion();
     region->updateDoms();
-    checkDom(region, module);
+    verifyCheckDom(region, module);
   }
 
   auto phis = module->findAll<PhiOp>();

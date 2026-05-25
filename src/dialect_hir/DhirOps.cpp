@@ -8,7 +8,7 @@ namespace sys::dhir {
 
 namespace {
 
-void dumpOp(const Op *op, std::ostream &os, int depth) {
+void dhirDumpOpTree(const Op *op, std::ostream &os, int depth) {
   if (!op)
     return;
 
@@ -24,7 +24,7 @@ void dumpOp(const Op *op, std::ostream &os, int depth) {
   os << "\n";
 
   for (const auto &child : op->children)
-    dumpOp(child.get(), os, depth + 1);
+    dhirDumpOpTree(child.get(), os, depth + 1);
 }
 
 }  // namespace
@@ -144,7 +144,7 @@ void dump(const Module &module, std::ostream &os) {
     os << "<null hir module>\n";
     return;
   }
-  dumpOp(module.root.get(), os, 0);
+  dhirDumpOpTree(module.root.get(), os, 0);
 }
 
 }  // namespace sys::dhir

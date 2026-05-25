@@ -4,9 +4,9 @@
 
 using namespace sys;
 
-static Rule forCond("(lt (load x) y)");
-static Rule forCondLe("(le (load x) y)");
-static Rule constIncr("(store (add (load x) y) x)");
+static Rule rtfForCond("(lt (load x) y)");
+static Rule rtfForCondLe("(le (load x) y)");
+static Rule rtfConstIncr("(store (add (load x) y) x)");
 
 std::map<std::string, int> RaiseToFor::stats() {
   return {
@@ -36,14 +36,14 @@ void RaiseToFor::run() {
     // `stop` is the final condition (might be offseted by 1, for example)
     // `stopvar` is the original value.
     Op *ivAddr = nullptr, *stop, *stopvar;
-    if (forCond.match(cond)) {
+    if (rtfForCond.match(cond)) {
       // The induction variable is `load x`, and the address should be `x`.
-      ivAddr = forCond.extract("x");
-      stop = stopvar = forCond.extract("y");
+      ivAddr = rtfForCond.extract("x");
+      stop = stopvar = rtfForCond.extract("y");
     }
-    if (!ivAddr && forCondLe.match(cond)) {
-      ivAddr = forCondLe.extract("x");
-      stopvar = forCondLe.extract("y");
+    if (!ivAddr && rtfForCondLe.match(cond)) {
+      ivAddr = rtfForCondLe.extract("x");
+      stopvar = rtfForCondLe.extract("y");
       builder.setAfterOp(stopvar);
       auto one = builder.create<IntOp>({ new IntAttr(1) });
       stop = builder.create<AddIOp>({ stopvar, one });
@@ -75,12 +75,12 @@ void RaiseToFor::run() {
       if (!use->inside(loop) || isa<LoadOp>(use))
         continue;
 
-      if (!constIncr.match(use, { { "x", ivAddr } })) {
+      if (!rtfConstIncr.match(use, { { "x", ivAddr } })) {
         good = false;
         break;
       }
 
-      Op *vi = constIncr.extract("y");
+      Op *vi = rtfConstIncr.extract("y");
       if (!foundIncr)
         incr = vi, foundIncr = true;
       else if (incr != vi && !(isa<IntOp>(incr) && isa<IntOp>(vi) && V(incr) == V(vi))) {
@@ -133,7 +133,7 @@ void RaiseToFor::run() {
     auto conts = loop->findAll<ContinueOp>();
     std::copy(conts.begin(), conts.end(), std::back_inserter(terms));
     for (auto x : terms) {
-      if (x->atFront() || !constIncr.match(x->prevOp())) {
+      if (x->atFront() || !rtfConstIncr.match(x->prevOp())) {
         good = false;
         break;
       }
@@ -141,7 +141,7 @@ void RaiseToFor::run() {
 
     // TCO removes empty blocks, so this is safe.
     auto back = after->getLastBlock()->getLastOp();
-    if (!good || !constIncr.match(back))
+    if (!good || !rtfConstIncr.match(back))
       continue;
     
     // Now time to check for initial value of the induction variable.

@@ -17,7 +17,7 @@ using namespace sys;
 
 namespace {
 
-bool envFlag(const char *name, bool fallback) {
+bool rvmpEnvFlag(const char *name, bool fallback) {
   const char *v = std::getenv(name);
   if (!v || !v[0]) return fallback;
   if (std::strcmp(v, "0") == 0 || std::strcmp(v, "false") == 0) return false;
@@ -25,7 +25,7 @@ bool envFlag(const char *name, bool fallback) {
 }
 
 template <class T, class... Args>
-void runPass(ModuleOp *module, Args &&...args) {
+void rvmpRunPass(ModuleOp *module, Args &&...args) {
   T pass(module, std::forward<Args>(args)...);
   pass.run();
 }
@@ -35,24 +35,24 @@ void runPass(ModuleOp *module, Args &&...args) {
 namespace sys {
 
 bool rvMlirBackendEnabled() {
-  return envFlag("SYSY_CC_ENABLE_MLIR_RV", false) ||
-         envFlag("SYSY_CC_ENABLE_RV_IR_BACKEND", false);
+  return rvmpEnvFlag("SYSY_CC_ENABLE_MLIR_RV", false) ||
+         rvmpEnvFlag("SYSY_CC_ENABLE_RV_IR_BACKEND", false);
 }
 
 std::string runRvMlirPipeline(ModuleOp *module, bool enableSchedule,
                               const std::string &onlyFunc) {
-  runPass<rv::Lower>(module);
+  rvmpRunPass<rv::Lower>(module);
   if (rv::envEnabledSuffix("ENABLE_INST_COMBINE", true))
-    runPass<rv::InstCombine>(module);
-  runPass<rv::RvDCE>(module);
-  if (!envFlag("SYSY_RV_DISABLE_GVN", false) && rv::envEnabledSuffix("ENABLE_GVN", true))
-    runPass<GVN>(module);
+    rvmpRunPass<rv::InstCombine>(module);
+  rvmpRunPass<rv::RvDCE>(module);
+  if (!rvmpEnvFlag("SYSY_RV_DISABLE_GVN", false) && rv::envEnabledSuffix("ENABLE_GVN", true))
+    rvmpRunPass<GVN>(module);
   if (rv::envEnabledSuffix("ENABLE_STRENGTH_REDUCT", true))
-    runPass<rv::StrengthReduct>(module);
+    rvmpRunPass<rv::StrengthReduct>(module);
   if (enableSchedule && rv::envEnabledSuffix("ENABLE_SCHEDULE", true))
-    runPass<rv::Schedule>(module);
-  const bool fast = envFlag("SYSY_CC_MLIR_RV_FAST_RA", false);
-  runPass<rv::RegAlloc>(module, fast);
+    rvmpRunPass<rv::Schedule>(module);
+  const bool fast = rvmpEnvFlag("SYSY_CC_MLIR_RV_FAST_RA", false);
+  rvmpRunPass<rv::RegAlloc>(module, fast);
   std::ostringstream oss;
   rv::Dump dump(module, "");
   dump.dump(oss, onlyFunc);

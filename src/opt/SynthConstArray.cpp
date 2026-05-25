@@ -167,7 +167,7 @@ SynthConstArray::SynthConstArray(ModuleOp *module): Pass(module) {
 
 namespace {
 
-Rule constIncr("(addl x 'a)");
+Rule scaConstIncr("(addl x 'a)");
 
 }
 
@@ -319,10 +319,10 @@ void SynthConstArray::run() {
         auto from = FROM(use->getAttrs()[1 - latchidx]);
 
         // This latchval should be an addition of fixed step.
-        if (!constIncr.match(latchval))
+        if (!scaConstIncr.match(latchval))
           continue;
 
-        auto step = V(constIncr.extract("'a"));
+        auto step = V(scaConstIncr.extract("'a"));
         
         // If there's no induction variable, then we synthesize one.
         auto induction = loop->getInduction();

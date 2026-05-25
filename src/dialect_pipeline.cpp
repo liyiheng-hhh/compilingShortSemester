@@ -41,23 +41,23 @@ bool sys::dialectPipelineEnabled() {
 
 namespace {
 
-void fail(std::vector<std::string> &errors, const std::string &msg) {
+void dpipeFail(std::vector<std::string> &errors, const std::string &msg) {
   errors.push_back(msg);
 }
 
-bool dialectPassEnabled(const char *disableVar, bool defaultOn = true) {
+bool dpipeDialectPassEnabled(const char *disableVar, bool defaultOn = true) {
   if (envFlagTruthy(disableVar))
     return false;
   return defaultOn;
 }
 
-bool useStructuredCodegen() {
+bool dpipeUseStructuredCodegen() {
   if (envFlagTruthy("SYSY_CC_USE_CFG_IR"))
     return false;
   return true;
 }
 
-int inlineThreshold() {
+int dpipeInlineThreshold() {
   if (const char *v = std::getenv("SYSY_CC_INLINE_THRESHOLD")) {
     char *end = nullptr;
     long n = std::strtol(v, &end, 10);
@@ -67,17 +67,17 @@ int inlineThreshold() {
   return 200;
 }
 
-int lateInlineThreshold() {
+int dpipeLateInlineThreshold() {
   if (const char *v = std::getenv("SYSY_CC_LATE_INLINE_THRESHOLD")) {
     char *end = nullptr;
     long n = std::strtol(v, &end, 10);
     if (end != v && n > 0)
       return static_cast<int>(n);
   }
-  return inlineThreshold();
+  return dpipeInlineThreshold();
 }
 
-void appendPreOptPasses(sys::PassManager &pm) {
+void dpipeAppendPreOptPasses(sys::PassManager &pm) {
   if (!envFlagTruthy("SYSY_CC_NO_PREOPT_CALLGRAPH"))
     pm.addPass<sys::CallGraph>();
   if (!envFlagTruthy("SYSY_CC_NO_PREOPT_ATMOSTONCE"))
@@ -100,7 +100,7 @@ void appendPreOptPasses(sys::PassManager &pm) {
     pm.addPass<sys::RaiseToFor>();
   if (!envFlagTruthy("SYSY_CC_NO_PREOPT_DCE"))
     pm.addPass<sys::DCE>(/*elimBlocks=*/false);
-  if (dialectPassEnabled("SYSY_CC_ENABLE_PREOPT_EARLY_INLINE", true))
+  if (dpipeDialectPassEnabled("SYSY_CC_ENABLE_PREOPT_EARLY_INLINE", true))
     pm.addPass<sys::EarlyInline>();
   if (!envFlagTruthy("SYSY_CC_NO_PREOPT_REGULAR_FOLD"))
     pm.addPass<sys::RegularFold>();
@@ -122,18 +122,18 @@ void appendPreOptPasses(sys::PassManager &pm) {
     pm.addPass<sys::Lower>();
 }
 
-void appendPostFlattenPasses(sys::PassManager &pm) {
+void dpipeAppendPostFlattenPasses(sys::PassManager &pm) {
   pm.addPass<sys::GVN>();
   pm.addPass<sys::DCE>(/*elimBlocks=*/true);
   if (!envFlagTruthy("SYSY_CC_NO_INLINE"))
-    pm.addPass<sys::Inline>(inlineThreshold());
+    pm.addPass<sys::Inline>(dpipeInlineThreshold());
   pm.addPass<sys::DCE>(/*elimBlocks=*/true);
   pm.addPass<sys::Localize>(/*beforeFlattenCFG=*/false);
   if (!envFlagTruthy("SYSY_CC_NO_GLOBALIZE"))
     pm.addPass<sys::Globalize>();
 }
 
-void appendMemoryOptPasses(sys::PassManager &pm) {
+void dpipeAppendMemoryOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::Alias>();
   if (!envFlagTruthy("SYSY_CC_NO_REGULAR_FOLD"))
     pm.addPass<sys::RegularFold>();
@@ -147,7 +147,7 @@ void appendMemoryOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::GVN>();
 }
 
-void appendLoopOptPasses(sys::PassManager &pm) {
+void dpipeAppendLoopOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::CanonicalizeLoop>(/*lcssa=*/true);
   pm.addPass<sys::LoopRotate>();
   pm.addPass<sys::CanonicalizeLoop>(/*lcssa=*/false);
@@ -156,7 +156,7 @@ void appendLoopOptPasses(sys::PassManager &pm) {
   if (!envFlagTruthy("SYSY_CC_NO_LOOP_TILING"))
     pm.addPass<sys::LoopTiling>();
   pm.addPass<sys::LICM>();
-  if (dialectPassEnabled("SYSY_CC_ENABLE_CONST_LOOP_UNROLL", true))
+  if (dpipeDialectPassEnabled("SYSY_CC_ENABLE_CONST_LOOP_UNROLL", true))
     pm.addPass<sys::ConstLoopUnroll>();
   if (!envFlagTruthy("SYSY_CC_NO_SCEV"))
     pm.addPass<sys::SCEV>();
@@ -166,7 +166,7 @@ void appendLoopOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::RemoveEmptyLoop>();
 }
 
-void appendMiscOptPasses(sys::PassManager &pm) {
+void dpipeAppendMiscOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::RegularFold>();
   pm.addPass<sys::DCE>(/*elimBlocks=*/true);
   pm.addPass<sys::GVN>();
@@ -187,9 +187,9 @@ void appendMiscOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::AggressiveDCE>();
 }
 
-void appendLateInlinePasses(sys::PassManager &pm) {
+void dpipeAppendLateInlinePasses(sys::PassManager &pm) {
   if (!envFlagTruthy("SYSY_CC_NO_LATE_INLINE"))
-    pm.addPass<sys::LateInline>(lateInlineThreshold());
+    pm.addPass<sys::LateInline>(dpipeLateInlineThreshold());
   pm.addPass<sys::RegularFold>();
   pm.addPass<sys::GVN>();
   pm.addPass<sys::Alias>();
@@ -198,7 +198,7 @@ void appendLateInlinePasses(sys::PassManager &pm) {
     pm.addPass<sys::DLE>();
   }
   pm.addPass<sys::DCE>(/*elimBlocks=*/true);
-  if (dialectPassEnabled("SYSY_CC_ENABLE_INLINE_STORE", false))
+  if (dpipeDialectPassEnabled("SYSY_CC_ENABLE_INLINE_STORE", false))
     pm.addPass<sys::InlineStore>();
   if (!envFlagTruthy("SYSY_CC_NO_SYNTH_CONST_ARRAY"))
     pm.addPass<sys::SynthConstArray>();
@@ -209,7 +209,7 @@ void appendLateInlinePasses(sys::PassManager &pm) {
   pm.addPass<sys::GVN>();
 }
 
-void appendLoopRoundPasses(sys::PassManager &pm) {
+void dpipeAppendLoopRoundPasses(sys::PassManager &pm) {
   pm.addPass<sys::CanonicalizeLoop>(/*lcssa=*/true);
   pm.addPass<sys::LICM>();
   if (!envFlagTruthy("SYSY_CC_NO_SCEV"))
@@ -220,19 +220,19 @@ void appendLoopRoundPasses(sys::PassManager &pm) {
     pm.addPass<sys::RegularFold>();
 }
 
-void appendFinalCleanupPasses(sys::PassManager &pm) {
+void dpipeAppendFinalCleanupPasses(sys::PassManager &pm) {
   pm.addPass<sys::AggressiveDCE>();
   pm.addPass<sys::SimplifyCFG>();
   if (!envFlagTruthy("SYSY_CC_NO_INST_SCHEDULE"))
     pm.addPass<sys::InstSchedule>();
 }
 
-std::unique_ptr<sys::ModuleOp> buildFromStructuredAst(sys::ASTNode *node) {
+std::unique_ptr<sys::ModuleOp> dpipeBuildFromStructuredAst(sys::ASTNode *node) {
   sys::CodeGen cg(node);
   return std::unique_ptr<sys::ModuleOp>(cg.getModule());
 }
 
-std::unique_ptr<sys::ModuleOp> buildFromCfgLowering(
+std::unique_ptr<sys::ModuleOp> dpipeBuildFromCfgLowering(
     sys::ASTNode *node, std::vector<std::string> &errors) {
   static bool warned = false;
   if (!warned) {
@@ -263,58 +263,58 @@ std::unique_ptr<ModuleOp> buildDialectModuleFromSource(
     if (!envFlagTruthy("SYSY_CC_NO_KNAPSACK_DP"))
       applyKnapsackDpDialect(node, ctx);
   } catch (const sys::CompileError &e) {
-    fail(errors, e.what());
+    dpipeFail(errors, e.what());
     if (node)
       delete node;
     return nullptr;
   } catch (const std::exception &e) {
-    fail(errors, std::string("dialect frontend: ") + e.what());
+    dpipeFail(errors, std::string("dialect frontend: ") + e.what());
     if (node)
       delete node;
     return nullptr;
   }
 
   std::unique_ptr<ModuleOp> module;
-  if (useStructuredCodegen())
-    module = buildFromStructuredAst(node);
+  if (dpipeUseStructuredCodegen())
+    module = dpipeBuildFromStructuredAst(node);
   else
-    module = buildFromCfgLowering(node, errors);
+    module = dpipeBuildFromCfgLowering(node, errors);
 
   delete node;
   return module;
 }
 
 void appendDialectMidEndPasses(PassManager &pm) {
-  if (useStructuredCodegen() && !envFlagTruthy("SYSY_CC_NO_DIALECT_PRE_OPT"))
-    appendPreOptPasses(pm);
+  if (dpipeUseStructuredCodegen() && !envFlagTruthy("SYSY_CC_NO_DIALECT_PRE_OPT"))
+    dpipeAppendPreOptPasses(pm);
 
-  if (useStructuredCodegen())
+  if (dpipeUseStructuredCodegen())
     pm.addPass<sys::FlattenCFG>();
 
-  if (dialectPassEnabled("SYSY_CC_NO_POST_FLATTEN_OPT"))
-    appendPostFlattenPasses(pm);
+  if (dpipeDialectPassEnabled("SYSY_CC_NO_POST_FLATTEN_OPT"))
+    dpipeAppendPostFlattenPasses(pm);
 
   pm.addPass<sys::Mem2Reg>();
 
-  if (dialectPassEnabled("SYSY_CC_NO_DIALECT_MEM_OPT"))
-    appendMemoryOptPasses(pm);
+  if (dpipeDialectPassEnabled("SYSY_CC_NO_DIALECT_MEM_OPT"))
+    dpipeAppendMemoryOptPasses(pm);
 
-  if (dialectPassEnabled("SYSY_CC_NO_DIALECT_LOOP_OPT"))
-    appendLoopOptPasses(pm);
+  if (dpipeDialectPassEnabled("SYSY_CC_NO_DIALECT_LOOP_OPT"))
+    dpipeAppendLoopOptPasses(pm);
 
-  if (dialectPassEnabled("SYSY_CC_ENABLE_DIALECT_MISC_OPT", true))
-    appendMiscOptPasses(pm);
+  if (dpipeDialectPassEnabled("SYSY_CC_ENABLE_DIALECT_MISC_OPT", true))
+    dpipeAppendMiscOptPasses(pm);
 
-  if (dialectPassEnabled("SYSY_CC_NO_DIALECT_LATE_OPT"))
-    appendLateInlinePasses(pm);
+  if (dpipeDialectPassEnabled("SYSY_CC_NO_DIALECT_LATE_OPT"))
+    dpipeAppendLateInlinePasses(pm);
 
-  if (dialectPassEnabled("SYSY_CC_ENABLE_DIALECT_LOOP_ROUND_OPT", true)) {
+  if (dpipeDialectPassEnabled("SYSY_CC_ENABLE_DIALECT_LOOP_ROUND_OPT", true)) {
     for (int i = 0; i < 3; i++)
-      appendLoopRoundPasses(pm);
+      dpipeAppendLoopRoundPasses(pm);
   }
 
-  if (dialectPassEnabled("SYSY_CC_NO_DIALECT_FINAL_OPT"))
-    appendFinalCleanupPasses(pm);
+  if (dpipeDialectPassEnabled("SYSY_CC_NO_DIALECT_FINAL_OPT"))
+    dpipeAppendFinalCleanupPasses(pm);
 }
 
 std::string emitDialectModuleAsm(ModuleOp *module, bool enableSchedule,
