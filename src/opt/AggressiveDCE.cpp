@@ -10,7 +10,7 @@ std::map<std::string, int> AggressiveDCE::stats() {
 }
 
 #define PRESERVED(Ty) || isa<Ty>(op)
-static bool preserved(Op *op) {
+static bool adcePreserved(Op *op) {
   return (isa<CallOp>(op) && op->has<ImpureAttr>())
     PRESERVED(BranchOp)
     PRESERVED(GotoOp)
@@ -56,7 +56,7 @@ void AggressiveDCE::runImpl(FuncOp *fn) {
   std::vector<Op*> remove;
   for (auto bb : region->getBlocks()) {
     for (auto op : bb->getOps()) {
-      if (!preserved(op) && !live.count(op)) {
+      if (!adcePreserved(op) && !live.count(op)) {
         op->removeAllOperands();
         remove.push_back(op);
       }

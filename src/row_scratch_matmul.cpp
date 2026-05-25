@@ -10,7 +10,7 @@ using std::vector;
 
 namespace {
 
-struct MatmulSite {
+struct RscmMatmulSite {
   string iIv, jIv, kIv, aName, bName, cName;
   AssignStmt *updateAssign = nullptr;
   WhileStmt *jLoop = nullptr;   // the middle j loop
@@ -19,7 +19,7 @@ struct MatmulSite {
 };
 
 // Pattern: C[i][j] = C[i][j] * A[i][k] + B[k][j]
-static bool matchMatmulUpdate(const AssignStmt *as, MatmulSite *out) {
+static bool rscmMatchMatmulUpdate(const AssignStmt *as, RscmMatmulSite *out) {
   if (!as || !as->lhs || as->lhs->indices.size() != 2) return false;
   auto *rhs = dynamic_cast<const BinaryExpr *>(as->rhs.get());
   if (!rhs || rhs->op != "+") return false;
@@ -51,17 +51,17 @@ static bool matchMatmulUpdate(const AssignStmt *as, MatmulSite *out) {
   return !out->iIv.empty() && !out->jIv.empty() && !out->kIv.empty();
 }
 
-static bool findMatmulSite(BlockStmt *blk, MatmulSite *out) {
+static bool rscmFindMatmulSite(BlockStmt *blk, RscmMatmulSite *out) {
   for (const auto &st : blk->items) {
     if (auto *as = dynamic_cast<AssignStmt *>(st.get())) {
-      if (matchMatmulUpdate(as, out)) return true;
+      if (rscmMatchMatmulUpdate(as, out)) return true;
     }
     if (auto *inner = dynamic_cast<BlockStmt *>(st.get())) {
-      if (findMatmulSite(inner, out)) return true;
+      if (rscmFindMatmulSite(inner, out)) return true;
     }
     if (auto *w = dynamic_cast<WhileStmt *>(st.get())) {
       if (auto *body = dynamic_cast<BlockStmt *>(w->body.get())) {
-        if (findMatmulSite(body, out)) {
+        if (rscmFindMatmulSite(body, out)) {
           // Record loop structure
           if (!out->jLoop) {
             out->jLoop = w;
@@ -79,7 +79,7 @@ static bool findMatmulSite(BlockStmt *blk, MatmulSite *out) {
 
 // Real transformation: hoist A[i][k] out of the j-loop into the k-loop header.
 // This is the core of "row scratch" optimization.
-static ExprPtr cloneForHoist(const Expr *e) {
+static ExprPtr rscmCloneForHoist(const Expr *e) {
   if (!e) return nullptr;
   if (auto *n = dynamic_cast<const NumberExpr *>(e)) {
     return n->isFloat ? std::make_unique<NumberExpr>(n->line, n->floatVal)
@@ -89,19 +89,19 @@ static ExprPtr cloneForHoist(const Expr *e) {
     auto c = std::make_unique<LValExpr>(lv->line, lv->name);
     c->symbol = lv->symbol;
     for (const auto &ix : lv->indices)
-      c->indices.push_back(cloneForHoist(ix.get()));
+      c->indices.push_back(rscmCloneForHoist(ix.get()));
     return c;
   }
   if (auto *u = dynamic_cast<const UnaryExpr *>(e))
-    return std::make_unique<UnaryExpr>(u->line, u->op, cloneForHoist(u->expr.get()));
+    return std::make_unique<UnaryExpr>(u->line, u->op, rscmCloneForHoist(u->expr.get()));
   if (auto *b = dynamic_cast<const BinaryExpr *>(e))
     return std::make_unique<BinaryExpr>(b->line, b->op,
-                                        cloneForHoist(b->lhs.get()),
-                                        cloneForHoist(b->rhs.get()));
+                                        rscmCloneForHoist(b->lhs.get()),
+                                        rscmCloneForHoist(b->rhs.get()));
   return nullptr;
 }
 
-static bool hoistAikOutOfJLoop(MatmulSite &site) {
+static bool rscmHoistAikOutOfJLoop(RscmMatmulSite &site) {
   if (!site.jLoop || !site.updateAssign || site.kIv.empty()) return false;
 
   auto *rhs = dynamic_cast<BinaryExpr *>(site.updateAssign->rhs.get());
@@ -109,7 +109,7 @@ static bool hoistAikOutOfJLoop(MatmulSite &site) {
   auto *mul = dynamic_cast<BinaryExpr *>(rhs->lhs.get());
   if (!mul) return false;
 
-  ExprPtr aikClone = cloneForHoist(mul->rhs.get());
+  ExprPtr aikClone = rscmCloneForHoist(mul->rhs.get());
   if (!aikClone) return false;
 
   // Create a temporary scalar: int aik = A[i][k];
@@ -157,11 +157,11 @@ static bool hoistAikOutOfJLoop(MatmulSite &site) {
   return false;
 }
 
-static bool tryTransformMatmulFunc(FuncDef &fn) {
+static bool rscmTryTransformMatmulFunc(FuncDef &fn) {
   if (!fn.body) return false;
-  MatmulSite site;
-  if (!findMatmulSite(fn.body.get(), &site)) return false;
-  return hoistAikOutOfJLoop(site);
+  RscmMatmulSite site;
+  if (!rscmFindMatmulSite(fn.body.get(), &site)) return false;
+  return rscmHoistAikOutOfJLoop(site);
 }
 
 } // namespace
@@ -170,7 +170,7 @@ void applyRowScratchMatmulPass(Program &program) {
   if (envFlagTruthy("SYSY_CC_NO_ROW_SCRATCH_MATMUL")) return;
   for (auto &item : program.items) {
     if (item.func) {
-      tryTransformMatmulFunc(*item.func);
+      rscmTryTransformMatmulFunc(*item.func);
     }
   }
 }

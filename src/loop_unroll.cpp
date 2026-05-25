@@ -18,7 +18,7 @@ constexpr int kMaxTrip = 16;
 constexpr int kMaxBodyStmts = 48;
 constexpr int kMaxUnrolledStmts = 800;
 
-static int unrollTripCap() {
+static int lurUnrollTripCap() {
   const char *v = getenv("SYSY_CC_LOOP_UNROLL_MAX");
   if (!v || !*v) {
     return kMaxTrip;
@@ -26,7 +26,7 @@ static int unrollTripCap() {
   return std::max(0, std::min(kMaxTrip, static_cast<int>(std::strtol(v, nullptr, 10))));
 }
 
-static void copyExprMeta(Expr *dst, const Expr *src) {
+static void lurCopyExprMeta(Expr *dst, const Expr *src) {
   if (!dst || !src) {
     return;
   }
@@ -35,7 +35,7 @@ static void copyExprMeta(Expr *dst, const Expr *src) {
   dst->constVal = src->constVal;
 }
 
-static ExprPtr cloneExpr(const Expr *e) {
+static ExprPtr lurCloneExpr(const Expr *e) {
   if (!e) {
     return nullptr;
   }
@@ -55,30 +55,30 @@ static ExprPtr cloneExpr(const Expr *e) {
     auto c = make_unique<LValExpr>(lv->line, lv->name);
     c->symbol = lv->symbol;
     for (const auto &ix : lv->indices) {
-      c->indices.push_back(cloneExpr(ix.get()));
+      c->indices.push_back(lurCloneExpr(ix.get()));
     }
     out = std::move(c);
     break;
   }
   case ExprKind::Unary: {
     auto *u = static_cast<const UnaryExpr *>(e);
-    out = make_unique<UnaryExpr>(u->line, u->op, cloneExpr(u->expr.get()));
+    out = make_unique<UnaryExpr>(u->line, u->op, lurCloneExpr(u->expr.get()));
     break;
   }
   case ExprKind::Binary: {
     auto *b = static_cast<const BinaryExpr *>(e);
-    out = make_unique<BinaryExpr>(b->line, b->op, cloneExpr(b->lhs.get()),
-                                    cloneExpr(b->rhs.get()));
+    out = make_unique<BinaryExpr>(b->line, b->op, lurCloneExpr(b->lhs.get()),
+                                    lurCloneExpr(b->rhs.get()));
     break;
   }
   default:
     return nullptr;
   }
-  copyExprMeta(out.get(), e);
+  lurCopyExprMeta(out.get(), e);
   return out;
 }
 
-static ExprPtr substIvExpr(const Expr *e, const string &iv, int val) {
+static ExprPtr lurSubstIvExpr(const Expr *e, const string &iv, int val) {
   if (!e) {
     return nullptr;
   }
@@ -90,27 +90,27 @@ static ExprPtr substIvExpr(const Expr *e, const string &iv, int val) {
     auto c = make_unique<LValExpr>(lv->line, lv->name);
     c->symbol = lv->symbol;
     for (const auto &ix : lv->indices) {
-      c->indices.push_back(substIvExpr(ix.get(), iv, val));
+      c->indices.push_back(lurSubstIvExpr(ix.get(), iv, val));
     }
     return c;
   }
   if (e->kind == ExprKind::Unary) {
     auto *u = static_cast<const UnaryExpr *>(e);
-    return make_unique<UnaryExpr>(u->line, u->op, substIvExpr(u->expr.get(), iv, val));
+    return make_unique<UnaryExpr>(u->line, u->op, lurSubstIvExpr(u->expr.get(), iv, val));
   }
   if (e->kind == ExprKind::Binary) {
     auto *b = static_cast<const BinaryExpr *>(e);
     return make_unique<BinaryExpr>(
-        b->line, b->op, substIvExpr(b->lhs.get(), iv, val),
-        substIvExpr(b->rhs.get(), iv, val));
+        b->line, b->op, lurSubstIvExpr(b->lhs.get(), iv, val),
+        lurSubstIvExpr(b->rhs.get(), iv, val));
   }
-  return cloneExpr(e);
+  return lurCloneExpr(e);
 }
 
-static StmtPtr cloneStmt(const Stmt *s);
-static StmtPtr substIvStmt(const Stmt *s, const string &iv, int val);
+static StmtPtr lurCloneStmt(const Stmt *s);
+static StmtPtr lurSubstIvStmt(const Stmt *s, const string &iv, int val);
 
-static StmtPtr substIvStmt(const Stmt *s, const string &iv, int val) {
+static StmtPtr lurSubstIvStmt(const Stmt *s, const string &iv, int val) {
   if (!s) {
     return nullptr;
   }
@@ -118,35 +118,35 @@ static StmtPtr substIvStmt(const Stmt *s, const string &iv, int val) {
     auto lhs = make_unique<LValExpr>(as->line, as->lhs->name);
     lhs->symbol = as->lhs->symbol;
     for (const auto &ix : as->lhs->indices) {
-      lhs->indices.push_back(substIvExpr(ix.get(), iv, val));
+      lhs->indices.push_back(lurSubstIvExpr(ix.get(), iv, val));
     }
     return make_unique<AssignStmt>(as->line, std::move(lhs),
-                                   substIvExpr(as->rhs.get(), iv, val));
+                                   lurSubstIvExpr(as->rhs.get(), iv, val));
   }
   if (auto *es = dynamic_cast<const ExprStmt *>(s)) {
-    return make_unique<ExprStmt>(es->line, substIvExpr(es->expr.get(), iv, val));
+    return make_unique<ExprStmt>(es->line, lurSubstIvExpr(es->expr.get(), iv, val));
   }
   if (auto *ifs = dynamic_cast<const IfStmt *>(s)) {
     StmtPtr thenS =
-        ifs->thenStmt ? substIvStmt(ifs->thenStmt.get(), iv, val) : nullptr;
+        ifs->thenStmt ? lurSubstIvStmt(ifs->thenStmt.get(), iv, val) : nullptr;
     StmtPtr elseS =
-        ifs->elseStmt ? substIvStmt(ifs->elseStmt.get(), iv, val) : nullptr;
-    return make_unique<IfStmt>(ifs->line, substIvExpr(ifs->cond.get(), iv, val),
+        ifs->elseStmt ? lurSubstIvStmt(ifs->elseStmt.get(), iv, val) : nullptr;
+    return make_unique<IfStmt>(ifs->line, lurSubstIvExpr(ifs->cond.get(), iv, val),
                                std::move(thenS), std::move(elseS));
   }
   if (auto *blk = dynamic_cast<const BlockStmt *>(s)) {
     auto nb = make_unique<BlockStmt>(blk->line);
     for (const auto &it : blk->items) {
-      if (StmtPtr c = substIvStmt(it.get(), iv, val)) {
+      if (StmtPtr c = lurSubstIvStmt(it.get(), iv, val)) {
         nb->items.push_back(std::move(c));
       }
     }
     return nb;
   }
-  return cloneStmt(s);
+  return lurCloneStmt(s);
 }
 
-static StmtPtr cloneStmt(const Stmt *s) {
+static StmtPtr lurCloneStmt(const Stmt *s) {
   if (!s) {
     return nullptr;
   }
@@ -154,23 +154,23 @@ static StmtPtr cloneStmt(const Stmt *s) {
     auto lhs = make_unique<LValExpr>(as->line, as->lhs->name);
     lhs->symbol = as->lhs->symbol;
     for (const auto &ix : as->lhs->indices) {
-      lhs->indices.push_back(cloneExpr(ix.get()));
+      lhs->indices.push_back(lurCloneExpr(ix.get()));
     }
-    return make_unique<AssignStmt>(as->line, std::move(lhs), cloneExpr(as->rhs.get()));
+    return make_unique<AssignStmt>(as->line, std::move(lhs), lurCloneExpr(as->rhs.get()));
   }
   if (auto *es = dynamic_cast<const ExprStmt *>(s)) {
-    return make_unique<ExprStmt>(es->line, cloneExpr(es->expr.get()));
+    return make_unique<ExprStmt>(es->line, lurCloneExpr(es->expr.get()));
   }
   if (auto *ifs = dynamic_cast<const IfStmt *>(s)) {
-    StmtPtr thenS = ifs->thenStmt ? cloneStmt(ifs->thenStmt.get()) : nullptr;
-    StmtPtr elseS = ifs->elseStmt ? cloneStmt(ifs->elseStmt.get()) : nullptr;
-    return make_unique<IfStmt>(ifs->line, cloneExpr(ifs->cond.get()), std::move(thenS),
+    StmtPtr thenS = ifs->thenStmt ? lurCloneStmt(ifs->thenStmt.get()) : nullptr;
+    StmtPtr elseS = ifs->elseStmt ? lurCloneStmt(ifs->elseStmt.get()) : nullptr;
+    return make_unique<IfStmt>(ifs->line, lurCloneExpr(ifs->cond.get()), std::move(thenS),
                                std::move(elseS));
   }
   if (auto *blk = dynamic_cast<const BlockStmt *>(s)) {
     auto nb = make_unique<BlockStmt>(blk->line);
     for (const auto &it : blk->items) {
-      if (StmtPtr c = cloneStmt(it.get())) {
+      if (StmtPtr c = lurCloneStmt(it.get())) {
         nb->items.push_back(std::move(c));
       }
     }
@@ -179,7 +179,7 @@ static StmtPtr cloneStmt(const Stmt *s) {
   return nullptr;
 }
 
-static bool extractLtBound(const Expr *cond, string *iv, int *limitConst) {
+static bool lurExtractLtBound(const Expr *cond, string *iv, int *limitConst) {
   auto *b = dynamic_cast<const BinaryExpr *>(cond);
   if (!b || b->op != "<") {
     return false;
@@ -194,7 +194,7 @@ static bool extractLtBound(const Expr *cond, string *iv, int *limitConst) {
   return false;
 }
 
-static bool isZeroInit(const Stmt *s, const string &iv) {
+static bool lurIsZeroInit(const Stmt *s, const string &iv) {
   if (auto *as = dynamic_cast<const AssignStmt *>(s)) {
     if (!as->lhs || as->lhs->name != iv || as->lhs->indices.empty()) {
       return false;
@@ -214,7 +214,7 @@ static bool isZeroInit(const Stmt *s, const string &iv) {
   return false;
 }
 
-static bool exprIvUsedAsArrayIndex(const Expr *e, const string &iv) {
+static bool lurExprIvUsedAsArrayIndex(const Expr *e, const string &iv) {
   if (!e) {
     return false;
   }
@@ -226,46 +226,46 @@ static bool exprIvUsedAsArrayIndex(const Expr *e, const string &iv) {
           return true;
         }
       }
-      if (exprIvUsedAsArrayIndex(ix.get(), iv)) {
+      if (lurExprIvUsedAsArrayIndex(ix.get(), iv)) {
         return true;
       }
     }
     return false;
   }
   if (e->kind == ExprKind::Unary) {
-    return exprIvUsedAsArrayIndex(
+    return lurExprIvUsedAsArrayIndex(
         static_cast<const UnaryExpr *>(e)->expr.get(), iv);
   }
   if (e->kind == ExprKind::Binary) {
     auto *b = static_cast<const BinaryExpr *>(e);
-    return exprIvUsedAsArrayIndex(b->lhs.get(), iv) ||
-           exprIvUsedAsArrayIndex(b->rhs.get(), iv);
+    return lurExprIvUsedAsArrayIndex(b->lhs.get(), iv) ||
+           lurExprIvUsedAsArrayIndex(b->rhs.get(), iv);
   }
   return false;
 }
 
-static bool stmtIvUsedAsArrayIndex(const Stmt *s, const string &iv) {
+static bool lurStmtIvUsedAsArrayIndex(const Stmt *s, const string &iv) {
   if (!s) {
     return false;
   }
   switch (s->kind) {
   case StmtKind::Assign: {
     auto *as = static_cast<const AssignStmt *>(s);
-    return exprIvUsedAsArrayIndex(as->lhs.get(), iv) ||
-           exprIvUsedAsArrayIndex(as->rhs.get(), iv);
+    return lurExprIvUsedAsArrayIndex(as->lhs.get(), iv) ||
+           lurExprIvUsedAsArrayIndex(as->rhs.get(), iv);
   }
   case StmtKind::Expr: {
-    return exprIvUsedAsArrayIndex(static_cast<const ExprStmt *>(s)->expr.get(), iv);
+    return lurExprIvUsedAsArrayIndex(static_cast<const ExprStmt *>(s)->expr.get(), iv);
   }
   case StmtKind::If: {
     auto *ifs = static_cast<const IfStmt *>(s);
-    return exprIvUsedAsArrayIndex(ifs->cond.get(), iv) ||
-           stmtIvUsedAsArrayIndex(ifs->thenStmt.get(), iv) ||
-           stmtIvUsedAsArrayIndex(ifs->elseStmt.get(), iv);
+    return lurExprIvUsedAsArrayIndex(ifs->cond.get(), iv) ||
+           lurStmtIvUsedAsArrayIndex(ifs->thenStmt.get(), iv) ||
+           lurStmtIvUsedAsArrayIndex(ifs->elseStmt.get(), iv);
   }
   case StmtKind::Block: {
     for (const auto &it : static_cast<const BlockStmt *>(s)->items) {
-      if (stmtIvUsedAsArrayIndex(it.get(), iv)) {
+      if (lurStmtIvUsedAsArrayIndex(it.get(), iv)) {
         return true;
       }
     }
@@ -276,7 +276,7 @@ static bool stmtIvUsedAsArrayIndex(const Stmt *s, const string &iv) {
   }
 }
 
-static bool isIncByOne(const AssignStmt *as, const string &iv) {
+static bool lurIsIncByOne(const AssignStmt *as, const string &iv) {
   if (!as || !as->lhs || as->lhs->name != iv || !as->lhs->indices.empty()) {
     return false;
   }
@@ -290,7 +290,7 @@ static bool isIncByOne(const AssignStmt *as, const string &iv) {
          r->intVal == 1;
 }
 
-static bool stmtHasBreakContinue(const Stmt *s) {
+static bool lurStmtHasBreakContinue(const Stmt *s) {
   if (!s) {
     return false;
   }
@@ -300,7 +300,7 @@ static bool stmtHasBreakContinue(const Stmt *s) {
     return true;
   case StmtKind::Block: {
     for (const auto &it : static_cast<const BlockStmt *>(s)->items) {
-      if (stmtHasBreakContinue(it.get())) {
+      if (lurStmtHasBreakContinue(it.get())) {
         return true;
       }
     }
@@ -308,8 +308,8 @@ static bool stmtHasBreakContinue(const Stmt *s) {
   }
   case StmtKind::If: {
     auto *ifs = static_cast<const IfStmt *>(s);
-    return stmtHasBreakContinue(ifs->thenStmt.get()) ||
-           stmtHasBreakContinue(ifs->elseStmt.get());
+    return lurStmtHasBreakContinue(ifs->thenStmt.get()) ||
+           lurStmtHasBreakContinue(ifs->elseStmt.get());
   }
   case StmtKind::While:
     return true;
@@ -318,7 +318,7 @@ static bool stmtHasBreakContinue(const Stmt *s) {
   }
 }
 
-static bool collectLoopBody(const WhileStmt *w, const string &iv,
+static bool lurCollectLoopBody(const WhileStmt *w, const string &iv,
                             vector<const Stmt *> &body, const AssignStmt **inc) {
   *inc = nullptr;
   body.clear();
@@ -328,12 +328,12 @@ static bool collectLoopBody(const WhileStmt *w, const string &iv,
   }
   for (const auto &st : blk->items) {
     if (auto *as = dynamic_cast<const AssignStmt *>(st.get())) {
-      if (isIncByOne(as, iv)) {
+      if (lurIsIncByOne(as, iv)) {
         *inc = as;
         continue;
       }
     }
-    if (stmtHasBreakContinue(st.get())) {
+    if (lurStmtHasBreakContinue(st.get())) {
       return false;
     }
     body.push_back(st.get());
@@ -342,7 +342,7 @@ static bool collectLoopBody(const WhileStmt *w, const string &iv,
          static_cast<int>(body.size()) <= kMaxBodyStmts;
 }
 
-static bool tryUnrollInitWhile(BlockStmt *parent, size_t initIdx) {
+static bool lurTryUnrollInitWhile(BlockStmt *parent, size_t initIdx) {
   if (initIdx + 1 >= parent->items.size()) {
     return false;
   }
@@ -354,22 +354,22 @@ static bool tryUnrollInitWhile(BlockStmt *parent, size_t initIdx) {
 
   string iv;
   int limit = 0;
-  if (!extractLtBound(w->cond.get(), &iv, &limit) || !isZeroInit(init, iv)) {
+  if (!lurExtractLtBound(w->cond.get(), &iv, &limit) || !lurIsZeroInit(init, iv)) {
     return false;
   }
 
-  const int cap = unrollTripCap();
+  const int cap = lurUnrollTripCap();
   if (limit <= 0 || limit > cap) {
     return false;
   }
 
   const AssignStmt *inc = nullptr;
   vector<const Stmt *> body;
-  if (!collectLoopBody(w, iv, body, &inc)) {
+  if (!lurCollectLoopBody(w, iv, body, &inc)) {
     return false;
   }
   for (const Stmt *st : body) {
-    if (stmtIvUsedAsArrayIndex(st, iv)) {
+    if (lurStmtIvUsedAsArrayIndex(st, iv)) {
       return false;
     }
   }
@@ -378,7 +378,7 @@ static bool tryUnrollInitWhile(BlockStmt *parent, size_t initIdx) {
   unrolled.reserve(static_cast<size_t>(limit) * body.size());
   for (int k = 0; k < limit; ++k) {
     for (const Stmt *st : body) {
-      if (StmtPtr c = substIvStmt(st, iv, k)) {
+      if (StmtPtr c = lurSubstIvStmt(st, iv, k)) {
         unrolled.push_back(std::move(c));
       }
     }
@@ -410,18 +410,18 @@ static bool tryUnrollInitWhile(BlockStmt *parent, size_t initIdx) {
   return true;
 }
 
-static bool transformBlock(BlockStmt *blk) {
+static bool lurTransformBlock(BlockStmt *blk) {
   bool changed = false;
   for (size_t i = 0; i < blk->items.size();) {
-    if (tryUnrollInitWhile(blk, i)) {
+    if (lurTryUnrollInitWhile(blk, i)) {
       changed = true;
       continue;
     }
     if (auto *inner = dynamic_cast<BlockStmt *>(blk->items[i].get())) {
-      changed |= transformBlock(inner);
+      changed |= lurTransformBlock(inner);
     } else if (auto *w = dynamic_cast<WhileStmt *>(blk->items[i].get())) {
       if (auto *wb = dynamic_cast<BlockStmt *>(w->body.get())) {
-        changed |= transformBlock(wb);
+        changed |= lurTransformBlock(wb);
       }
     }
     ++i;
@@ -429,12 +429,12 @@ static bool transformBlock(BlockStmt *blk) {
   return changed;
 }
 
-static void transformFunc(FuncDef *fn) {
+static void lurTransformFunc(FuncDef *fn) {
   if (!fn || !fn->body) {
     return;
   }
   if (auto *blk = dynamic_cast<BlockStmt *>(fn->body.get())) {
-    transformBlock(blk);
+    lurTransformBlock(blk);
   }
 }
 
@@ -446,7 +446,7 @@ void applySmallLoopUnrollPass(Program &program) {
   }
   for (auto &item : program.items) {
     if (item.func) {
-      transformFunc(item.func.get());
+      lurTransformFunc(item.func.get());
     }
   }
 }

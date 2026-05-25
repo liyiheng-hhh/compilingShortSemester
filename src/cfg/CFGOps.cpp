@@ -4,7 +4,7 @@ namespace sys::cfg {
 
 namespace {
 
-const char *typeName(dhir::TypeKind kind) {
+const char *cfgTypeName(dhir::TypeKind kind) {
   switch (kind) {
   case dhir::TypeKind::Unknown:
     return "unknown";
@@ -24,7 +24,7 @@ const char *typeName(dhir::TypeKind kind) {
   return "unknown";
 }
 
-const char *memoryBaseName(MemoryBaseKind kind) {
+const char *cfgMemBaseName(MemoryBaseKind kind) {
   switch (kind) {
   case MemoryBaseKind::Unknown:
     return "unknown";
@@ -38,13 +38,13 @@ const char *memoryBaseName(MemoryBaseKind kind) {
   return "unknown";
 }
 
-void dumpSymbol(const SymbolInfo &sym, std::ostream &os, int depth, const char *prefix) {
+void cfgDumpSymbol(const SymbolInfo &sym, std::ostream &os, int depth, const char *prefix) {
   for (int i = 0; i < depth; i++)
     os << "  ";
-  os << prefix << " \"" << sym.name << "\" type=" << typeName(sym.type)
-     << " elem=" << typeName(sym.elementType)
+  os << prefix << " \"" << sym.name << "\" type=" << cfgTypeName(sym.type)
+     << " elem=" << cfgTypeName(sym.elementType)
      << " bytes=" << sym.storageSize
-     << " base=" << memoryBaseName(sym.baseKind);
+     << " base=" << cfgMemBaseName(sym.baseKind);
   if (!sym.dims.empty()) {
     os << " dims=[";
     for (size_t i = 0; i < sym.dims.size(); i++) {
@@ -101,14 +101,14 @@ const char *kindName(OpKind kind) {
 void dump(const Module &module, std::ostream &os) {
   os << "cfg.module\n";
   for (const auto &global : module.globals)
-    dumpSymbol(global, os, 1, "cfg.global");
+    cfgDumpSymbol(global, os, 1, "cfg.global");
   for (const auto &func : module.funcs) {
-    os << "  cfg.func @" << func.name << " ret=" << typeName(func.returnType)
+    os << "  cfg.func @" << func.name << " ret=" << cfgTypeName(func.returnType)
        << " entry=" << func.entry << "\n";
     for (const auto &param : func.params)
-      dumpSymbol(param, os, 2, "cfg.param");
+      cfgDumpSymbol(param, os, 2, "cfg.param");
     for (const auto &local : func.locals)
-      dumpSymbol(local, os, 2, "cfg.local");
+      cfgDumpSymbol(local, os, 2, "cfg.local");
     for (size_t bid = 0; bid < func.blocks.size(); bid++) {
       const auto &bb = func.blocks[bid];
       os << "    ^bb" << bid << " (" << bb.name << ")\n";
@@ -116,13 +116,13 @@ void dump(const Module &module, std::ostream &os) {
         os << "      ";
         if (!inst.result.empty())
           os << inst.result << " = ";
-        os << kindName(inst.kind) << ":" << typeName(inst.type);
+        os << kindName(inst.kind) << ":" << cfgTypeName(inst.type);
         if (!inst.symbol.empty())
           os << " \"" << inst.symbol << "\"";
         if (inst.memSize)
           os << " <size=" << inst.memSize << ">";
         if (inst.kind == OpKind::Load || inst.kind == OpKind::Store) {
-          os << " <base=" << memoryBaseName(inst.baseKind)
+          os << " <base=" << cfgMemBaseName(inst.baseKind)
              << ",rank=" << inst.accessRank
              << ",addr=" << (inst.producesAddress ? "1" : "0") << ">";
           if (!inst.strideBytes.empty()) {
@@ -149,9 +149,9 @@ void dump(const Module &module, std::ostream &os) {
           for (size_t i = 0; i < inst.calleeArgTypes.size(); i++) {
             if (i)
               os << ",";
-            os << typeName(inst.calleeArgTypes[i]);
+            os << cfgTypeName(inst.calleeArgTypes[i]);
           }
-          os << ")->" << typeName(inst.calleeRetType);
+          os << ")->" << cfgTypeName(inst.calleeRetType);
         }
         if (!inst.targets.empty()) {
           os << " -> [";

@@ -6,7 +6,7 @@ namespace sys::dhir {
 
 namespace {
 
-const char *binarySymbol(int kind) {
+const char *dhirBinarySymbol(int kind) {
   switch (kind) {
   case BinaryNode::Add:
     return "+";
@@ -34,7 +34,7 @@ const char *binarySymbol(int kind) {
   return "?";
 }
 
-const char *unarySymbol(int kind) {
+const char *dhirUnarySymbol(int kind) {
   switch (kind) {
   case UnaryNode::Not:
     return "!";
@@ -48,12 +48,12 @@ const char *unarySymbol(int kind) {
   return "?";
 }
 
-bool isCmp(int kind) {
+bool dhirNodeIsCmp(int kind) {
   return kind == BinaryNode::Eq || kind == BinaryNode::Ne ||
     kind == BinaryNode::Le || kind == BinaryNode::Lt;
 }
 
-std::string assignTargetName(ASTNode *lhs) {
+std::string dhirAssignTargetName(ASTNode *lhs) {
   if (!lhs)
     return "";
   if (auto ref = dyn_cast<VarRefNode>(lhs))
@@ -162,7 +162,7 @@ std::unique_ptr<Op> Builder::buildNode(ASTNode *node) {
   if (auto *n = dyn_cast<AssignNode>(node)) {
     auto op = std::make_unique<Op>(OpKind::Store, node);
     op->type = mapType(node->type);
-    op->symbol = assignTargetName(n->l);
+    op->symbol = dhirAssignTargetName(n->l);
     if (auto *lhsArr = dyn_cast<ArrayAccessNode>(n->l)) {
       for (auto *idx : lhsArr->indices)
         op->append(buildNode(idx));
@@ -173,15 +173,15 @@ std::unique_ptr<Op> Builder::buildNode(ASTNode *node) {
   if (auto *n = dyn_cast<UnaryNode>(node)) {
     auto op = std::make_unique<Op>(OpKind::Arith, node);
     op->type = mapType(node->type);
-    op->symbol = unarySymbol(n->kind);
+    op->symbol = dhirUnarySymbol(n->kind);
     op->append(buildNode(n->node));
     return op;
   }
   if (auto *n = dyn_cast<BinaryNode>(node)) {
-    auto kind = isCmp(n->kind) ? OpKind::Cmp : OpKind::Arith;
+    auto kind = dhirNodeIsCmp(n->kind) ? OpKind::Cmp : OpKind::Arith;
     auto op = std::make_unique<Op>(kind, node);
-    op->type = isCmp(n->kind) ? TypeKind::Int : mapType(node->type);
-    op->symbol = binarySymbol(n->kind);
+    op->type = dhirNodeIsCmp(n->kind) ? TypeKind::Int : mapType(node->type);
+    op->symbol = dhirBinarySymbol(n->kind);
     op->append(buildNode(n->l));
     op->append(buildNode(n->r));
     return op;

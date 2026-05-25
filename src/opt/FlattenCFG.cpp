@@ -5,11 +5,11 @@
 
 using namespace sys;
 
-static bool isTerminator(Op *op) {
+static bool fltIsTerminator(Op *op) {
   return isa<BranchOp>(op) || isa<GotoOp>(op) || isa<ReturnOp>(op);
 }
 
-static void handleIf(Op *x) {
+static void fltHandleIf(Op *x) {
   Builder builder;
 
   auto bb = x->getParent();
@@ -63,7 +63,7 @@ static void handleIf(Op *x) {
   x->erase();
 }
 
-static void handleWhile(Op *x) {
+static void fltHandleWhile(Op *x) {
   Builder builder;
 
   auto bb = x->getParent();
@@ -145,7 +145,7 @@ static void handleWhile(Op *x) {
   x->erase();
 }
 
-void tidy(FuncOp *func) {
+void fltTidyCfg(FuncOp *func) {
   Builder builder;
   auto body = func->getRegion();
 
@@ -161,7 +161,7 @@ void tidy(FuncOp *func) {
   for (auto bb : body->getBlocks()) {
     Op *term = nullptr;
     for (auto op : bb->getOps()) {
-      if (isTerminator(op)) {
+      if (fltIsTerminator(op)) {
         term = op;
         break;
       }
@@ -183,7 +183,7 @@ void tidy(FuncOp *func) {
   for (auto it = body->begin(); it != body->end(); ++it) {
     auto bb = *it;
     auto next = it; ++next;
-    if (bb->getOpCount() == 0 || !isTerminator(bb->getLastOp())) {
+    if (bb->getOpCount() == 0 || !fltIsTerminator(bb->getLastOp())) {
       builder.setToBlockEnd(bb);
       builder.create<GotoOp>({ new TargetAttr(*next) });
     }
@@ -251,11 +251,11 @@ void tidy(FuncOp *func) {
 void FlattenCFG::run() {
   auto ifs = module->findAll<IfOp>();
   for (auto x : ifs)
-    handleIf(x);
+    fltHandleIf(x);
 
   auto whiles = module->findAll<WhileOp>();
   for (auto x : whiles)
-    handleWhile(x);
+    fltHandleWhile(x);
 
   // Now everything inside functions have been flattened.
   // Tidy up the basic blocks:
@@ -264,5 +264,5 @@ void FlattenCFG::run() {
   //    3) calculate `pred`.
   auto functions = collectFuncs();
   for (auto x : functions)
-    tidy(x);
+    fltTidyCfg(x);
 }

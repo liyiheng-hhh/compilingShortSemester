@@ -57,6 +57,20 @@
 | `pre-opt/EarlyConstFold.cpp` | `ecfLoadEscapesToCall`, `ecfHasStoresTo`（仅 helper 名） |
 | `pre-opt/Parallelize.cpp` | `parLoopParallelizable` |
 
+### 批次 4
+
+| 文件 | 重命名示例 |
+|------|------------|
+| `opt/FlattenCFG.cpp` | `fltIsTerminator`, `fltHandleIf`, `fltHandleWhile`, `fltTidyCfg` |
+| `opt/AggressiveDCE.cpp` | `adcePreserved` |
+| `loop_unroll.cpp` | `lurCloneExpr`, `lurTryUnrollInitWhile`, `lurTransformBlock`, … |
+| `land_lor_split.cpp` | `llsRewriteStmtTree`, `llsNestIfFromAnd`, `llsCollectAndFactors`, … |
+| `mm_hoist.cpp` | `mmhFindMmSite`, `MmhSite`, `mmhTransformMidLoop`, … |
+| `row_scratch_matmul.cpp` | `rscmMatchMatmulUpdate`, `RscmMatmulSite`, … |
+| `cfg/CFGVerifier.cpp` | `cvfWhere`, `cvfIsMemoryInst`, `cvfIsIntLikeToken`（公开 `verify` 不变） |
+| `cfg/CFGOps.cpp` | `cfgTypeName`, `cfgDumpSymbol`, `cfgMemBaseName`（公开 `isTerminator`/`dump` 不变） |
+| `dialect_hir/DhirBuilder.cpp` | `dhirBinarySymbol`, `dhirNodeIsCmp`, `dhirAssignTargetName` |
+
 ## 暂不动（高风险）
 
 - `mlir_rv/Schedule.cpp`, `InstCombine.cpp` — 指令/阶段顺序敏感
@@ -67,8 +81,8 @@
 ## 后续可选（仍仅 helper 命名）
 
 - `dialect_parse/Lexer.cpp`, `Parser.cpp`, `Sema.cpp` 内 lambda/局部逻辑（无独立 helper 时收益小）
-- `opt/FlattenCFG.cpp`, `AggressiveDCE.cpp`, `Reassociate.cpp`
-- `pre-opt/TidyMemory.cpp`, `MoveAlloca.cpp`
+- `opt/Reassociate.cpp`, `opt/DSE.cpp` / `DLE.cpp`（多为成员函数）
+- `pre-opt/TidyMemory.cpp`, `MoveAlloca.cpp`, `RaiseToFor.cpp`（静态 Rule 名）
 
 ## 评测前
 
