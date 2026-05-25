@@ -182,11 +182,11 @@ class CodeGen {
   SymbolTable symbols;
   SymbolTable globals;
 
-  void emit(ASTNode *node);
-  Value emitExpr(ASTNode *node);
+  void cgcEmit(ASTNode *node);
+  Value cgcEmitExpr(ASTNode *node);
 
-  Value emitBinary(BinaryNode *node);
-  Value emitUnary(UnaryNode *node);
+  Value cgcEmitBinary(BinaryNode *node);
+  Value cgcEmitUnary(UnaryNode *node);
   
   int getSize(Type *ty);
 public:

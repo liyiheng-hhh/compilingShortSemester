@@ -127,6 +127,6 @@ OP(WakeOp);
 }
 
 #undef OP
-#define DEF(i) getOperand(i).defining
+#define DEF(i) obOperandDef(i)
 
 #endif

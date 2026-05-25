@@ -225,6 +225,7 @@ public:
 
   Region *getRegion(int i = 0) { return regions[i]; }
   Value getOperand(int i = 0) { return operands[i]; }
+  Op *obOperandDef(int i) { return getOperand(i).defining; }
 
   void pushOperand(Value v);
   void removeAllOperands();

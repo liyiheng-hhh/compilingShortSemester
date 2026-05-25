@@ -19,7 +19,9 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/hir/HIRRowScratchMatmul.cpp $(SRCDIR)/hir/HIRLoopTransform.cpp \
 	$(SRCDIR)/rv/rv_asm.cpp $(SRCDIR)/rv/rv_passes.cpp $(SRCDIR)/rv/RegPeephole.cpp \
 	$(SRCDIR)/rv/InstCombine.cpp $(SRCDIR)/rv/Schedule.cpp $(SRCDIR)/rv/StrengthReduct.cpp \
-	$(SRCDIR)/codegen/OpBase.cpp $(SRCDIR)/codegen/Attrs.cpp $(SRCDIR)/codegen/CodeGen.cpp \
+	$(SRCDIR)/codegen/OpBase.cpp $(SRCDIR)/codegen/OpBaseDom.cpp $(SRCDIR)/codegen/Attrs.cpp \
+	$(SRCDIR)/codegen/CodeGen.cpp $(SRCDIR)/codegen/CodeGenBuilder.cpp \
+	$(SRCDIR)/codegen/CodeGenEmitExpr.cpp $(SRCDIR)/codegen/CodeGenEmitStmt.cpp \
 	$(SRCDIR)/pre-opt/PreAttrs.cpp $(SRCDIR)/pre-opt/MoveAlloca.cpp \
 	$(SRCDIR)/pre-opt/EarlyConstFold.cpp $(SRCDIR)/pre-opt/Localize.cpp \
 	$(SRCDIR)/pre-opt/EarlyInline.cpp $(SRCDIR)/pre-opt/TCO.cpp \

@@ -228,9 +228,17 @@ make runtime-eval SUITE=performance OPT=O1   # 60/60
 | `AtMostOnce`：`amoHasNoCallers` / `amoHasMultipleCallers` | 完成 |
 | `InstSchedule`：`isSchPinnedOp` | 完成 |
 
-### E–H
+### E（本轮）
 
-`CodeGen` 拆 TU、`RV Schedule` 仅拆文件不改序等。每批后 `make clean && make -j4` + O1。
+| 项 | 状态 |
+|----|------|
+| `OpBaseDom.cpp`：`updateDoms` / `updateDomFront` / `updatePDoms` + `ob*` 辅助 | 完成 |
+| `Op::dump` 格式串改写；`DEF` → `obOperandDef` | 完成 |
+| `CodeGen` → `CodeGen` + `CodeGenBuilder` + `CodeGenEmitExpr` + `CodeGenEmitStmt`；`cgcEmit*` | 完成 |
+
+### F–H
+
+`RV Schedule` 仅拆文件不改序等。每批后 `make clean && make -j4` + O1。
 
 ## 暂不动（高风险）
 
