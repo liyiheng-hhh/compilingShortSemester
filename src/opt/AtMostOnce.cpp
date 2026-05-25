@@ -1,9 +1,21 @@
 #include "Analysis.h"
 
 
-// compiler2026-x phase-1 (pass surface)
+// compiler2026-x phase-D (trivial opt dedup)
 
 using namespace sys;
+
+namespace {
+
+bool amoHasNoCallers(const std::vector<std::string> &callers) {
+  return callers.empty();
+}
+
+bool amoHasMultipleCallers(const std::vector<std::string> &callers) {
+  return callers.size() >= 2;
+}
+
+}  // namespace
 
 // This runs before Flatten CFG.
 void AtMostOnce::run() {
@@ -17,12 +29,12 @@ void AtMostOnce::run() {
 
     const auto &callers = CALLER(func);
 
-    if (callers.size() == 0) {
+    if (amoHasNoCallers(callers)) {
       func->add<AtMostOnceAttr>();
       continue;
     }
 
-    if (callers.size() >= 2)
+    if (amoHasMultipleCallers(callers))
       continue;
 
     FuncOp *caller = fnMap[callers[0]];

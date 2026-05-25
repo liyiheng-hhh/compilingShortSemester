@@ -43,7 +43,7 @@ class Sema {
 
   PointerType *decay(ArrayType *arrTy);
   ArrayType *raise(PointerType *ptr);
-  [[noreturn]] void fail(const std::string &msg);
+  [[noreturn]] void semFail(const std::string &msg);
   void declareSymbol(const std::string &name, Type *ty, bool isMutable);
   bool isMutableSymbol(const std::string &name) const;
 

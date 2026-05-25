@@ -14,7 +14,7 @@ namespace sys {
 const std::map<std::string, Token::Type> &dplxKeywordMap();
 }
 
-Token Lexer::nextToken() {
+Token Lexer::dplxNextToken() {
   if (loc >= input.size())
     return Token::End;
   auto has = [&](int delta = 0) -> bool {
@@ -25,7 +25,7 @@ Token Lexer::nextToken() {
   };
   auto fail = [&](const std::string &msg) -> Token {
     std::ostringstream os;
-    os << "lexer error at line " << lineno << ": " << msg;
+    os << "[dialect-lex] line " << lineno << ": " << msg;
     throw CompileError(os.str());
   };
 
@@ -207,7 +207,7 @@ Token Lexer::nextToken() {
         // (we can't continue working in the same function frame)
         for (; loc < input.size(); loc++) {
           if (input[loc] == '\n')
-            return nextToken();
+            return dplxNextToken();
         }
         return Token::End;
       }
@@ -220,7 +220,7 @@ Token Lexer::nextToken() {
           if (loc + 1 < input.size() && input[loc] == '*' && input[loc + 1] == '/') {
             // Skip '*/'.
             loc += 2;
-            return nextToken();
+            return dplxNextToken();
           }
         }
         return fail("unterminated block comment");

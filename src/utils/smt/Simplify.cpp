@@ -5,7 +5,7 @@ using namespace smt;
 
 namespace {
 
-BvRule rules[] = {
+BvRule bvFoldRules[] = {
   // Add
   "(change (add 'a 'b) (!add 'a 'b))",
   "(change (add x 0) x)",
@@ -93,11 +93,11 @@ BvExpr *foldTree(BvExpr *expr, BvExprContext &ctx) {
 BvExpr *smt::simplify(BvExpr *expr, BvExprContext &ctx) {
   BvExpr *result = expr;
   bool changed;
-  for (auto &rule : rules)
+  for (auto &rule : bvFoldRules)
     rule.ctx = &ctx;
   do {
     changed = false;
-    for (auto &rule : rules) {
+    for (auto &rule : bvFoldRules) {
       if (auto rewritten = rule.rewrite(expr); rewritten != expr)
         changed = true, expr = rewritten;
       if (auto rewritten = foldTree(expr, ctx); rewritten != expr)

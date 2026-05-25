@@ -38,8 +38,11 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/rv_mlir_pipeline.cpp \
 	$(SRCDIR)/dialect_pipeline.cpp $(SRCDIR)/dialect_fallback.cpp \
 	$(SRCDIR)/dialect_parse/Lexer.cpp $(SRCDIR)/dialect_parse/LexerKeywords.cpp \
-	$(SRCDIR)/dialect_parse/LexerNext.cpp $(SRCDIR)/dialect_parse/ParserConst.cpp \
-	$(SRCDIR)/dialect_parse/Parser.cpp $(SRCDIR)/dialect_parse/SemaTypes.cpp \
+	$(SRCDIR)/dialect_parse/LexerNext.cpp 	$(SRCDIR)/dialect_parse/ParserConst.cpp \
+	$(SRCDIR)/dialect_parse/ParserToken.cpp $(SRCDIR)/dialect_parse/ParserType.cpp \
+	$(SRCDIR)/dialect_parse/ParserExpr.cpp $(SRCDIR)/dialect_parse/ParserDecl.cpp \
+	$(SRCDIR)/dialect_parse/ParserFold.cpp $(SRCDIR)/dialect_parse/ParserDriver.cpp \
+	$(SRCDIR)/dialect_parse/SemaTypes.cpp $(SRCDIR)/dialect_parse/SemaInfer.cpp \
 	$(SRCDIR)/dialect_parse/Sema.cpp $(SRCDIR)/dialect_parse/KnapsackDp.cpp \
 	$(SRCDIR)/dialect_parse/Type.cpp \
 	$(SRCDIR)/dialect_hir/DhirOps.cpp $(SRCDIR)/dialect_hir/DhirBuilder.cpp \
@@ -66,7 +69,7 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/utils/MatcherCore.cpp $(SRCDIR)/utils/MatcherMatch.cpp \
 	$(SRCDIR)/utils/MatcherEval.cpp $(SRCDIR)/utils/MatcherBuild.cpp \
 	$(SRCDIR)/utils/smt/BvMatcher.cpp $(SRCDIR)/utils/smt/CDCL.cpp \
-	$(SRCDIR)/utils/smt/Simplify.cpp $(SRCDIR)/utils/smt/Solve.cpp \
+	$(SRCDIR)/utils/smt/Simplify.cpp $(SRCDIR)/utils/smt/Solve.cpp $(SRCDIR)/utils/smt/SolvePropagate.cpp \
 	$(SRCDIR)/main/Options.cpp
 OBJS := $(SRCS:.cpp=.o)
 

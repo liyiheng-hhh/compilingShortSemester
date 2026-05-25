@@ -1,7 +1,7 @@
 #ifndef PARSER_H
 #define PARSER_H
 
-// compiler2026-x phase-1 (header layout)
+// compiler2026-x phase-A (dialect_parse parser API)
 #include <cassert>
 #include <iostream>
 #include <map>
@@ -15,8 +15,7 @@
 
 namespace sys {
 
-// A compile-time integer constant, used when early-folding array dimensions.
-// Only integer is allowed, as the language specifies.
+// Compile-time constant for array dimension folding (integers only per spec).
 class ConstValue {
   union {
     int *vi;
@@ -38,13 +37,10 @@ public:
   int size();
   int stride();
 
-  // Copies a new memory. Doesn't release the original one.
   int *getRaw();
   float *getRawFloat();
   void *getRawRef() { return vi; }
 
-  // Note that we don't use a destructor,
-  // because the Parser object will live till end of program.
   void release();
 };
 
@@ -63,19 +59,18 @@ class Parser {
   std::vector<Token> tokens;
   size_t loc;
   TypeContext &ctx;
-  
+
   std::string currentFunc;
 
-  Token last();
-  Token peek();
-  Token consume();
-  
-  bool peek(Token::Type t);
-  Token expect(Token::Type t);
+  Token dpLastToken();
+  Token dpPeekToken();
+  Token dpConsumeToken();
 
-  // Prints tokens in range [loc-5, loc+5]. For debugging purposes.
-  void printSurrounding();
-  [[noreturn]] void fail(const std::string &msg);
+  bool peek(Token::Type t);
+  Token dpExpectToken(Token::Type t);
+
+  void dpPrintContext();
+  [[noreturn]] void dpFail(const std::string &msg);
 
   template<class... Rest>
   bool peek(Token::Type t, Rest... ts) {
@@ -91,30 +86,25 @@ class Parser {
     return false;
   }
 
-  // Parses only void, int and float.
-  Type *parseSimpleType();
+  Type *dpParseSimpleType();
+  ConstValue dpEarlyFold(ASTNode *node);
 
-  // Const-fold the node.
-  ConstValue earlyFold(ASTNode *node);
+  ASTNode *dpParsePrimary();
+  ASTNode *dpParseUnary();
+  ASTNode *dpParseMul();
+  ASTNode *dpParseAdd();
+  ASTNode *dpParseRel();
+  ASTNode *dpParseEq();
+  ASTNode *dpParseLAnd();
+  ASTNode *dpParseLOr();
+  ASTNode *dpParseExpr();
+  ASTNode *dpParseStmt();
+  BlockNode *dpParseBlock();
+  TransparentBlockNode *dpParseVarDecl(bool global);
+  FnDeclNode *dpParseFnDecl();
+  BlockNode *dpParseCompUnit();
 
-  ASTNode *primary();
-  ASTNode *unary();
-  ASTNode *mul();
-  ASTNode *add();
-  ASTNode *rel();
-  ASTNode *eq();
-  ASTNode *land();
-  ASTNode *lor();
-  ASTNode *expr();
-  ASTNode *stmt();
-  BlockNode *block();
-  TransparentBlockNode *varDecl(bool global);
-  FnDeclNode *fnDecl();
-  BlockNode *compUnit();
-
-  // Global array is guaranteed to be constexpr, so we return a list of int/floats.
-  // Local array isn't; so we return a list of ASTNodes.
-  void *getArrayInit(const std::vector<int> &dims, bool expectFloat, bool doFold);
+  void *dpBuildArrayInit(const std::vector<int> &dims, bool expectFloat, bool doFold);
 
 public:
   Parser(const std::string &input, TypeContext &ctx);

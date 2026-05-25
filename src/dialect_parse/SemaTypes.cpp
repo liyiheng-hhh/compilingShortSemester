@@ -34,8 +34,8 @@ ArrayType *Sema::raise(PointerType *ptr) {
   return ctx.create<ArrayType>(base, dims);
 }
 
-[[noreturn]] void Sema::fail(const std::string &msg) {
-  throw CompileError("sema error: " + msg);
+[[noreturn]] void Sema::semFail(const std::string &msg) {
+  throw CompileError("[dialect-sema] " + msg);
 }
 
 void Sema::declareSymbol(const std::string &name, Type *ty, bool isMutable) {
@@ -43,7 +43,7 @@ void Sema::declareSymbol(const std::string &name, Type *ty, bool isMutable) {
     scopeDecls.emplace_back();
   auto &cur = scopeDecls.back();
   if (cur.count(name))
-    fail("duplicate declaration in same scope: " + name);
+    semFail("duplicate declaration in same scope: " + name);
   cur.insert(name);
   symbols[name] = ty;
   mutableSymbols[name] = isMutable;

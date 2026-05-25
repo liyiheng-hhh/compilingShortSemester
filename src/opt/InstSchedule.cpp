@@ -7,6 +7,15 @@
 
 using namespace sys;
 
+namespace {
+
+bool isSchPinnedOp(Op *op) {
+  return (isa<CallOp>(op) && op->has<ImpureAttr>()) || isa<CloneOp>(op) ||
+         isa<JoinOp>(op) || isa<WakeOp>(op);
+}
+
+}  // namespace
+
 void InstSchedule::runImpl(BasicBlock *bb) {
   if (!bb || bb->getOpCount() == 0)
     return;
@@ -17,9 +26,7 @@ void InstSchedule::runImpl(BasicBlock *bb) {
     return;
   
   for (auto op : bb->getOps()) {
-    // We can't reschedule if there is any pinned operations.
-    // TODO: Perhaps there's some way to mitigate this?
-    if (isa<CallOp>(op) && op->has<ImpureAttr>() || isa<CloneOp>(op) || isa<JoinOp>(op) || isa<WakeOp>(op))
+    if (isSchPinnedOp(op))
       return;
   }
 

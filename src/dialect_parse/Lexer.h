@@ -55,7 +55,7 @@ class Lexer {
 public:
   Lexer(const std::string &input): input(input) {}
 
-  Token nextToken();
+  Token dplxNextToken();
   bool hasMore() const;
 };
 

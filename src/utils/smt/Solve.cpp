@@ -40,44 +40,7 @@ BvSolver::BvSolver(const sys::Options &opts): opts(opts) {
 
 // Note all these are bidirectional encodings.
 
-void BvSolver::addAnd(Variable out, Variable a, Variable b) {
-  reserve({ ctx.neg(a), ctx.neg(b), ctx.pos(out) });
-  reserve({ ctx.pos(a), ctx.neg(out) });
-  reserve({ ctx.pos(b), ctx.neg(out) });
-}
-
-void BvSolver::addOr(Variable out, Variable a, Variable b) {
-  reserve({ ctx.pos(a), ctx.pos(b), ctx.neg(out) });
-  reserve({ ctx.neg(a), ctx.pos(out) });
-  reserve({ ctx.neg(b), ctx.pos(out) });
-}
-
-void BvSolver::addXor(Variable out, Variable a, Variable b) {
-  reserve({ ctx.neg(a), ctx.neg(b), ctx.neg(out) });
-  reserve({ ctx.pos(a), ctx.pos(b), ctx.neg(out) });
-  reserve({ ctx.pos(a), ctx.neg(b), ctx.pos(out) });
-  reserve({ ctx.neg(a), ctx.pos(b), ctx.pos(out) });
-}
-
-void BvSolver::addNot(Variable out, Variable a) {
-  reserve({ ctx.neg(a), ctx.neg(out) });
-  reserve({ ctx.pos(a), ctx.pos(out) });
-}
-
-// Equivalent to (a & !b).
-// Just change the polarity of `b` in addAnd.
-void BvSolver::addAndNot(Variable out, Variable a, Variable b) {
-  reserve({ ctx.neg(a), ctx.pos(b), ctx.pos(out) });
-  reserve({ ctx.pos(a), ctx.neg(out) });
-  reserve({ ctx.neg(b), ctx.neg(out) });
-}
-
-void BvSolver::addXnor(Variable out, Variable a, Variable b) {
-  reserve({ ctx.neg(out), ctx.pos(a), ctx.neg(b) });
-  reserve({ ctx.neg(out), ctx.neg(a), ctx.pos(b) });
-  reserve({ ctx.pos(out), ctx.pos(a), ctx.pos(b) });
-  reserve({ ctx.pos(out), ctx.neg(a), ctx.neg(b) });
-}
+// Clause encodings: see SolvePropagate.cpp
 
 // Both serial (ripple-carry) adders and CLA adders need 2 and, 1 or and 2 xors.
 // So I'll just choose the CLA one.

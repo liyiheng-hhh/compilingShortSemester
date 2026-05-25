@@ -192,6 +192,36 @@ make runtime-eval SUITE=performance OPT=O1   # 60/60
 
 同阶段 1 / 2；O1 performance **60/60**。
 
+## 阶段 A–D（对照清单）— 进行中
+
+### A. dialect_parse（优先）— 已落地大部分
+
+| 项 | 状态 |
+|----|------|
+| `Parser` → `ParserToken/Type/Expr/Decl/Fold/Driver` + `dpParse*` / `[dialect-parse]` 文案 | 完成 |
+| `Sema` → `SemaTypes` + `SemaInfer` + `Sema`（ctor）；`semFail` / `[dialect-sema]` | 完成 |
+| `Lexer`：`dplxKeywordMap` 表序 + `dplxNextToken` + `[dialect-lex]` 文案 | 完成 |
+| `ASTNode.h` | 仅 `using` 别名 + 注释（**未**改 `BinaryNode` 枚举值顺序） |
+
+### B（部分）
+
+| 项 | 状态 |
+|----|------|
+| `Solve` → `SolvePropagate.cpp`（`addAnd`/`addOr`/… 子句编码） | 完成 |
+| `Simplify.cpp`：`rules[]` → `bvFoldRules[]` | 完成 |
+| `Matcher` `mtRules[]`、`CDCL` 拆分 | 待续 |
+
+### D（部分）
+
+| 项 | 状态 |
+|----|------|
+| `AtMostOnce`：`amoHasNoCallers` / `amoHasMultipleCallers` | 完成 |
+| `InstSchedule`：`isSchPinnedOp` | 完成 |
+
+### C–H
+
+28 个头文件批量、`CDCL`/`Matcher` 余下、`RV Schedule` 仅拆文件不改序等。每批后 `make clean && make -j4` + O1。
+
 ## 暂不动（高风险）
 
 - `mlir_rv/Schedule.cpp`, `InstCombine.cpp` — 指令/阶段顺序敏感
