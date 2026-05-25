@@ -1,8 +1,10 @@
 #ifndef PRE_ATTRS_H
 #define PRE_ATTRS_H
 
-#include "../codegen/OpBase.h"
+// compiler2026-x phase-1 (header layout)
 #include <unordered_map>
+#include "../codegen/OpBase.h"
+
 
 #define PREOPTLINE __LINE__ + 8388608
 

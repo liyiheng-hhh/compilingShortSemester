@@ -1,8 +1,10 @@
 #ifndef COMPILE_ERROR_H
 #define COMPILE_ERROR_H
 
+// compiler2026-x phase-1 (header layout)
 #include <stdexcept>
 #include <string>
+
 
 namespace sys {
 

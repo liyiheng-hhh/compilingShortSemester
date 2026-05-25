@@ -1,9 +1,11 @@
 #ifndef LEXER_H
 #define LEXER_H
 
-#include <vector>
-#include <string>
+// compiler2026-x phase-1 (header layout)
 #include <cstring>
+#include <string>
+#include <vector>
+
 
 namespace sys {
 

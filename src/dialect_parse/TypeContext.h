@@ -1,7 +1,9 @@
 #ifndef TYPE_CONTEXT_H
 #define TYPE_CONTEXT_H
 
+// compiler2026-x phase-1 (header layout)
 #include <unordered_set>
+
 
 #include "Type.h"
 #include "../utils/DynamicCast.h"

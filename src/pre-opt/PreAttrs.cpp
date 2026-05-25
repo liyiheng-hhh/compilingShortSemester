@@ -1,6 +1,9 @@
 #include "PreAttrs.h"
 #include <sstream>
 
+
+// compiler2026-x phase-1 (pass surface)
+
 using namespace sys;
 
 std::string SubscriptAttr::toString() {

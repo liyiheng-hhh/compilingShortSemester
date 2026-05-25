@@ -1,10 +1,12 @@
 #ifndef ATTRS_H
 #define ATTRS_H
 
-#include "OpBase.h"
+// compiler2026-x phase-1 (header layout)
 #include <climits>
 #include <cstdint>
 #include <map>
+#include "OpBase.h"
+
 
 namespace sys {
 

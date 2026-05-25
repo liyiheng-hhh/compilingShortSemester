@@ -1,14 +1,16 @@
 #ifndef SEMA_H
 #define SEMA_H
 
-#include "ASTNode.h"
-#include "CompileError.h"
-#include "Type.h"
-#include "TypeContext.h"
+// compiler2026-x phase-1 (header layout)
 #include <map>
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include "ASTNode.h"
+#include "CompileError.h"
+#include "Type.h"
+#include "TypeContext.h"
+
 
 namespace sys {
 

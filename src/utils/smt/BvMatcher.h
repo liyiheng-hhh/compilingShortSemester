@@ -1,9 +1,11 @@
 #ifndef BV_MATCHER_H
 #define BV_MATCHER_H
 
-#include "BvExpr.h"
+// compiler2026-x phase-1 (header layout)
 #include <vector>
 #include "../Matcher.h"
+#include "BvExpr.h"
+
 
 namespace smt {
 

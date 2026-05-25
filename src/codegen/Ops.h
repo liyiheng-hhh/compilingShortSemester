@@ -1,7 +1,9 @@
 #ifndef OPS_H
 #define OPS_H
 
+// compiler2026-x phase-1 (header layout)
 #include "OpBase.h"
+
 
 #define OPBASE(ValueTy, Ty) \
   class Ty : public OpImpl<Ty, __LINE__> { \

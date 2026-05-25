@@ -1,8 +1,10 @@
 #ifndef RVATTRS_H
 #define RVATTRS_H
 
-#include "../codegen/OpBase.h"
+// compiler2026-x phase-1 (header layout)
 #include <string>
+#include "../codegen/OpBase.h"
+
 #define RVLINE __LINE__ + 524288
 
 namespace sys {

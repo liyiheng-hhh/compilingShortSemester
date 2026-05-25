@@ -1,10 +1,12 @@
 #ifndef SMT_PASSES_H
 #define SMT_PASSES_H
 
-#include "Pass.h"
-#include "../codegen/CodeGen.h"
+// compiler2026-x phase-1 (header layout)
 #include "../codegen/Attrs.h"
+#include "../codegen/CodeGen.h"
 #include "../utils/smt/SMT.h"
+#include "Pass.h"
+
 
 namespace sys {
 

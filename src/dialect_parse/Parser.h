@@ -1,10 +1,12 @@
 #ifndef PARSER_H
 #define PARSER_H
 
+// compiler2026-x phase-1 (header layout)
+#include <cassert>
 #include <iostream>
 #include <map>
 #include <vector>
-#include <cassert>
+
 
 #include "ASTNode.h"
 #include "CompileError.h"

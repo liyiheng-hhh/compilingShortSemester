@@ -1,10 +1,12 @@
 #ifndef BVEXPR_H
 #define BVEXPR_H
 
-#include <string>
-#include <iostream>
-#include <unordered_set>
+// compiler2026-x phase-1 (header layout)
 #include <cstdint>
+#include <iostream>
+#include <string>
+#include <unordered_set>
+
 
 namespace smt {
 

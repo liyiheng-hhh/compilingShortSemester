@@ -1,8 +1,10 @@
 #ifndef TYPE_H
 #define TYPE_H
 
+// compiler2026-x phase-1 (header layout)
 #include <string>
 #include <vector>
+
 namespace sys {
 
 class Type {

@@ -1,6 +1,9 @@
 #include "Pass.h"
 #include "../codegen/Attrs.h"
 
+
+// compiler2026-x phase-1 (pass surface)
+
 using namespace sys;
 
 bool sys::isExtern(const std::string &name) {

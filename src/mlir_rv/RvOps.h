@@ -1,7 +1,9 @@
 #ifndef RV_OPS_H
 #define RV_OPS_H
 
+// compiler2026-x phase-1 (header layout)
 #include "../codegen/Ops.h"
+
 
 // Don't forget that we actually rely on OpID, and __LINE__ can duplicate with codegen/Ops.h.
 #define RVOPBASE(ValueTy, Ty) \

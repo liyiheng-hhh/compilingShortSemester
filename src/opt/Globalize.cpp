@@ -1,16 +1,19 @@
 #include "Passes.h"
 #include <cstring>
 
+
+// compiler2026-x phase-1 (pass surface)
+
 using namespace sys;
 
 // Returns:
-//   auto [success, offset] = isAddrOf(...)
+//   auto [success, offset] = glbIsAddrOf(...)
 //
 // Here `success` is true if the `addr` actually refers to `gName`,
 // and `offset` is positive only if it's a constant.
 //
 // (The language prohibits negative offsets from an array.)
-std::pair<bool, int> isAddrOf(Op *addr, const std::string &gName) {
+static std::pair<bool, int> glbIsAddrOf(Op *addr, const std::string &gName) {
   if (isa<GetGlobalOp>(addr))
     return { NAME(addr) == gName, 0 };
   
@@ -19,20 +22,20 @@ std::pair<bool, int> isAddrOf(Op *addr, const std::string &gName) {
     auto y = addr->getOperand(1).defining;
 
     if (isa<IntOp>(x)) {
-      auto [success, offset] = isAddrOf(y, gName);
+      auto [success, offset] = glbIsAddrOf(y, gName);
       return { success, offset + V(x) };
     }
 
     if (isa<IntOp>(y)) {
-      auto [success, offset] = isAddrOf(x, gName);
+      auto [success, offset] = glbIsAddrOf(x, gName);
       return { success, offset + V(y) };
     }
 
     // Now x and y are both unknown.
-    auto [sx, offsetx] = isAddrOf(x, gName);
+    auto [sx, offsetx] = glbIsAddrOf(x, gName);
     if (sx)
       return { true, -1 };
-    auto [sy, offsety] = isAddrOf(y, gName);
+    auto [sy, offsety] = glbIsAddrOf(y, gName);
     if (sy)
       return { true, -1 };
     return { false, -1 };
@@ -51,7 +54,7 @@ void Globalize::runImpl(Region *region) {
   auto allocas = funcOp->findAll<AllocaOp>();
   std::vector<Op*> unused;
 
-  int allocaCnt = 0;
+  int glbAllocaCnt = 0;
 
   for (auto alloca : allocas) {
     auto size = SIZE(alloca);
@@ -64,7 +67,7 @@ void Globalize::runImpl(Region *region) {
     void *data = isFP ? (void*) new float[size / 4] : new int[size / 4];
     memset(data, 0, size);
     // name like __main_1
-    std::string gName = "__" + fnName + "_" + std::to_string(allocaCnt++);
+    std::string gName = "__" + fnName + "_" + std::to_string(glbAllocaCnt++);
     auto global = builder.create<GlobalOp>({
       new NameAttr(gName),
       new SizeAttr(size),
@@ -94,7 +97,7 @@ void Globalize::runImpl(Region *region) {
           auto value = op->getOperand(0).defining;
           auto addr = op->getOperand(1).defining;
           // Don't forget that `offset` is byte offset.
-          auto [success, offset] = isAddrOf(addr, gName);
+          auto [success, offset] = glbIsAddrOf(addr, gName);
 
           // Storing to an unknown place. Continue.
           if (success && offset < 0) {
@@ -136,7 +139,7 @@ void Globalize::runImpl(Region *region) {
 
         if (isa<LoadOp>(op)) {
           auto addr = op->getOperand().defining;
-          auto [success, offset] = isAddrOf(addr, gName);
+          auto [success, offset] = glbIsAddrOf(addr, gName);
 
           // We're reading an unknown place. That prohibits any further stores from folding.
           // Therefore we should break.

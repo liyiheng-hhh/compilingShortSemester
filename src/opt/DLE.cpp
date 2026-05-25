@@ -1,9 +1,12 @@
 #include "CleanupPasses.h"
 
+
+// compiler2026-x phase-1 (pass surface)
+
 using namespace sys;
 
-#define STORE_ADDR(op) op->DEF(1)
-#define LOAD_ADDR(op)  op->DEF()
+static inline Op *dleStoreAddr(Op *op) { return op->DEF(1); }
+static inline Op *dleLoadAddr(Op *op) { return op->DEF(); }
 
 std::map<std::string, int> DLE::stats() {
   return {
@@ -23,7 +26,7 @@ void DLE::runImpl(Region *region) {
       if (isa<StoreOp>(op)) {
         std::vector<Op*> newStore { op };
         for (auto x : liveStore) {
-          if (neverAlias(STORE_ADDR(x), STORE_ADDR(op)))
+          if (neverAlias(dleStoreAddr(x), dleStoreAddr(op)))
             newStore.push_back(x);
         }
         liveStore = std::move(newStore);
@@ -78,7 +81,7 @@ void DLE::runImpl(Region *region) {
           auto init = x->getOperand(0).defining;
           auto storeAddr = x->getOperand(1).defining;
           auto loadAddr = op->getOperand().defining;
-          if (mustAlias(LOAD_ADDR(op), STORE_ADDR(x)) || storeAddr == loadAddr) {
+          if (mustAlias(dleLoadAddr(op), dleStoreAddr(x)) || storeAddr == loadAddr) {
             op->replaceAllUsesWith(init);
             op->erase();
             elim++;
@@ -128,11 +131,11 @@ void DLE::runImpl(Region *region) {
     for (auto op : ops) {
       if (isa<StoreOp>(op)) {
         // Kill all loads in `live` that might alias with the store.
-        Op *storeAddr = STORE_ADDR(op);
+        Op *storeAddr = dleStoreAddr(op);
 
         for (auto it = live.begin(); it != live.end(); ) {
           Op *load = *it;
-          Op *loadAddr = LOAD_ADDR(load);
+          Op *loadAddr = dleLoadAddr(load);
           if (mayAlias(storeAddr, loadAddr))
             it = live.erase(it);
           else
@@ -146,10 +149,10 @@ void DLE::runImpl(Region *region) {
         // Check if something is exactly the value of `addr`, or must alias with it.
         // Note that the value might not `mustAlias` with itself; 
         // for example it might have `<alloca %1, -1>` which doesn't mustAlias with anything.
-        Op *addr = LOAD_ADDR(op);
+        Op *addr = dleLoadAddr(op);
         bool replaced = false;
         for (auto load : live) {
-          if (mustAlias(LOAD_ADDR(load), addr) || load->getOperand().defining == addr) {
+          if (mustAlias(dleLoadAddr(load), addr) || load->getOperand().defining == addr) {
             op->replaceAllUsesWith(load);
             op->erase();
             elim++;

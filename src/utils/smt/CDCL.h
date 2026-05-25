@@ -1,11 +1,13 @@
 #ifndef CLAUSE_H
 #define CLAUSE_H
 
+// compiler2026-x phase-1 (header layout)
 #include <iostream>
-#include <vector>
-#include <unordered_map>
-#include <string>
 #include <queue>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 
 namespace smt {
 

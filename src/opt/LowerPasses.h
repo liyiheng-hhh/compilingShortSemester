@@ -1,9 +1,11 @@
 #ifndef LOWER_PASSES_H
 #define LOWER_PASSES_H
 
-#include "Pass.h"
+// compiler2026-x phase-1 (header layout)
 #include "../codegen/Attrs.h"
 #include "../codegen/Ops.h"
+#include "Pass.h"
+
 
 namespace sys {
 

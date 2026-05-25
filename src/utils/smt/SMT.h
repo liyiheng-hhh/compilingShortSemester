@@ -1,11 +1,13 @@
 #ifndef SMT_H
 #define SMT_H
 
+// compiler2026-x phase-1 (header layout)
+#include <unordered_map>
+#include <vector>
+#include "../../main/Options.h"
 #include "BvExpr.h"
 #include "CDCL.h"
-#include "../../main/Options.h"
-#include <vector>
-#include <unordered_map>
+
 
 namespace smt {
 

@@ -1,9 +1,11 @@
 #ifndef CLEANUP_PASSES_H
 #define CLEANUP_PASSES_H
 
-#include "Pass.h"
-#include "../codegen/CodeGen.h"
+// compiler2026-x phase-1 (header layout)
 #include "../codegen/Attrs.h"
+#include "../codegen/CodeGen.h"
+#include "Pass.h"
+
 
 namespace sys {
 

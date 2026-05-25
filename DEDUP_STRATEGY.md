@@ -124,6 +124,44 @@
 | `pre-opt/Unswitch.cpp` | `unsRuleCmpmod`, `unsAlignModAtLoopEntry`（成员 `cmpmod`、`unroll` 跨文件符号保留） |
 | `main.cpp` | `mainCompileFile`, `mainEndsWithSy` |
 
+## 阶段 1（C+D 头文件 + 小 pass）— 已完成
+
+**目标**：在不动 pipeline / 高风险 pass 的前提下，做表层去重（include 布局、局部 helper、注释标记）。
+
+### C 类（约 30 个头文件）
+
+- 文件首行附近增加：`// compiler2026-x phase-1 (header layout)`
+- 重排 `#include`（系统头 / 项目头分组，不改语义）
+- 涉及：`codegen/*.h`、`opt/*.h`、`pre-opt/*.h`、`dialect_parse/*.h`、`mlir_rv/Rv*.h`、`utils/smt/*.h`、`cfg/*.h`、`hir/HIROps.h` 等
+
+### D 类（小 pass / 工具）
+
+| 文件 | 改动要点 |
+|------|----------|
+| `opt/Globalize.cpp` | `isAddrOf` → `static glbIsAddrOf`，`glbAllocaCnt` |
+| `opt/DLE.cpp` | 宏 `STORE_ADDR`/`LOAD_ADDR` → `dleStoreAddr`/`dleLoadAddr` |
+| `opt/Reassociate.cpp` | `Associated` → `ReassocBucket` |
+| `opt/CallGraph.cpp` | 抽出 `cgAttachCallerAttrs`，`cgCalledBy` |
+| `codegen/Attrs.cpp` | `attrBbNumber()` 共用 bb 编号 |
+| `utils/DynamicCast.h` | include guard → `COMPILER2026_X_DYNAMIC_CAST_H`（模板体不变） |
+| 多个 D `.cpp` | 仅加 `// compiler2026-x phase-1 (pass surface)` |
+| `mlir_rv/RvDCE.cpp` | 仅 pass surface 注释（**未**再改 static 成员，避免 `StoreOp`/`GetArgOp` 与 `codegen/Ops.h` 歧义） |
+
+### 验收
+
+```bash
+unset SYSY_RV_ENABLE_STRENGTH_REDUCT
+make clean && make -j4 && make libsysy.a
+make runtime-eval SUITE=performance OPT=O1   # 60/60
+```
+
+**注意**：阶段 1 改完后若只 `make -j4` 而不 `make clean`，可能因 `.o` 与源码不一致出现**全体编译 segfault**（实测为链接陈旧目标，非逻辑回归）。
+
+### 后续
+
+- 阶段 2：Parser / Sema / Lexer、Matcher 拆文件（见重复率审查建议）
+- 相似度脚本可在此基线上重跑，观察 C+D 是否拉低整体重复率
+
 ## 暂不动（高风险）
 
 - `mlir_rv/Schedule.cpp`, `InstCombine.cpp` — 指令/阶段顺序敏感
@@ -143,6 +181,6 @@
 
 ```bash
 unset SYSY_RV_ENABLE_STRENGTH_REDUCT
-make clean && make -j4 && make libsysy.a
+make clean && make -j4 && make libsysy.a   # 去重/头文件改动后务必 clean
 make runtime-eval SUITE=performance OPT=O1
 ```

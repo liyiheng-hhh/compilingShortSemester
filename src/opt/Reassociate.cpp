@@ -1,14 +1,17 @@
 #include "CleanupPasses.h"
 
+
+// compiler2026-x phase-1 (pass surface)
+
 using namespace sys;
 
-struct Associated {
+struct ReassocBucket {
   bool ref;
   std::vector<Op*> mem;
 };
 
 void Reassociate::runImpl(Region *region) {
-  std::map<Op*, Associated> data;
+  std::map<Op*, ReassocBucket> data;
   auto domtree = getDomTree(region);
 
   std::vector<BasicBlock*> queue { region->getFirstBlock() };

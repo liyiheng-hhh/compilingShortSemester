@@ -1,11 +1,13 @@
 #ifndef HIR_OPS_H
 #define HIR_OPS_H
 
+// compiler2026-x phase-1 (header layout)
 #include <cstdint>
 #include <memory>
 #include <ostream>
 #include <string>
 #include <vector>
+
 
 #include "../ast.h"
 #include "../semantic.h"  // for Symbol / Type context if needed

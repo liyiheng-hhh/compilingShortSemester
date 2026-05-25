@@ -1,10 +1,12 @@
 #ifndef PRE_ANALYSIS
 #define PRE_ANALYSIS
 
-#include "../opt/Pass.h"
-#include "../codegen/Ops.h"
+// compiler2026-x phase-1 (header layout)
 #include "../codegen/Attrs.h"
+#include "../codegen/Ops.h"
+#include "../opt/Pass.h"
 #include "PreAttrs.h"
+
 
 namespace sys {
 

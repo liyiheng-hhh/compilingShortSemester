@@ -1,14 +1,16 @@
 #ifndef OPBASE_H
 #define OPBASE_H
 
+// compiler2026-x phase-1 (header layout)
 #include <algorithm>
 #include <cstdlib>
+#include <iostream>
 #include <iterator>
 #include <list>
-#include <iostream>
 #include <set>
 #include <string>
 #include <vector>
+
 
 #include "../utils/DynamicCast.h"
 

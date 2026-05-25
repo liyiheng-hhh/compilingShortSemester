@@ -18,6 +18,7 @@ class RvDCE : public Pass {
   bool isImpure(Op *op);
   void markImpure(Region *region);
   void runOnRegion(Region *region);
+
 public:
   RvDCE(ModuleOp *module): Pass(module) {}
     

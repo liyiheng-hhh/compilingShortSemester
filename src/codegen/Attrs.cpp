@@ -2,24 +2,27 @@
 #include "Ops.h"
 #include <sstream>
 
+
+// compiler2026-x phase-1 (pass surface)
+
 using namespace sys;
 
-std::string TargetAttr::toString() {
+static int attrBbNumber(BasicBlock *bb) {
   if (!bbmap.count(bb))
     bbmap[bb] = bbid++;
-  return "<bb" + std::to_string(bbmap[bb]) + ">";
+  return bbmap[bb];
+}
+
+std::string TargetAttr::toString() {
+  return "<bb" + std::to_string(attrBbNumber(bb)) + ">";
 }
 
 std::string ElseAttr::toString() {
-  if (!bbmap.count(bb))
-    bbmap[bb] = bbid++;
-  return "<else = bb" + std::to_string(bbmap[bb]) + ">";
+  return "<else = bb" + std::to_string(attrBbNumber(bb)) + ">";
 }
 
 std::string FromAttr::toString() {
-  if (!bbmap.count(bb))
-    bbmap[bb] = bbid++;
-  return "<from = bb" + std::to_string(bbmap[bb]) + ">";
+  return "<from = bb" + std::to_string(attrBbNumber(bb)) + ">";
 }
 
 IntArrayAttr::IntArrayAttr(int *vi, int size): vi(vi), size(size), allZero(true) {
