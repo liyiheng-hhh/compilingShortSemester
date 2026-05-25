@@ -55,7 +55,7 @@ void Lexer::skipSpaceAndComments(){
         }
         continue;
       }
-      if (peek() == '/' && peek(1) == '/*') {
+      if (peek() == '/' && peek(1) == '*') {
         get();
         get();
         while (!(peek() == '*' && peek(1) == '/')) {
