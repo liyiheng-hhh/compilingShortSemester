@@ -1,3 +1,4 @@
+// compiler2026-x phase-C (header layout)
 #ifndef SEMA_H
 #define SEMA_H
 
@@ -6,10 +7,10 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
-#include "ASTNode.h"
-#include "CompileError.h"
-#include "Type.h"
 #include "TypeContext.h"
+#include "Type.h"
+#include "CompileError.h"
+#include "ASTNode.h"
 
 
 namespace sys {

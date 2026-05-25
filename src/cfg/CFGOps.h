@@ -1,13 +1,14 @@
+// compiler2026-x phase-C (header layout)
 #ifndef CFG_OPS_H
 #define CFG_OPS_H
 
-#include <ostream>
 #include <cstddef>
+#include <ostream>
 #include <string>
 #include <vector>
-
 #include "../dialect_hir/DhirOps.h"
 #include "../dialect_parse/ASTNode.h"
+
 
 namespace sys::cfg {
 

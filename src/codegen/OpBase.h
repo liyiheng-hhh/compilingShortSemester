@@ -1,3 +1,4 @@
+// compiler2026-x phase-C (header layout)
 #ifndef OPBASE_H
 #define OPBASE_H
 
@@ -10,9 +11,8 @@
 #include <set>
 #include <string>
 #include <vector>
-
-
 #include "../utils/DynamicCast.h"
+
 
 namespace sys {
 

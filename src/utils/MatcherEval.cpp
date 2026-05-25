@@ -9,7 +9,7 @@ using namespace sys;
 
 #include "MatcherMacros.inc"
 
-int Rule::evalExpr(Expr *expr) {
+int Rule::mtEvalExpr(Expr *expr) {
   if (auto atom = dyn_cast<Atom>(expr)) {
     if (std::isdigit(atom->value[0]) || atom->value[0] == '-') {
       std::string str(atom->value);
@@ -57,7 +57,7 @@ int Rule::evalExpr(Expr *expr) {
   EVAL_UNARY_F_OPERAND("cvt", (int));
 
   if (opname == "!only-if") {
-    int a = evalExpr(list->elements[1]);
+    int a = mtEvalExpr(list->elements[1]);
     if (!a)
       failed = true;
     return 0;
@@ -68,7 +68,7 @@ int Rule::evalExpr(Expr *expr) {
   std::abort();
 }
 
-float Rule::evalFExpr(Expr *expr) {
+float Rule::mtEvalFExpr(Expr *expr) {
   if (auto atom = dyn_cast<Atom>(expr)) {
     if (std::isdigit(atom->value[1]) || atom->value[1] == '-') {
       std::string str(atom->value.substr(1));

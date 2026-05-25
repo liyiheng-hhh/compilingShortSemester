@@ -9,11 +9,11 @@ using namespace sys;
 
 #include "MatcherMacros.inc"
 
-Op *Rule::buildExpr(Expr *expr) {
+Op *Rule::mtBuildExpr(Expr *expr) {
   if (auto atom = dyn_cast<Atom>(expr)) {
     // This is an integer literal. Evaluate it.
     if (std::isdigit(atom->value[0]) || atom->value[0] == '-' || atom->value[0] == '\'') {
-      int result = evalExpr(expr);
+      int result = mtEvalExpr(expr);
       return builder.create<IntOp>({ new IntAttr(result) });
     }
 
@@ -32,15 +32,15 @@ Op *Rule::buildExpr(Expr *expr) {
   std::string_view opname = head->value;
 
   if (opname[0] == '!') {
-    int result = evalExpr(expr);
+    int result = mtEvalExpr(expr);
     if (opname == "!only-if" && !failed)
-      return buildExpr(list->elements[2]);
+      return mtBuildExpr(list->elements[2]);
 
     return builder.create<IntOp>({ new IntAttr(result) });
   }
 
   if (opname[0] == '?') {
-    float result = evalFExpr(expr);
+    float result = mtEvalFExpr(expr);
 
     return builder.create<FloatOp>({ new FloatAttr(result) });
   }
@@ -71,14 +71,14 @@ Op *Rule::buildExpr(Expr *expr) {
   BUILD_UNARY("snz", SetNotZeroOp);
 
   if (opname == "gt") {
-    Value a = buildExpr(list->elements[1]);
-    Value b = buildExpr(list->elements[2]);
+    Value a = mtBuildExpr(list->elements[1]);
+    Value b = mtBuildExpr(list->elements[2]);
     return builder.create<LtOp>({ b, a });
   }
 
   if (opname == "ge") {
-    Value a = buildExpr(list->elements[1]);
-    Value b = buildExpr(list->elements[2]);
+    Value a = mtBuildExpr(list->elements[1]);
+    Value b = mtBuildExpr(list->elements[2]);
     return builder.create<LeOp>({ b, a });
   }
 

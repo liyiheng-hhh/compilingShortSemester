@@ -1,11 +1,12 @@
+// compiler2026-x phase-C (header layout)
 #ifndef PASSES_H
 #define PASSES_H
 
-#include "Pass.h"
-#include "../codegen/CodeGen.h"
-#include "../codegen/Attrs.h"
-
 #include <set>
+#include "../codegen/Attrs.h"
+#include "../codegen/CodeGen.h"
+#include "Pass.h"
+
 
 namespace sys {
 

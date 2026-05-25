@@ -1,11 +1,12 @@
+// compiler2026-x phase-C (header layout)
 #ifndef PRE_ANALYSIS
 #define PRE_ANALYSIS
 
 // compiler2026-x phase-1 (header layout)
-#include "../codegen/Attrs.h"
-#include "../codegen/Ops.h"
-#include "../opt/Pass.h"
 #include "PreAttrs.h"
+#include "../opt/Pass.h"
+#include "../codegen/Ops.h"
+#include "../codegen/Attrs.h"
 
 
 namespace sys {

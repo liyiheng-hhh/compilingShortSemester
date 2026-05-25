@@ -1,3 +1,4 @@
+// compiler2026-x phase-C (header layout)
 #ifndef HIR_OPS_H
 #define HIR_OPS_H
 
@@ -7,10 +8,9 @@
 #include <ostream>
 #include <string>
 #include <vector>
-
-
-#include "../ast.h"
 #include "../semantic.h"  // for Symbol / Type context if needed
+#include "../ast.h"
+
 
 namespace sys::hir {
 

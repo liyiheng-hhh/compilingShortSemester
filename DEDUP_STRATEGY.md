@@ -203,13 +203,23 @@ make runtime-eval SUITE=performance OPT=O1   # 60/60
 | `Lexer`：`dplxKeywordMap` 表序 + `dplxNextToken` + `[dialect-lex]` 文案 | 完成 |
 | `ASTNode.h` | 仅 `using` 别名 + 注释（**未**改 `BinaryNode` 枚举值顺序） |
 
-### B（部分）
+### B（本轮）
 
 | 项 | 状态 |
 |----|------|
-| `Solve` → `SolvePropagate.cpp`（`addAnd`/`addOr`/… 子句编码） | 完成 |
-| `Simplify.cpp`：`rules[]` → `bvFoldRules[]` | 完成 |
-| `Matcher` `mtRules[]`、`CDCL` 拆分 | 待续 |
+| `Solve` → `SolvePropagate.cpp` | 完成 |
+| `Simplify`：`bvFoldRules[]` | 完成 |
+| `CDCL` → `CDCLShared` / `CDCLPropagate` / `CDCLAnalyze` + `CDCL.cpp`（`cdclVar` 等宏） | 完成 |
+| `Matcher`：`Rule` 私有方法 `mt*`；`MatcherMacros.inc` 同步；`using MtRule = Rule` | 完成 |
+| `BvMatcher`：`bvm*` 私有方法；`bvmMatchExpr` 模式行重排；`using BvmRule = BvRule` | 完成 |
+| 集中式 `mtRules[]` 表（仅 `RegularFold` 的 `rfRules[]` 仍为 pass 局部表） | 未改（避免动规则语义） |
+
+### C（本轮）
+
+| 项 | 状态 |
+|----|------|
+| 30 个头文件：`phase-C` 标记 + `#include` 字母序/逆序重排 | 完成 |
+| struct 字段重排 | 未做（ABI/布局敏感处跳过） |
 
 ### D（部分）
 
@@ -218,9 +228,9 @@ make runtime-eval SUITE=performance OPT=O1   # 60/60
 | `AtMostOnce`：`amoHasNoCallers` / `amoHasMultipleCallers` | 完成 |
 | `InstSchedule`：`isSchPinnedOp` | 完成 |
 
-### C–H
+### E–H
 
-28 个头文件批量、`CDCL`/`Matcher` 余下、`RV Schedule` 仅拆文件不改序等。每批后 `make clean && make -j4` + O1。
+`CodeGen` 拆 TU、`RV Schedule` 仅拆文件不改序等。每批后 `make clean && make -j4` + O1。
 
 ## 暂不动（高风险）
 

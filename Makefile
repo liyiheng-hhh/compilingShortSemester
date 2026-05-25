@@ -69,6 +69,8 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/utils/MatcherCore.cpp $(SRCDIR)/utils/MatcherMatch.cpp \
 	$(SRCDIR)/utils/MatcherEval.cpp $(SRCDIR)/utils/MatcherBuild.cpp \
 	$(SRCDIR)/utils/smt/BvMatcher.cpp $(SRCDIR)/utils/smt/CDCL.cpp \
+	$(SRCDIR)/utils/smt/CDCLShared.cpp $(SRCDIR)/utils/smt/CDCLPropagate.cpp \
+	$(SRCDIR)/utils/smt/CDCLAnalyze.cpp \
 	$(SRCDIR)/utils/smt/Simplify.cpp $(SRCDIR)/utils/smt/Solve.cpp $(SRCDIR)/utils/smt/SolvePropagate.cpp \
 	$(SRCDIR)/main/Options.cpp
 OBJS := $(SRCS:.cpp=.o)

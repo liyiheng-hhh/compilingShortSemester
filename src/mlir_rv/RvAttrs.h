@@ -1,9 +1,11 @@
+// compiler2026-x phase-C (header layout)
 #ifndef RVATTRS_H
 #define RVATTRS_H
 
 // compiler2026-x phase-1 (header layout)
 #include <string>
 #include "../codegen/OpBase.h"
+
 
 #define RVLINE __LINE__ + 524288
 

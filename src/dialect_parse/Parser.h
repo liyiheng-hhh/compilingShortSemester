@@ -1,3 +1,4 @@
+// compiler2026-x phase-C (header layout)
 #ifndef PARSER_H
 #define PARSER_H
 
@@ -6,12 +7,11 @@
 #include <iostream>
 #include <map>
 #include <vector>
-
-
-#include "ASTNode.h"
-#include "CompileError.h"
-#include "Lexer.h"
 #include "TypeContext.h"
+#include "Lexer.h"
+#include "CompileError.h"
+#include "ASTNode.h"
+
 
 namespace sys {
 

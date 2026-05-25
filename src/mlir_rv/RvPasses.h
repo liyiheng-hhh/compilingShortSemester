@@ -1,12 +1,14 @@
+// compiler2026-x phase-C (header layout)
 #ifndef RV_PASSES_H
 #define RV_PASSES_H
 
+#include "../codegen/Attrs.h"
+#include "../codegen/CodeGen.h"
+#include "../codegen/Ops.h"
 #include "../opt/Pass.h"
 #include "RvAttrs.h"
 #include "RvOps.h"
-#include "../codegen/Ops.h"
-#include "../codegen/Attrs.h"
-#include "../codegen/CodeGen.h"
+
 
 namespace sys {
 

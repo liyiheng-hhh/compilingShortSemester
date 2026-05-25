@@ -1,10 +1,11 @@
+// compiler2026-x phase-C (header layout)
 #ifndef ANALYSIS_H
 #define ANALYSIS_H
 
 // compiler2026-x phase-1 (header layout)
-#include "../codegen/Attrs.h"
-#include "../codegen/CodeGen.h"
 #include "Passes.h"
+#include "../codegen/CodeGen.h"
+#include "../codegen/Attrs.h"
 
 
 namespace sys {

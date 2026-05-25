@@ -1,14 +1,14 @@
+// compiler2026-x phase-C (header layout)
 #ifndef CFG_TO_LEGACY_H
 #define CFG_TO_LEGACY_H
 
 // compiler2026-x phase-1 (header layout)
-#include "../codegen/Ops.h"
-#include "CFGOps.h"
-
-
 #include <memory>
 #include <string>
 #include <vector>
+#include "../codegen/Ops.h"
+#include "CFGOps.h"
+
 
 namespace sys::cfg {
 

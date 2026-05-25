@@ -1,3 +1,4 @@
+// compiler2026-x phase-C (header layout)
 #ifndef PASS_H
 #define PASS_H
 
@@ -8,9 +9,8 @@
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
-
-
 #include "../codegen/Ops.h"
+
 
 namespace sys {
   

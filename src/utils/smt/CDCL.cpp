@@ -1,3 +1,4 @@
+// compiler2026-x phase-B (CDCL driver)
 #include "CDCL.h"
 #include <algorithm>
 #include <set>
@@ -6,206 +7,10 @@
 
 using namespace smt;
 
-// Get the variable inside the atomic.
-#define VAR(atom) ((atom) >> 1)
-#define BOOLNOT(logic) (-(logic))
-#define ATOMNOT(atom) ((atom) ^ 1)
-#define ISNEG(atom) ((atom) & 1)
-
-void dumpAtomic(std::ostream &os, Atomic atom) {
-  auto var = VAR(atom) + 1;
-  if (ISNEG(atom))
-    os << "!" << var;
-  else
-    os << var;
-}
-
-void Clause::dump(std::ostream &os) const {
-  os << "{ ";
-  if (content.size() > 0)
-    dumpAtomic(os, content[0]);
-  for (int i = 1; i < content.size(); i++) {
-    os << ", ";
-    dumpAtomic(os, content[i]);
-  }
-  os << " } (watching: ";
-  dumpAtomic(os, watch[0]);
-  os << ", ";
-  dumpAtomic(os, watch[1]);
-  os << ")";
-}
-
-void Solver::dump(std::ostream &os) const {
-  os << "varcnt = " << varcnt << "\n";
-  for (auto x : clauses)
-    os << x << "\n";
-  for (int i = 0; i < varcnt; i++)
-    os << i + 1 << " = " << (int) assignment[i] << "\n";
-}
-
-void dumpArray(const std::vector<Atomic> &content) {
-  auto &os = std::cerr;
-  os << "{ ";
-  if (content.size() > 0)
-    dumpAtomic(os, content[0]);
-  for (int i = 1; i < content.size(); i++) {
-    os << ", ";
-    dumpAtomic(os, content[i]);
-  }
-  os << " }";
-}
-
-Solver::Boolean Solver::value(Atomic atom) {
-  Variable var = VAR(atom);
-  Boolean logic = assignment[var];
-  return ISNEG(atom) ? BOOLNOT(logic) : logic;
-}
-
-// Refer to DPLL. It triggers when only one literal is unassigned, and all others are 0.
-// Unit propagation tries to build up edges in implied graph, and also detect conflicts.
-void Solver::unitPropagation() {
-  while (qhead < trail.size()) {
-    Atomic atom = trail[qhead++];
-    Atomic neg = ATOMNOT(atom);
-
-    // In unit propagation, the things we pushed onto queue must have been true.
-    // When the atomic is (!v), then v must be false;
-    // When the atomic is v, then v must be true.
-    assignment[VAR(atom)] = ISNEG(atom) ? False : True;
-
-    // Therefore, `neg` is false. Check whether we have something watched on it.
-    auto &watches = watched[neg];
-    for (int i = 0; i < watches.size();) {
-      auto clause = watches[i];
-
-      // Find the other watched literal of the clause.
-      int watchid = neg != clause->watch[0];
-      Atomic other = clause->watch[!watchid];
-      
-      // The clause has been satisfied.
-      if (other != -1 && value(other) == True) {
-        i++;
-        continue;
-      }
-
-      // Try to find another literal to watch in the clause.
-      // When there's only 2 literals, no other things are possible.
-      if (clause->content.size() > 2) {
-        Atomic watch = -1;
-        for (auto atomic : clause->content) {
-          if (atomic == neg || atomic == other)
-            continue;
-
-          if (value(atomic) != False) {
-            watch = atomic;
-            break;
-          }
-        }
-
-        if (watch != -1) {
-          clause->watch[watchid] = watch;
-          // Remove the current clause from watchers of `neg`.
-          watches[i] = watches.back();
-          watches.pop_back();
-          // Add the current clause to watchers of `watch`.
-          watched[watch].push_back(clause);
-          // Don't increment `i` because the current element has changed to a new one.
-          continue;
-        }
-      }
-
-      // No other literals to watch. We can determine the final literal.
-      
-      // Assigned false. A conflict.
-      if (other == -1 || value(other) == False) {
-        // Increase activity.
-        for (auto atom : clause->content) {
-          Variable v = VAR(atom);
-          activity[v] += inc;
-          vheap.push({ activity[v], v });
-        }
-
-        // Conflict.
-        unitConflict = true;
-        conflictClause = clause;
-        return;
-      }
-
-      // Trigger a new round of unit propagation.
-      if (value(other) == Unassigned) {
-        enqueue(other, clause);
-        i++;
-      }
-    }
-  }
-}
-
-std::pair<int, std::vector<Atomic>> Solver::analyzeConflict() {
-  if (!dl)
-    return { -1, {} };
-
-  const auto &conflict = conflictClause->content;
-  std::unordered_set<Atomic> learnt(conflict.begin(), conflict.end());
-  // Atomics of the conflicting clause at current decision level.
-  std::unordered_set<Atomic> atomics;
-  for (auto atom : conflictClause->content) {
-    if (decisionLevel[VAR(atom)] == dl)
-      atomics.insert(atom);
-  }
-
-  while (atomics.size() != 1) {
-    Atomic implied = -1;
-    for (auto atom : atomics) {
-      if (antecedent[VAR(atom)]) {
-        implied = atom;
-        break;
-      }
-    }
-
-    assert(implied != -1);
-
-    auto ante = antecedent[VAR(implied)];
-    // Increase activity of antecedent.
-    for (auto atom : ante->content) {
-      Variable v = VAR(atom);
-      activity[v] += inc;
-      vheap.push({ activity[v], v });
-    }
-    
-    for (auto atom : ante->content)
-      learnt.insert(atom);
-    
-    learnt.erase(implied);
-    learnt.erase(ATOMNOT(implied));
-
-    atomics.clear();
-    for (auto atom : learnt) {
-      if (decisionLevel[VAR(atom)] == dl)
-        atomics.insert(atom);
-    }
-  }
-
-  inc /= decay;
-  // Scale activity to prevent overflow.
-  if (inc >= 1e100) {
-    inc *= 1e-100;
-    for (int i = 0; i < varcnt; i++)
-      activity[i] *= 1e-100;
-  }
-  
-  // Backtrack to the second largest decision level.
-  // If that doesn't exist, backtrack to dl = 0.
-  std::vector<Atomic> result(learnt.begin(), learnt.end());
-
-  if (result.size() <= 1)
-    return { 0, result };
-  else {
-    std::set<int, std::greater<int>> dls;
-    for (auto x : result)
-      dls.insert(decisionLevel[VAR(x)]);
-    return { *++dls.begin(), result };
-  }
-}
+#define cdclVar(atom) ((atom) >> 1)
+#define cdclLogicNot(logic) (-(logic))
+#define cdclAtomNot(atom) ((atom) ^ 1)
+#define cdclIsNeg(atom) ((atom) & 1)
 
 Clause *Solver::addClause(const std::vector<Atomic> &clause) {
   if (clause.empty()) {
@@ -256,7 +61,7 @@ Clause *Solver::addClause(const std::vector<Atomic> &clause) {
 
 Clause *Solver::addLearnt(std::vector<Atomic> clause) {
   std::sort(clause.begin(), clause.end(), [&](Atomic a, Atomic b) {
-    return decisionLevel[VAR(a)] > decisionLevel[VAR(b)];
+    return decisionLevel[cdclVar(a)] > decisionLevel[cdclVar(b)];
   });
   
   if (clause.size() == 1) {
@@ -273,69 +78,6 @@ Clause *Solver::addLearnt(std::vector<Atomic> clause) {
   watched[clause[0]].push_back(added);
   watched[clause[1]].push_back(added);
   return added;
-}
-
-void Solver::enqueue(Atomic atom, Clause* ante) {
-  int var = VAR(atom);
-  if (assignment[var] != 0)
-    return;
-  
-  Boolean result = !ISNEG(atom) ? True : False;
-  phase[var] = result;
-  assignment[var] = result;
-  antecedent[var] = ante;
-  decisionLevel[var] = dl;
-  trail.push_back(atom);
-}
-
-void Solver::backtrack(int level) {
-  // Remove all assignments done above the backtrack level.
-  for (int i = 0; i < varcnt; i++) {
-    if (decisionLevel[i] > level) {
-      assignment[i] = Unassigned;
-      antecedent[i] = nullptr;
-      decisionLevel[i] = 0;
-    }
-  }
-}
-
-bool Solver::allAssigned() {
-  for (auto x : assignment) {
-    if (x == Unassigned)
-      return false;
-  }
-  return true;
-}
-
-std::pair<Variable, Solver::Boolean> Solver::pickPivot() {
-  // If the heap is too large, rebuild it.
-  if (vheap.size() > varcnt * 8) {
-    decltype(vheap) newHeap;
-    for (Variable v = 0; v < varcnt; v++) {
-      if (assignment[v] == Unassigned)
-        newHeap.push({ activity[v], v });
-    }
-    vheap = std::move(newHeap);
-  }
-
-  while (!vheap.empty()) {
-    auto [score, v] = vheap.top();
-    vheap.pop();
-
-    // Stale.
-    if (score < activity[v])
-      continue;
-
-    if (assignment[v] == Unassigned)
-      return { v, phase[v] == Unassigned ? True : phase[v] };
-  }
-
-  // Pick the first unassigned variable if heap is exhausted.
-  for (Variable v = 0; v < varcnt; v++) {
-    if (assignment[v] == Unassigned)
-      return { v, phase[v] == Unassigned ? True : phase[v] };
-  }
-  assert(false);
 }
 
 void Solver::init(int varcnt) {
@@ -356,7 +98,7 @@ void Solver::init(int varcnt) {
 Atomic Solver::findUnit(const std::vector<Atomic> &unit) {
   int unassigned = 0;
   for (auto x : unit) {
-    auto var = VAR(x);
+    auto var = cdclVar(x);
     if (assignment[var] == Unassigned)
       return x;
   }

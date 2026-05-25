@@ -1,8 +1,10 @@
+// compiler2026-x phase-C (header layout)
 #pragma once
 
 #include <cstdlib>
 #include <cstring>
 #include <string>
+
 
 namespace sys::rv {
 

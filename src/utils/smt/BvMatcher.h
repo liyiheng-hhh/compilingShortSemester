@@ -1,10 +1,10 @@
+// compiler2026-x phase-C (header layout)
 #ifndef BV_MATCHER_H
 #define BV_MATCHER_H
 
-// compiler2026-x phase-1 (header layout)
 #include <vector>
-#include "../Matcher.h"
 #include "BvExpr.h"
+#include "../Matcher.h"
 
 
 namespace smt {
@@ -21,17 +21,17 @@ class BvRule {
   int loc = 0;
   bool failed = false;
 
-  std::string_view nextToken();
-  Expr *parse();
+  std::string_view bvmNextToken();
+  Expr *bvmParse();
 
-  bool matchExpr(Expr *expr, BvExpr *bvexpr);
-  int evalExpr(Expr *expr);
-  float evalFExpr(Expr *expr);
-  BvExpr *buildExpr(Expr *expr);
+  bool bvmMatchExpr(Expr *expr, BvExpr *bvexpr);
+  int bvmEvalExpr(Expr *expr);
+  float bvmEvalFExpr(Expr *expr);
+  BvExpr *bvmBuildExpr(Expr *expr);
 
-  void dump(Expr *expr, std::ostream &os);
-  void release(Expr *expr);
-  BvExpr *rewriteRoot(BvExpr *expr);
+  void bvmDump(Expr *expr, std::ostream &os);
+  void bvmRelease(Expr *expr);
+  BvExpr *bvmRewriteRoot(BvExpr *expr);
 public:
   using Binding = std::map<std::string, BvExpr*>;
   BvExprContext *ctx = nullptr;
@@ -46,6 +46,7 @@ public:
   void dump(std::ostream &os = std::cerr);
 };
 
+using BvmRule = BvRule;
 }
 
 #endif

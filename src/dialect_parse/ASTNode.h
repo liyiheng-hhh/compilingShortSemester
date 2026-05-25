@@ -1,11 +1,12 @@
+// compiler2026-x phase-C (header layout)
 #ifndef ASTNODE_H
 #define ASTNODE_H
 
 #include <functional>
 #include <string>
 #include <vector>
-
 #include "Type.h"
+
 
 namespace sys {
 

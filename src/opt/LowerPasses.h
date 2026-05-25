@@ -1,10 +1,11 @@
+// compiler2026-x phase-C (header layout)
 #ifndef LOWER_PASSES_H
 #define LOWER_PASSES_H
 
 // compiler2026-x phase-1 (header layout)
-#include "../codegen/Attrs.h"
-#include "../codegen/Ops.h"
 #include "Pass.h"
+#include "../codegen/Ops.h"
+#include "../codegen/Attrs.h"
 
 
 namespace sys {

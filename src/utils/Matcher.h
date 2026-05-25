@@ -42,16 +42,16 @@ class Rule {
   int loc = 0;
   bool failed = false;
 
-  std::string_view nextToken();
-  Expr *parse();
+  std::string_view mtNextToken();
+  Expr *mtParse();
 
-  bool matchExpr(Expr *expr, Op *op);
-  int evalExpr(Expr *expr);
-  float evalFExpr(Expr *expr);
-  Op *buildExpr(Expr *expr);
+  bool mtMatchExpr(Expr *expr, Op *op);
+  int mtEvalExpr(Expr *expr);
+  float mtEvalFExpr(Expr *expr);
+  Op *mtBuildExpr(Expr *expr);
 
-  void dump(Expr *expr, std::ostream &os);
-  void release(Expr *expr);
+  void mtDump(Expr *expr, std::ostream &os);
+  void mtRelease(Expr *expr);
 public:
   using Binding = std::map<std::string, Op*>;
 
@@ -65,6 +65,8 @@ public:
 
   void dump(std::ostream &os = std::cerr);
 };
+
+using MtRule = Rule;
 
 }
 

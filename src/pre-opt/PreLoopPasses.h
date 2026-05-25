@@ -1,13 +1,14 @@
+// compiler2026-x phase-C (header layout)
 #ifndef PRE_LOOP_PASSES_H
 #define PRE_LOOP_PASSES_H
 
 // compiler2026-x phase-1 (header layout)
 #include <unordered_set>
-#include "../codegen/Attrs.h"
-#include "../codegen/CodeGen.h"
-#include "../codegen/Ops.h"
-#include "../opt/Pass.h"
 #include "PreAttrs.h"
+#include "../opt/Pass.h"
+#include "../codegen/Ops.h"
+#include "../codegen/CodeGen.h"
+#include "../codegen/Attrs.h"
 
 
 namespace sys {

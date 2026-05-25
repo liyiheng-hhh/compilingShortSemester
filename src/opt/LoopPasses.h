@@ -1,12 +1,13 @@
+// compiler2026-x phase-C (header layout)
 #ifndef LOOP_PASSES_H
 #define LOOP_PASSES_H
 
-#include "Pass.h"
-#include "../codegen/CodeGen.h"
-#include "../codegen/Attrs.h"
-
-#include <unordered_set>
 #include <set>
+#include <unordered_set>
+#include "../codegen/Attrs.h"
+#include "../codegen/CodeGen.h"
+#include "Pass.h"
+
 
 // The whole content of this file should be run after Mem2Reg.
 namespace sys {

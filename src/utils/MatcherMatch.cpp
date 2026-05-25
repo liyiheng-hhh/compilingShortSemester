@@ -9,7 +9,7 @@ using namespace sys;
 
 #include "MatcherMacros.inc"
 
-bool Rule::matchExpr(Expr *expr, Op* op) {
+bool Rule::mtMatchExpr(Expr *expr, Op* op) {
   if (auto* atom = dyn_cast<Atom>(expr)) {
     std::string_view var = atom->value;
 
@@ -123,7 +123,7 @@ bool Rule::match(Op *op, const std::map<std::string, Op*> &external) {
     binding[externalStrs.back()] = v;
   }
 
-  return matchExpr(pattern, op);
+  return mtMatchExpr(pattern, op);
 }
 
 Op *Rule::extract(const std::string &name) {
@@ -145,11 +145,11 @@ bool Rule::rewrite(Op *op) {
   auto matcher = list->elements[1];
   auto rewriter = list->elements[2];
 
-  if (!matchExpr(matcher, op))
+  if (!mtMatchExpr(matcher, op))
     return false;
 
   builder.setBeforeOp(op);
-  Op *opnew = buildExpr(rewriter);
+  Op *opnew = mtBuildExpr(rewriter);
   if (!opnew || failed)
     return false;
 
