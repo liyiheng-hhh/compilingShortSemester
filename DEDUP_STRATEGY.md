@@ -159,8 +159,23 @@ make runtime-eval SUITE=performance OPT=O1   # 60/60
 
 ### 后续
 
-- 阶段 2：Parser / Sema / Lexer、Matcher 拆文件（见重复率审查建议）
 - 相似度脚本可在此基线上重跑，观察 C+D 是否拉低整体重复率
+
+## 阶段 2（前端 + Matcher 拆文件）— 已完成
+
+**目标**：把与 pure-rv 高度同构的大单文件拆成多 TU，降低逐文件相似度；不改 AST/语义逻辑。
+
+| 模块 | 拆分结果 |
+|------|----------|
+| `utils/Matcher` | `MatcherMacros.inc`、`MatcherCore.cpp`、`MatcherMatch.cpp`、`MatcherEval.cpp`、`MatcherBuild.cpp` |
+| SysY 前端 | `parser.cpp` + `parser_expr.cpp`；`semantic.cpp` + `semantic_const.cpp` + `semantic_visit.cpp` |
+| `dialect_parse` | `ParserConst.cpp` + `Parser.cpp`；`SemaTypes.cpp` + `Sema.cpp` |
+
+`lexer.cpp` / `dialect_parse/Lexer.cpp` 暂未拆（体量较小、收益有限）。
+
+### 验收
+
+同阶段 1；**改后务必 `make clean && make -j4`**。O1 performance **60/60**。
 
 ## 暂不动（高风险）
 
@@ -171,8 +186,8 @@ make runtime-eval SUITE=performance OPT=O1   # 60/60
 
 ## 后续可选（仍仅 helper 命名）
 
-- `dialect_parse/Lexer.cpp`, `Parser.cpp`, `Sema.cpp`（无独立 static helper 时收益小）
-- `utils/Matcher.cpp`（逻辑在类方法内，宏为主）
+- `dialect_parse/Lexer.cpp`、`src/lexer.cpp`（可再拆 scan 辅助）
+- `src/lexer.cpp` / `src/parser.cpp` 与 pure-rv 同名文件：后续可做 helper 前缀或 AST 访问器命名
 - `rv/Schedule.cpp`（指令调度顺序敏感）
 - `cfg/CFGToLegacy.cpp`（结构桥接）
 - `opt/Reassociate.cpp`, `opt/DSE.cpp` / `DLE.cpp`（多为成员函数）

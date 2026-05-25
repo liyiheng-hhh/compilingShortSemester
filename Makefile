@@ -7,7 +7,9 @@ SY_DIRS ?= examples
 
 SRCDIR := src
 SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/parser.cpp \
-	$(SRCDIR)/semantic.cpp $(SRCDIR)/codegen.cpp $(SRCDIR)/ir_build.cpp $(SRCDIR)/ir_opt.cpp \
+	$(SRCDIR)/parser_expr.cpp \
+	$(SRCDIR)/semantic.cpp $(SRCDIR)/semantic_const.cpp $(SRCDIR)/semantic_visit.cpp \
+	$(SRCDIR)/codegen.cpp $(SRCDIR)/ir_build.cpp $(SRCDIR)/ir_opt.cpp \
 	$(SRCDIR)/ir_loop_opt.cpp $(SRCDIR)/ir_regalloc.cpp $(SRCDIR)/ir_mem2reg.cpp $(SRCDIR)/ir_expr_gvn.cpp \
 	$(SRCDIR)/ir_schedule.cpp \
 	$(SRCDIR)/loop_interchange.cpp $(SRCDIR)/loop_tiling.cpp $(SRCDIR)/land_lor_split.cpp \
@@ -34,7 +36,8 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/pa
 	$(SRCDIR)/mlir_rv/Dump.cpp \
 	$(SRCDIR)/rv_mlir_pipeline.cpp \
 	$(SRCDIR)/dialect_pipeline.cpp $(SRCDIR)/dialect_fallback.cpp \
-	$(SRCDIR)/dialect_parse/Lexer.cpp $(SRCDIR)/dialect_parse/Parser.cpp \
+	$(SRCDIR)/dialect_parse/Lexer.cpp $(SRCDIR)/dialect_parse/ParserConst.cpp \
+	$(SRCDIR)/dialect_parse/Parser.cpp $(SRCDIR)/dialect_parse/SemaTypes.cpp \
 	$(SRCDIR)/dialect_parse/Sema.cpp $(SRCDIR)/dialect_parse/KnapsackDp.cpp \
 	$(SRCDIR)/dialect_parse/Type.cpp \
 	$(SRCDIR)/dialect_hir/DhirOps.cpp $(SRCDIR)/dialect_hir/DhirBuilder.cpp \
@@ -58,7 +61,8 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/pa
 	$(SRCDIR)/opt/DCE.cpp $(SRCDIR)/opt/SimplifyCFG.cpp $(SRCDIR)/opt/CallGraph.cpp \
 	$(SRCDIR)/opt/Verify.cpp \
 	$(SRCDIR)/utils/Exec.cpp \
-	$(SRCDIR)/utils/Matcher.cpp \
+	$(SRCDIR)/utils/MatcherCore.cpp $(SRCDIR)/utils/MatcherMatch.cpp \
+	$(SRCDIR)/utils/MatcherEval.cpp $(SRCDIR)/utils/MatcherBuild.cpp \
 	$(SRCDIR)/utils/smt/BvMatcher.cpp $(SRCDIR)/utils/smt/CDCL.cpp \
 	$(SRCDIR)/utils/smt/Simplify.cpp $(SRCDIR)/utils/smt/Solve.cpp \
 	$(SRCDIR)/main/Options.cpp
