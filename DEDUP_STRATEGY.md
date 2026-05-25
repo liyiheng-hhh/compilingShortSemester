@@ -109,6 +109,21 @@
 | `ir_mem2reg.cpp` | `irMem2regComputeDomFrontier` |
 | `hir/HIRBuilder.cpp` | `hrbBuildExpr`, `hrbBuildFunction`, … |
 
+### 批次 7
+
+| 文件 | 重命名示例 |
+|------|------------|
+| `ir_regalloc.cpp` | `irraColorGraph`, `irraComputeLiveIn`, … |
+| `rv/rv_asm.cpp` | `rvaTrim`, `rvaSplitOperands`（公开 `parseAsmLine`/`instLatency` 不变） |
+| `rv/RegPeephole.cpp` | `rvpeEnabled`, `rvpeTrim` |
+| `rv/InstCombine.cpp` | `rvicEnabled`, `rvicTryFuseAddi` |
+| `opt/RegularFold.cpp` | `rfFoldToConstInt`, `rfRules`, … |
+| `opt/Mem2Reg.cpp` | `mrResolvePhiOperandOnEdge`, `MrSlotLiveIn`, … |
+| `opt/SCEV.cpp` | `scevIncomingPhiForBlock`, `scevRuleConstIncr`, … |
+| `opt/DCE.cpp` | `dceRepairPhiPredecessors` |
+| `pre-opt/Unswitch.cpp` | `unsRuleCmpmod`, `unsAlignModAtLoopEntry`（成员 `cmpmod`、`unroll` 跨文件符号保留） |
+| `main.cpp` | `mainCompileFile`, `mainEndsWithSy` |
+
 ## 暂不动（高风险）
 
 - `mlir_rv/Schedule.cpp`, `InstCombine.cpp` — 指令/阶段顺序敏感
@@ -119,7 +134,9 @@
 ## 后续可选（仍仅 helper 命名）
 
 - `dialect_parse/Lexer.cpp`, `Parser.cpp`, `Sema.cpp`（无独立 static helper 时收益小）
-- `ir_regalloc.cpp`, `rv/rv_asm.cpp`, `utils/Matcher.cpp`
+- `utils/Matcher.cpp`（逻辑在类方法内，宏为主）
+- `rv/Schedule.cpp`（指令调度顺序敏感）
+- `cfg/CFGToLegacy.cpp`（结构桥接）
 - `opt/Reassociate.cpp`, `opt/DSE.cpp` / `DLE.cpp`（多为成员函数）
 
 ## 评测前

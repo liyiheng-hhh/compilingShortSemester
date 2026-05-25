@@ -20,7 +20,7 @@ bool irFunctionContainsCall(const IRFunction &fn) {
   return false;
 }
 
-static void markVregTypes(const IRFunction &fn, vector<char> &isFloat) {
+static void irraMarkVregTypes(const IRFunction &fn, vector<char> &isFloat) {
   const int nv = fn.nextVreg;
   isFloat.assign(static_cast<size_t>(max(nv, 0)), 0);
   for (const IRInst &in : fn.insts) {
@@ -69,7 +69,7 @@ static void markVregTypes(const IRFunction &fn, vector<char> &isFloat) {
   }
 }
 
-static void computeLiveIn(IRFunction &fn, vector<vector<char>> &liveIn) {
+static void irraComputeLiveIn(IRFunction &fn, vector<vector<char>> &liveIn) {
   const int nv = fn.nextVreg;
   const size_t n = fn.insts.size();
   liveIn.assign(n + 1, vector<char>(static_cast<size_t>(max(nv, 0)), 0));
@@ -202,7 +202,7 @@ static void computeLiveIn(IRFunction &fn, vector<vector<char>> &liveIn) {
 }
 
 // CFG 活跃分析超预算时：按基本块局部反向扫描（偏保守，但足以驱动着色）
-static void computeLiveInPerBlock(const IRFunction &fn, vector<vector<char>> &liveIn) {
+static void irraComputeLiveInPerBlock(const IRFunction &fn, vector<vector<char>> &liveIn) {
   const int nv = fn.nextVreg;
   const size_t n = fn.insts.size();
   liveIn.assign(n + 1, vector<char>(static_cast<size_t>(max(nv, 0)), 0));
@@ -247,7 +247,7 @@ static void computeLiveInPerBlock(const IRFunction &fn, vector<vector<char>> &li
   }
 }
 
-static bool liveInAnyActive(const vector<vector<char>> &liveIn) {
+static bool irraLiveInAnyActive(const vector<vector<char>> &liveIn) {
   for (const vector<char> &li : liveIn) {
     for (char c : li) {
       if (c) {
@@ -258,7 +258,7 @@ static bool liveInAnyActive(const vector<vector<char>> &liveIn) {
   return false;
 }
 
-static vector<int> buildIntPool(bool internalCall) {
+static vector<int> irraBuildIntPool(bool internalCall) {
   vector<int> pool;
   if (!internalCall) {
     // 无体内 Call：callee-saved s1–s6（prologue 保存）；t0–t3 为 codegen 临时
@@ -273,7 +273,7 @@ static vector<int> buildIntPool(bool internalCall) {
   return pool;
 }
 
-static vector<int> buildFloatPool() {
+static vector<int> irraBuildFloatPool() {
   vector<int> pool;
   for (int f = 0; f <= 11; ++f) {
     pool.push_back(f);
@@ -281,7 +281,7 @@ static vector<int> buildFloatPool() {
   return pool;
 }
 
-static string poolEntryName(int code) {
+static string irraPoolEntryName(int code) {
   if (code >= 100) {
     return "s" + to_string(code - 100);
   }
@@ -298,13 +298,13 @@ const char *irRegallocIntRegName(const IRRegallocSummary &sum, int physIdx,
                                  bool internalCallPool) {
   (void)sum;
   static thread_local string buf;
-  static vector<int> noCall = buildIntPool(false);
-  static vector<int> withCall = buildIntPool(true);
+  static vector<int> noCall = irraBuildIntPool(false);
+  static vector<int> withCall = irraBuildIntPool(true);
   const vector<int> &pool = internalCallPool ? withCall : noCall;
   if (physIdx < 0 || physIdx >= static_cast<int>(pool.size())) {
     return "";
   }
-  buf = poolEntryName(pool[static_cast<size_t>(physIdx)]);
+  buf = irraPoolEntryName(pool[static_cast<size_t>(physIdx)]);
   return buf.c_str();
 }
 
@@ -318,7 +318,7 @@ const char *irRegallocFloatRegName(const IRRegallocSummary &sum, int physIdx) {
   return buf.c_str();
 }
 
-static void addEdge(vector<unordered_set<int>> &adj, int a, int b) {
+static void irraAddEdge(vector<unordered_set<int>> &adj, int a, int b) {
   if (a == b || a < 0 || b < 0) {
     return;
   }
@@ -326,7 +326,7 @@ static void addEdge(vector<unordered_set<int>> &adj, int a, int b) {
   adj[static_cast<size_t>(b)].insert(a);
 }
 
-static vector<int> colorGraph(int nv, const vector<char> &inBank,
+static vector<int> irraColorGraph(int nv, const vector<char> &inBank,
                               const vector<unordered_set<int>> &adj,
                               const vector<int> &pool) {
   vector<int> color(static_cast<size_t>(nv), -1);
@@ -375,18 +375,18 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
   sum.hasCall = irFunctionContainsCall(fn);
 
   vector<char> isFloat;
-  markVregTypes(fn, isFloat);
+  irraMarkVregTypes(fn, isFloat);
 
   vector<vector<char>> liveIn;
-  computeLiveIn(fn, liveIn);
+  irraComputeLiveIn(fn, liveIn);
   if (liveIn.empty() || liveIn[0].empty()) {
     sum.vreg.assign(static_cast<size_t>(nv), IRRegallocInfo{});
     return sum;
   }
-  if (!liveInAnyActive(liveIn)) {
-    computeLiveInPerBlock(fn, liveIn);
+  if (!irraLiveInAnyActive(liveIn)) {
+    irraComputeLiveInPerBlock(fn, liveIn);
   }
-  if (!liveInAnyActive(liveIn)) {
+  if (!irraLiveInAnyActive(liveIn)) {
     sum.vreg.assign(static_cast<size_t>(nv), IRRegallocInfo{});
     return sum;
   }
@@ -410,12 +410,12 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
     }
     for (size_t a = 0; a < ints.size(); ++a) {
       for (size_t b = a + 1; b < ints.size(); ++b) {
-        addEdge(adjInt, ints[a], ints[b]);
+        irraAddEdge(adjInt, ints[a], ints[b]);
       }
     }
     for (size_t a = 0; a < floats.size(); ++a) {
       for (size_t b = a + 1; b < floats.size(); ++b) {
-        addEdge(adjFloat, floats[a], floats[b]);
+        irraAddEdge(adjFloat, floats[a], floats[b]);
       }
     }
   };
@@ -445,10 +445,10 @@ IRRegallocSummary irRegallocGraphColor(IRFunction &fn, bool optEnabled) {
     addInterferenceAt(atOp);
   }
 
-  vector<int> intPool = buildIntPool(sum.hasCall);
-  vector<int> floatPool = buildFloatPool();
-  vector<int> icol = colorGraph(nv, inInt, adjInt, intPool);
-  vector<int> fcol = colorGraph(nv, inFloat, adjFloat, floatPool);
+  vector<int> intPool = irraBuildIntPool(sum.hasCall);
+  vector<int> floatPool = irraBuildFloatPool();
+  vector<int> icol = irraColorGraph(nv, inInt, adjInt, intPool);
+  vector<int> fcol = irraColorGraph(nv, inFloat, adjFloat, floatPool);
 
   auto coloringValid = [&](const vector<int> &col,
                              const vector<unordered_set<int>> &adj) -> bool {

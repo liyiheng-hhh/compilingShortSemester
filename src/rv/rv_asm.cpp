@@ -7,29 +7,29 @@ namespace rv {
 
 namespace {
 
-std::string trim(const std::string &s) {
+std::string rvaTrim(const std::string &s) {
   size_t b = s.find_first_not_of(" \t");
   if (b == std::string::npos) return "";
   size_t e = s.find_last_not_of(" \t");
   return s.substr(b, e - b + 1);
 }
 
-std::vector<std::string> splitOperands(const std::string &ops) {
+std::vector<std::string> rvaSplitOperands(const std::string &ops) {
   std::vector<std::string> parts;
   std::string cur;
   for (char c : ops) {
     if (c == ',') {
-      parts.push_back(trim(cur));
+      parts.push_back(rvaTrim(cur));
       cur.clear();
     } else {
       cur += c;
     }
   }
-  if (!cur.empty()) parts.push_back(trim(cur));
+  if (!cur.empty()) parts.push_back(rvaTrim(cur));
   return parts;
 }
 
-bool isReg(const std::string &s) {
+bool rvaIsReg(const std::string &s) {
   if (s.empty()) return false;
   if (s[0] != 'x' && s[0] != 'f' && s[0] != 'a' && s[0] != 't' && s[0] != 's')
     return false;
@@ -39,7 +39,7 @@ bool isReg(const std::string &s) {
   return true;
 }
 
-std::string normalizeMemAddr(const std::string &operand) {
+std::string rvaNormalizeMemAddr(const std::string &operand) {
   size_t lp = operand.find('(');
   if (lp == std::string::npos) return "";
   size_t rp = operand.find(')', lp);
@@ -74,17 +74,17 @@ bool parseAsmLine(const std::string &line, AsmInst &out) {
   std::string rest = line.substr(tab + 1);
   size_t sp = rest.find(' ');
   if (sp == std::string::npos) {
-    out.mnemonic = trim(rest);
+    out.mnemonic = rvaTrim(rest);
   } else {
     out.mnemonic = rest.substr(0, sp);
-    std::string ops = trim(rest.substr(sp + 1));
-    auto parts = splitOperands(ops);
+    std::string ops = rvaTrim(rest.substr(sp + 1));
+    auto parts = rvaSplitOperands(ops);
 
     auto addUse = [&](const std::string &r) {
-      if (isReg(r)) out.uses.push_back(r);
+      if (rvaIsReg(r)) out.uses.push_back(r);
     };
     auto addDef = [&](const std::string &r) {
-      if (isReg(r)) out.defs.push_back(r);
+      if (rvaIsReg(r)) out.defs.push_back(r);
     };
 
     const std::string &m = out.mnemonic;
@@ -102,14 +102,14 @@ bool parseAsmLine(const std::string &line, AsmInst &out) {
       if (!parts.empty()) {
         addDef(parts[0]);
         out.dst = parts[0];
-        out.memAddr = normalizeMemAddr(parts.size() > 1 ? parts[1] : parts[0]);
+        out.memAddr = rvaNormalizeMemAddr(parts.size() > 1 ? parts[1] : parts[0]);
         if (parts.size() > 1) addUse(parts[1]);
       }
     } else if (m == "sw" || m == "sd" || m == "fsw" || m == "fsd") {
       out.isStore = true;
       if (parts.size() >= 2) {
         addUse(parts[0]);
-        out.memAddr = normalizeMemAddr(parts[1]);
+        out.memAddr = rvaNormalizeMemAddr(parts[1]);
         addUse(parts[1]);
       }
     } else if (m == "addi" || m == "addiw" || m == "slli" || m == "srli" ||
@@ -138,7 +138,7 @@ bool parseAsmLine(const std::string &line, AsmInst &out) {
       }
     } else {
       for (const auto &p : parts) addUse(p);
-      if (!parts.empty() && isReg(parts[0])) {
+      if (!parts.empty() && rvaIsReg(parts[0])) {
         addDef(parts[0]);
         out.dst = parts[0];
       }

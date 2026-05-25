@@ -16,17 +16,17 @@ namespace {
 
 // Loops that shouldn't be further processed.
 // For example, these might contain the side loop produced by unrolling.
-std::set<Op*> dont;
+std::set<Op*> unsDontLoops;
 
-Rule cmpmod("(eq (mod x 'a) 'b)");
-Rule cmpmod0("(mod x 'a)");
-Rule addmod("(mod (add x 'a) 'b)");
-Rule cmplt("(lt x y)");
-Rule cmpgt("(lt y x)");
+Rule unsRuleCmpmod("(eq (mod x 'a) 'b)");
+Rule unsRuleCmpmod0("(mod x 'a)");
+Rule unsRuleAddmod("(mod (add x 'a) 'b)");
+Rule unsRuleCmplt("(lt x y)");
+Rule unsRuleCmpgt("(lt y x)");
 
 // It's guaranteed that the induction variable will be a multiple of `vi`
 // at the beginning of the loop.
-void alignModAtLoopEntry(Op *loop, int vi) {
+void unsAlignModAtLoopEntry(Op *loop, int vi) {
   int start = V(loop->DEF(0));
   auto region = loop->getRegion();
   auto entry = region->getFirstBlock();
@@ -45,11 +45,11 @@ void alignModAtLoopEntry(Op *loop, int vi) {
       builder.replace<IntOp>(op, { new IntAttr(start % v) });
     }
 
-    if (!addmod.match(op, { { "x", loop } }))
+    if (!unsRuleAddmod.match(op, { { "x", loop } }))
       continue;
 
-    auto incr = V(addmod.extract("'a"));
-    auto mod = V(addmod.extract("'b"));
+    auto incr = V(unsRuleAddmod.extract("'a"));
+    auto mod = V(unsRuleAddmod.extract("'b"));
 
     if (vi % mod)
       continue;
@@ -57,7 +57,7 @@ void alignModAtLoopEntry(Op *loop, int vi) {
   }
 }
 
-bool loopCondIsInvariant(Op *loop, Op *cond) {
+bool unsLoopCondIsInvariant(Op *loop, Op *cond) {
   // For simplicity we only check these things currently.
   if (!(isa<LtOp>(cond) || isa<LeOp>(cond) || isa<EqOp>(cond) || isa<NeOp>(cond)))
     return false;
@@ -93,9 +93,9 @@ bool loopCondIsInvariant(Op *loop, Op *cond) {
   return true;
 }
 
-void hoistOperandDefsBefore(Op *op, Op *before) {
+void unsHoistOperandDefsBefore(Op *op, Op *before) {
   for (auto operand : op->getOperands())
-    hoistOperandDefsBefore(operand.defining, before);
+    unsHoistOperandDefsBefore(operand.defining, before);
   if (!op->inside(before) && op != before->DEF())
     return;
   
@@ -193,7 +193,7 @@ void unroll(Op *loop, int vi) {
   opmap[loop] = sideloop;
 
   // The side loop shouldn't be further processed.
-  dont.insert(sideloop);
+  unsDontLoops.insert(sideloop);
 
   for (auto x : body)
     copy(x);
@@ -209,14 +209,14 @@ void unroll(Op *loop, int vi) {
 
 bool Unswitch::cmpmod(Op *loop, Op *cond) {
   int vi;
-  if (!::cmpmod.match(cond, { { "x", loop } })) {
-    if (!cmpmod0.match(cond, { { "x", loop } }))
+  if (!::unsRuleCmpmod.match(cond, { { "x", loop } })) {
+    if (!unsRuleCmpmod0.match(cond, { { "x", loop } }))
       return false;
     // This means (x % 'a) != 0.
     // The procedure also works.
-    vi = V(cmpmod0.extract("'a"));
+    vi = V(unsRuleCmpmod0.extract("'a"));
   } else
-    vi = V(::cmpmod.extract("'a"));
+    vi = V(::unsRuleCmpmod.extract("'a"));
 
   vi = std::abs(vi);
   if (vi > 16 || vi <= 1)
@@ -230,16 +230,16 @@ bool Unswitch::cmpmod(Op *loop, Op *cond) {
   // Unroll the loop `vi` times.
   unroll(loop, vi);
   // Check `mod`s inside the loop and erase them when possible.
-  alignModAtLoopEntry(loop, vi);
+  unsAlignModAtLoopEntry(loop, vi);
   unswitched++;
   return true;
 }
 
 bool Unswitch::ltconst(Op *loop, Op *cond) {
-  if (!cmplt.match(cond, { { "x", loop } }))
+  if (!unsRuleCmplt.match(cond, { { "x", loop } }))
     return false;
   
-  auto limit = cmplt.extract("y");
+  auto limit = unsRuleCmplt.extract("y");
   // Check whether it's a constant.
   if (limit->inside(loop) && !isa<IntOp>(limit))
     return false;
@@ -386,10 +386,10 @@ bool Unswitch::ltconst(Op *loop, Op *cond) {
 
 // Basically a duplicate of the previous one.
 bool Unswitch::gtconst(Op *loop, Op *cond) {
-  if (!cmpgt.match(cond, { { "x", loop } }))
+  if (!unsRuleCmpgt.match(cond, { { "x", loop } }))
     return false;
   
-  auto limit = cmpgt.extract("y");
+  auto limit = unsRuleCmpgt.extract("y");
   // Check whether it's a constant.
   if (limit->inside(loop) && !isa<IntOp>(limit))
     return false;
@@ -539,7 +539,7 @@ bool Unswitch::gtconst(Op *loop, Op *cond) {
 }
 
 bool Unswitch::invariant(Op *loop, Op *cond) {
-  if (!loopCondIsInvariant(loop, cond))
+  if (!unsLoopCondIsInvariant(loop, cond))
     return false;
 
   bool isWhile = isa<WhileOp>(loop);
@@ -558,7 +558,7 @@ bool Unswitch::invariant(Op *loop, Op *cond) {
 
   // This should be safe, as the condition is invariant.
   loop->moveToStart(ifso->appendBlock());
-  hoistOperandDefsBefore(cond, _if);
+  unsHoistOperandDefsBefore(cond, _if);
 
   builder.setToBlockStart(ifnot->appendBlock());
   auto floop = isWhile
@@ -654,7 +654,7 @@ bool Unswitch::invariant(Op *loop, Op *cond) {
 }
 
 bool Unswitch::runImpl(Op *loop) {
-  if (dont.count(loop))
+  if (unsDontLoops.count(loop))
     return false;
   
   // Erased loop, but yet to be deleted.
@@ -695,7 +695,7 @@ bool Unswitch::runImpl(Op *loop) {
 }
 
 void Unswitch::run() {
-  dont.clear();
+  unsDontLoops.clear();
   bool changed;
   do {
     changed = false;

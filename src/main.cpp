@@ -25,16 +25,16 @@
 
 using namespace std;
 
-static bool endsAsmOutPath(const string &tail) {
+static bool mainEndsAsmOutPath(const string &tail) {
   size_t n = tail.size();
   return n >= 2 && tail[n - 2] == '.' && (tail[n - 1] == 's' || tail[n - 1] == 'S');
 }
 
-static bool endsWithSy(const string &path) {
+static bool mainEndsWithSy(const string &path) {
   return path.size() >= 3 && path.rfind(".sy") == path.size() - 3;
 }
 
-static int compileFile(const string &input, const string &output, bool optO1) {
+static int mainCompileFile(const string &input, const string &output, bool optO1) {
   string source = readFile(input);
   if (optO1 && sys::dialectPipelineEnabled() &&
       !sys::dialectPreferLegacyPipeline(source, input)) {
@@ -187,7 +187,7 @@ int main(int argc, char **argv) {
         output = tail;
         continue;
       }
-      if (endsAsmOutPath(tail)) {
+      if (mainEndsAsmOutPath(tail)) {
         output = tail;
         continue;
       }
@@ -196,7 +196,7 @@ int main(int argc, char **argv) {
       continue;
     }
     // 源文件：优先任何以 .sy 结尾的路径（应对「先 .s 后 .sy」等多位置参数顺序）
-    if (endsWithSy(arg)) {
+    if (mainEndsWithSy(arg)) {
       input = arg;
     } else if (input.empty()) {
       input = arg;
@@ -207,7 +207,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   try {
-    return compileFile(input, output, optO1);
+    return mainCompileFile(input, output, optO1);
   } catch (const exception &e) {
     cerr << "compiler: " << e.what() << '\n';
     return 1;

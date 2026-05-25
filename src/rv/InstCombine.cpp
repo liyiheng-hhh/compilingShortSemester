@@ -8,13 +8,13 @@ namespace rv {
 
 namespace {
 
-bool enabled() {
+bool rvicEnabled() {
   return !envFlagTruthy("SYSY_CC_NO_RV_INST_COMBINE");
 }
 
 // addi rd, rs, imm  +  addi rd2, rd, imm2  ->  addi rd2, rs, imm+imm2
 // when rd is not used between (single-use chain) — conservative: only adjacent
-bool tryFuseAddi(const std::string &a, const std::string &b, std::string &combined) {
+bool rvicTryFuseAddi(const std::string &a, const std::string &b, std::string &combined) {
   AsmInst ia, ib;
   if (!parseAsmLine(a, ia) || !parseAsmLine(b, ib)) return false;
   if (ia.mnemonic != "addi" || ib.mnemonic != "addi") return false;
@@ -49,7 +49,7 @@ bool tryFuseAddi(const std::string &a, const std::string &b, std::string &combin
 }  // namespace
 
 void instCombine(std::vector<std::string> &lines, PassStats *stats) {
-  if (!enabled()) return;
+  if (!rvicEnabled()) return;
 
   std::vector<std::string> out;
   out.reserve(lines.size());
@@ -57,7 +57,7 @@ void instCombine(std::vector<std::string> &lines, PassStats *stats) {
   for (size_t i = 0; i < lines.size(); ++i) {
     if (i + 1 < lines.size()) {
       std::string fused;
-      if (tryFuseAddi(lines[i], lines[i + 1], fused)) {
+      if (rvicTryFuseAddi(lines[i], lines[i + 1], fused)) {
         out.push_back(fused);
         if (stats) ++stats->combined;
         ++i;

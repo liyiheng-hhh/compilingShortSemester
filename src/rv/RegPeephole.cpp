@@ -10,15 +10,15 @@ namespace rv {
 
 namespace {
 
-bool enabled() {
+bool rvpeEnabled() {
   return !envFlagTruthy("SYSY_CC_NO_RV_PEEPHOLE");
 }
 
-bool aggressiveEnabled() {
+bool rvpeAggressiveEnabled() {
   return envFlagTruthy("SYSY_CC_ENABLE_RV_AGGRESSIVE_PEEPHOLE");
 }
 
-std::string trim(const std::string &s) {
+std::string rvpeTrim(const std::string &s) {
   size_t b = s.find_first_not_of(" \t");
   if (b == std::string::npos) return "";
   size_t e = s.find_last_not_of(" \t");
@@ -28,12 +28,12 @@ std::string trim(const std::string &s) {
 }  // namespace
 
 void regPeephole(std::vector<std::string> &lines, PassStats *stats) {
-  if (!enabled()) return;
+  if (!rvpeEnabled()) return;
 
   std::vector<std::string> out;
   out.reserve(lines.size());
 
-  const bool aggressive = aggressiveEnabled();
+  const bool aggressive = rvpeAggressiveEnabled();
 
   // Only allocate stateful structures when aggressive mode is requested
   std::string lastLoadAddr, lastLoadReg;
@@ -71,11 +71,11 @@ void regPeephole(std::vector<std::string> &lines, PassStats *stats) {
       size_t p = inst.raw.find('\t');
       size_t comma = inst.raw.find(',', p);
       if (comma != std::string::npos) {
-        std::string dst = trim(inst.raw.substr(p + inst.mnemonic.size() + 1,
+        std::string dst = rvpeTrim(inst.raw.substr(p + inst.mnemonic.size() + 1,
                                                comma - (p + inst.mnemonic.size() + 1)));
         size_t comma2 = inst.raw.find(',', comma + 1);
         if (comma2 != std::string::npos) {
-          std::string src = trim(inst.raw.substr(comma + 1, comma2 - comma - 1));
+          std::string src = rvpeTrim(inst.raw.substr(comma + 1, comma2 - comma - 1));
           if (dst == src) {
             if (stats) ++stats->removedMv;
             continue;
@@ -100,7 +100,7 @@ void regPeephole(std::vector<std::string> &lines, PassStats *stats) {
     if (inst.mnemonic == "li" && inst.defs.size() == 1) {
       size_t comma = line.find(',');
       if (comma != std::string::npos) {
-        std::string imm = trim(line.substr(comma + 1));
+        std::string imm = rvpeTrim(line.substr(comma + 1));
         auto it = immToReg.find(imm);
         if (it != immToReg.end() && it->second != inst.defs[0]) {
           out.push_back("\tmv\t" + inst.defs[0] + ", " + it->second);

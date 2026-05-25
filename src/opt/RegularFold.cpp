@@ -14,7 +14,7 @@ using namespace sys;
 //      scalar (size == 1) integer global with a known initializer.
 //      This covers patterns like `const int base = 16;` which the frontend
 //      emits as a global variable rather than inlining the constant.
-static bool refersToNamedGlobal(const std::string &name, Op *addr) {
+static bool rfRefersToNamedGlobal(const std::string &name, Op *addr) {
   if (!addr)
     return false;
   if (isa<GetGlobalOp>(addr))
@@ -28,43 +28,43 @@ static bool refersToNamedGlobal(const std::string &name, Op *addr) {
   return false;
 }
 
-static bool globalEscapesViaCall(const std::string &name, ModuleOp *module) {
+static bool rfGlobalEscapesViaCall(const std::string &name, ModuleOp *module) {
   for (auto call : module->findAll<CallOp>()) {
     for (auto operand : call->getOperands()) {
       auto def = operand.defining;
       if (!def || def->getResultType() != Value::i64)
         continue;
-      if (refersToNamedGlobal(name, def))
+      if (rfRefersToNamedGlobal(name, def))
         return true;
     }
   }
   return false;
 }
 
-static bool mayAliasNamedGlobal(const std::string &name, Op *addr, bool escaped) {
+static bool rfMayAliasNamedGlobal(const std::string &name, Op *addr, bool escaped) {
   if (!addr)
     return false;
-  if (refersToNamedGlobal(name, addr))
+  if (rfRefersToNamedGlobal(name, addr))
     return true;
   auto alias = addr->find<AliasAttr>();
   return escaped && (!alias || alias->unknown);
 }
 
-static bool globalHasStore(
+static bool rfGlobalHasStore(
     const std::string &name,
     ModuleOp *module) {
-  bool escaped = globalEscapesViaCall(name, module);
+  bool escaped = rfGlobalEscapesViaCall(name, module);
   for (auto store : module->findAll<StoreOp>()) {
     if (store->getOperandCount() < 2)
       continue;
-    if (mayAliasNamedGlobal(name, store->DEF(1), escaped))
+    if (rfMayAliasNamedGlobal(name, store->DEF(1), escaped))
       return true;
   }
 
   return escaped;
 }
 
-static std::optional<int> readConstGlobalScalar(
+static std::optional<int> rfReadConstGlobalScalar(
     const std::string &name,
     const std::map<std::string, GlobalOp*> &gMap,
     ModuleOp *module) {
@@ -77,14 +77,14 @@ static std::optional<int> readConstGlobalScalar(
   auto iarr = glob->get<IntArrayAttr>();
   if (!iarr || iarr->size != 1)
     return std::nullopt;
-  if (globalHasStore(name, module))
+  if (rfGlobalHasStore(name, module))
     return std::nullopt;
   if (!iarr->vi)
     return 0;
   return iarr->vi[0];
 }
 
-static std::optional<std::string> globalAtZeroOffset(Op *addr) {
+static std::optional<std::string> rfGlobalAtZeroOffset(Op *addr) {
   if (!addr)
     return std::nullopt;
   if (isa<GetGlobalOp>(addr))
@@ -98,17 +98,17 @@ static std::optional<std::string> globalAtZeroOffset(Op *addr) {
   return NAME(base);
 }
 
-static std::optional<int> foldToConstInt(
+static std::optional<int> rfFoldToConstInt(
     Op *op, const std::map<std::string, GlobalOp*> &gMap, ModuleOp *module) {
   if (isa<IntOp>(op))
     return V(op);
 
   // Pattern: load(getglobal(<name>)) or an equivalent zero-offset alias.
   if (isa<LoadOp>(op)) {
-    auto name = globalAtZeroOffset(op->DEF(0));
+    auto name = rfGlobalAtZeroOffset(op->DEF(0));
     if (!name)
       return std::nullopt;
-    return readConstGlobalScalar(*name, gMap, module);
+    return rfReadConstGlobalScalar(*name, gMap, module);
   }
 
   return std::nullopt;
@@ -116,7 +116,7 @@ static std::optional<int> foldToConstInt(
 
 #define INT(op) isa<IntOp>(op)
 
-static Rule rules[] = {
+static Rule rfRules[] = {
   // Addition
   "(change (add x 0) x)",
   "(change (add 'a 'b) (!add 'a 'b))",
@@ -423,7 +423,7 @@ int RegularFold::runImpl(Region *region) {
       // Match each rule.
       bool success = false;
       if (!op->has<ImpureAttr>()) {
-        for (auto &rule : rules) {
+        for (auto &rule : rfRules) {
           success = rule.rewrite(op);
           if (success) {
             folded++;
@@ -468,11 +468,11 @@ void RegularFold::run() {
       if (op->getResultType() != Value::i32 || op->getOperandCount() != 1)
         return false;
       auto addr = op->DEF(0);
-      auto name = globalAtZeroOffset(addr);
+      auto name = rfGlobalAtZeroOffset(addr);
       if (!name)
         return false;
 
-      auto value = readConstGlobalScalar(*name, gMap, module);
+      auto value = rfReadConstGlobalScalar(*name, gMap, module);
       if (!value)
         return false;
 
@@ -542,7 +542,7 @@ void RegularFold::run() {
 
         // Divisor must be a compile-time integer constant (or a load from a
         // scalar const global, e.g. `const int base = 16`).
-        auto maybeDiv = foldToConstInt(y, gMap, module);
+        auto maybeDiv = rfFoldToConstInt(y, gMap, module);
         if (!maybeDiv)
           return false;
 
@@ -581,7 +581,7 @@ void RegularFold::run() {
 
         // Divisor must be a compile-time integer constant (or a load from a
         // scalar const global, e.g. `const int base = 16`).
-        auto maybeMod = foldToConstInt(y, gMap, module);
+        auto maybeMod = rfFoldToConstInt(y, gMap, module);
         if (!maybeMod)
           return false;
 
