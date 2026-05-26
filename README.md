@@ -96,6 +96,8 @@ make runtime-summary
 
 - 数据文件：`tests/.out/runtime/sysy-performance-O1.csv`
 - `runtime-summary` 会列出最慢的题、哪些 WA/超时。
+- 失败归档（可选）：`PERF_FAILURE_LOG=tests/.out/runtime/failures.log make runtime-eval …`，WA/CE 会追加 diff；比对前默认去掉 `TOTAL:` / `Timer@` 行（`PERF_STRIP_TIMING=0` 可关闭）。
+- 寄存器分配自检（调试用）：`SYSY_CC_VERIFY_REGALLOC=1` 编译时在着色后检查干涉图与预着色一致性。
 
 **③ 改优化前后对比（旧 vs 新）**
 

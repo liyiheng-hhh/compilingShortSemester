@@ -13,6 +13,25 @@ runtime_normalize_out() {
   awk '{ sub(/[ \t\r]+$/, "", $0); print }' "$1"
 }
 
+# 去掉性能用例自报的计时代码行，避免与官方 .out 比对时误报 WA。
+# 匹配行首 TOTAL: 或 Timer@（与常见 SysY 性能输出约定一致）。
+runtime_filter_timing_lines() {
+  local src="$1" dst="$2"
+  if [[ ! -s "$src" ]]; then
+    : >"$dst"
+    return 0
+  fi
+  grep -Ev '^(TOTAL:|Timer@)' "$src" >"$dst" || true
+}
+
+# 将程序 stdout 规范化后与 golden 比对；$3 为可写临时文件路径。
+# 返回 0 表示匹配。
+runtime_golden_matches() {
+  local golden="$1" raw_out="$2" scratch="$3"
+  runtime_filter_timing_lines "$raw_out" "$scratch"
+  cmp -s "$golden" "$scratch"
+}
+
 runtime_median_ns() {
   printf '%s\n' "$@" | sort -n | awk '
     { a[NR]=$1 }

@@ -22,6 +22,82 @@ bool raEnvEnabled(const char *name, bool fallback = true) {
   return true;
 }
 
+static bool raIsIgnorableColor(Reg r) {
+  return r == Reg::sp || r == Reg::zero;
+}
+
+static bool raSameRegBank(Op *a, Op *b) {
+  return fpreg(a->getResultType()) == fpreg(b->getResultType());
+}
+
+// Debug-only: sanity-check coloring before lowering operands to physical regs.
+static int raVerifyColoring(
+    FuncOp *func,
+    const std::unordered_map<Op*, Reg> &color,
+    const std::unordered_map<Op*, std::unordered_set<Op*>> &interf,
+    const std::unordered_map<Op*, int> &stackSlot) {
+  int issues = 0;
+  auto funcName = func->get<NameAttr>() ? NAME(func) : std::string("<anon>");
+
+  auto report = [&](const char *kind, Op *op, Op *other = nullptr) {
+    issues++;
+    std::cerr << "[rv-regalloc:verify] " << funcName << ": " << kind;
+    if (op)
+      std::cerr << " op=" << op;
+    if (other)
+      std::cerr << " other=" << other;
+    std::cerr << "\n";
+  };
+
+  for (auto &[op, neigh] : interf) {
+    if (!color.count(op) || isa<PlaceHolderOp>(op))
+      continue;
+    Reg ca = color.at(op);
+    if (raIsIgnorableColor(ca))
+      continue;
+    for (Op *nb : neigh) {
+      if (!color.count(nb) || isa<PlaceHolderOp>(nb))
+        continue;
+      if (!raSameRegBank(op, nb))
+        continue;
+      Reg cb = color.at(nb);
+      if (raIsIgnorableColor(cb))
+        continue;
+      if (ca == cb)
+        report("live-range color clash", op, nb);
+    }
+  }
+
+  for (auto bb : func->getRegion()->getBlocks()) {
+    for (auto op : bb->getOps()) {
+      if (isa<WriteRegOp>(op)) {
+        auto want = REG(op);
+        auto def = op->DEF(0);
+        if (def && color.count(def) && color.at(def) != want && !raIsIgnorableColor(want))
+          report("writereg color mismatch", def, op);
+      }
+      if (isa<ReadRegOp>(op)) {
+        auto want = REG(op);
+        if (color.count(op) && color.at(op) != want && want != Reg::sp)
+          report("readreg color mismatch", op);
+      }
+    }
+  }
+
+  std::unordered_map<int, Op*> slotOwner;
+  for (auto &[op, off] : stackSlot) {
+    if (off < 0)
+      continue;
+    auto it = slotOwner.find(off);
+    if (it != slotOwner.end() && raSameRegBank(it->second, op))
+      report("stack slot overlap", op, it->second);
+    else
+      slotOwner[off] = op;
+  }
+
+  return issues;
+}
+
 class SpilledRdAttr : public AttrImpl<SpilledRdAttr, RVLINE + 2097152> {
 public:
   bool fp;
@@ -677,6 +753,13 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
     // Update `highest`, which will indicate the size allocated.
       if (desired > highest)
         highest = desired;
+    }
+
+    if (raEnvEnabled("SYSY_CC_VERIFY_REGALLOC", false)) {
+      int bad = raVerifyColoring(cast<FuncOp>(funcOp), assignment, interf, spillOffset);
+      if (bad)
+        std::cerr << "[rv-regalloc:verify] " << NAME(funcOp) << ": " << bad
+                  << " issue(s) before spill lowering\n";
     }
   } else {
     // Huge-module fast path: avoid O(N^2) interference construction in regalloc.

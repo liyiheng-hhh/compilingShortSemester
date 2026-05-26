@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # 批量运行时评测核心：warmup + RUNS 次取中位数 + 正确性
+#
+# 可选环境变量：
+#   PERF_FAILURE_LOG / RUNTIME_FAILURE_LOG — 失败用例追加写入该文件（含 diff）
+#   PERF_STRIP_TIMING=1（默认）— 比对 .out 前去掉 TOTAL:/Timer@ 行
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,6 +50,28 @@ fi
 PERF_CSV="${PERF_CSV:-$ROOT/tests/.out/perf/${LABEL}-$(basename "$TESTDIR")-${OPT_NAME}.csv}"
 CASE_FILTER="${CASE_FILTER:-${RUNTIME_CASE_FILTER:-}}"
 CASE_LIMIT="${CASE_LIMIT:-${RUNTIME_CASE_LIMIT:-0}}"
+FAIL_LOG="${PERF_FAILURE_LOG:-${RUNTIME_FAILURE_LOG:-}}"
+STRIP_TIMING="${PERF_STRIP_TIMING:-1}"
+
+perf_record_failure() {
+  local base="$1" status="$2" compare="$3" log_path="$4"
+  local golden_path="${5:-}" filtered_out="${6:-}"
+  [[ -n "$FAIL_LOG" ]] || return 0
+  mkdir -p "$(dirname "$FAIL_LOG")"
+  {
+    echo "======== $(date -Iseconds) suite=$SUITE_NAME opt=$OPT_NAME case=$base ========"
+    echo "status=$status compare=$compare"
+    if [[ -f "$log_path" ]]; then
+      echo "--- run log ---"
+      cat "$log_path"
+    fi
+    if [[ -n "$golden_path" && -f "$golden_path" && -f "$filtered_out" ]]; then
+      echo "--- expected vs actual (timing lines stripped) ---"
+      diff -u -B "$golden_path" "$filtered_out" || true
+    fi
+    echo ""
+  } >>"$FAIL_LOG"
+}
 
 [[ -x "$COMPILER" ]] || { echo "error: missing compiler: $COMPILER" >&2; exit 2; }
 [[ -f "$LIBSYSY" ]] || { echo "error: missing LIBSYSY=$LIBSYSY (make libsysy.a)" >&2; exit 2; }
@@ -117,6 +143,7 @@ while IFS= read -r -d '' sy; do
   if [[ $compile_rc -ne 0 || ! -f "$asm" ]]; then
     status="compile_fail"
     hard_fail=$((hard_fail + 1))
+    perf_record_failure "$base" "$status" "skip" "$log" "" ""
     emit_csv_row
     echo "[$base] status=$status"
     continue
@@ -132,6 +159,7 @@ while IFS= read -r -d '' sy; do
   if [[ $link_rc -ne 0 ]]; then
     status="link_fail"
     hard_fail=$((hard_fail + 1))
+    perf_record_failure "$base" "$status" "skip" "$log" "" ""
     emit_csv_row
     echo "[$base] status=$status"
     continue
@@ -160,18 +188,24 @@ while IFS= read -r -d '' sy; do
     fi
   done
 
+  fail_filtered=""
   if [[ -f "$out_golden" ]]; then
     compare="mismatch"
     for ((r = 1; r <= RUNS; ++r)); do
       act="$work/run${r}.stripped"
       tr -d '\r' <"$work/run${r}.out" >"$act"
-      if cmp -s "$out_golden" "$act"; then
+      cmp_target="$act"
+      if [[ "$STRIP_TIMING" == "1" ]]; then
+        cmp_target="$work/run${r}.forcmp"
+        runtime_filter_timing_lines "$act" "$cmp_target"
+      fi
+      if cmp -s "$out_golden" "$cmp_target"; then
         compare="ok"
         break
       fi
       # 与 run_sy_tests.sh 一致：官方 .out 常为「stdout + 退出码一行」
       withrc="$work/run${r}.withrc"
-      cp "$act" "$withrc"
+      cp "$cmp_target" "$withrc"
       # 与 run_sy_tests.sh 相同：$(tail -c 1) 会去掉换行符，故用「是否为空」判断末尾有无 \n
       if [[ -s "$withrc" ]] && [[ -n "$(tail -c 1 "$withrc")" ]]; then
         printf '\n' >>"$withrc"
@@ -181,6 +215,7 @@ while IFS= read -r -d '' sy; do
         compare="ok"
         break
       fi
+      fail_filtered="$cmp_target"
     done
   else
     compare="no_golden"
@@ -195,6 +230,10 @@ while IFS= read -r -d '' sy; do
     hard_fail=$((hard_fail + 1))
   fi
 
+  if [[ $pass -eq 0 ]]; then
+    perf_record_failure "$base" "$status" "$compare" "$log" "$out_golden" "$fail_filtered"
+  fi
+
   emit_csv_row
   echo "[$base] status=$status pass=$pass median_ms=${median_ms:-N/A} asm_lines=$asm_lines"
 done < <(find "$TESTDIR" -maxdepth 1 -type f -name '*.sy' -print0 | sort -z)
@@ -202,6 +241,9 @@ done < <(find "$TESTDIR" -maxdepth 1 -type f -name '*.sy' -print0 | sort -z)
 echo ""
 echo "csv=$PERF_CSV"
 echo "suite=$SUITE_NAME opt=$OPT_NAME total=$total pass=$pass_count fail=$((total - pass_count))"
+if [[ -n "$FAIL_LOG" ]]; then
+  echo "failure_log=$FAIL_LOG"
+fi
 
 if [[ "$total" -eq 0 ]]; then
   echo "warn: no .sy files under $TESTDIR" >&2

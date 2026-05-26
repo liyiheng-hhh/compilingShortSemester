@@ -12,3 +12,5 @@ performance/
 tests/.out/
 /ref/
 compiler2026-*/
+# 本地参考仓库，勿提交
+compiler2026-main/
