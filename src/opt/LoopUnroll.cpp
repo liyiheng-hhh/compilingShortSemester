@@ -1,7 +1,48 @@
 #include "LoopPasses.h"
 #include "Passes.h"
 
+#include <cstdlib>
+#include <cstring>
+
 using namespace sys;
+
+namespace {
+
+bool cluEnvOn(const char *name, bool fallback = true) {
+  const char *v = std::getenv(name);
+  if (!v || !v[0])
+    return fallback;
+  if (std::strcmp(v, "0") == 0 || std::strcmp(v, "false") == 0)
+    return false;
+  return true;
+}
+
+bool loopBodyLooksLikeCrcByte(LoopInfo *loop) {
+  bool mask255 = false;
+  bool shift8 = false;
+  int loadCount = 0;
+  for (auto *bb : loop->getBlocks()) {
+    for (auto *op : bb->getOps()) {
+      if (isa<LoadOp>(op))
+        loadCount++;
+      if (auto *andOp = dyn_cast<AndIOp>(op)) {
+        for (auto v : andOp->getOperands()) {
+          auto *d = v.defining;
+          if (isa<IntOp>(d) && V(d) == 255)
+            mask255 = true;
+        }
+      }
+      if (auto *sh = dyn_cast<RShiftOp>(op)) {
+        auto *amt = sh->DEF(1);
+        if (isa<IntOp>(amt) && V(amt) == 8)
+          shift8 = true;
+      }
+    }
+  }
+  return mask255 && shift8 && loadCount >= 2;
+}
+
+}  // namespace
 
 std::map<std::string, int> ConstLoopUnroll::stats() {
   return {
@@ -242,9 +283,15 @@ bool ConstLoopUnroll::runImpl(LoopInfo *loop) {
     if (times <= 1000 / loopsize)
       unroll = times;
   }
-  // Not a constant loop.
-  if (unroll == -1)
-    return false;
+  // Not a constant loop: 4x partial unroll for CRC-style byte kernels.
+  if (unroll == -1) {
+    if (!cluEnvOn("SYSY_CC_ENABLE_CRC_LOOP_UNROLL", false))
+      return false;
+    if (loopBodyLooksLikeCrcByte(loop) && loopsize <= 120 && phis.size() < 5)
+      unroll = 4;
+    else
+      return false;
+  }
 
   // Record the phi values at the beginning of `exit` that are taken from the latch.
   // Note that "taken from latch" doesn't necessarily mean it's in the loop.

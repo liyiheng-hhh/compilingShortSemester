@@ -156,6 +156,8 @@ void dpipeAppendLoopOptPasses(sys::PassManager &pm) {
   if (!envFlagTruthy("SYSY_CC_NO_LOOP_TILING"))
     pm.addPass<sys::LoopTiling>();
   pm.addPass<sys::LICM>();
+  if (!envFlagTruthy("SYSY_CC_NO_HOIST_LOOP_GLOBAL"))
+    pm.addPass<sys::HoistLoopGlobal>();
   if (dpipeDialectPassEnabled("SYSY_CC_ENABLE_CONST_LOOP_UNROLL", true))
     pm.addPass<sys::ConstLoopUnroll>();
   if (!envFlagTruthy("SYSY_CC_NO_SCEV"))
@@ -212,6 +214,8 @@ void dpipeAppendLateInlinePasses(sys::PassManager &pm) {
 void dpipeAppendLoopRoundPasses(sys::PassManager &pm) {
   pm.addPass<sys::CanonicalizeLoop>(/*lcssa=*/true);
   pm.addPass<sys::LICM>();
+  if (!envFlagTruthy("SYSY_CC_NO_HOIST_LOOP_GLOBAL"))
+    pm.addPass<sys::HoistLoopGlobal>();
   if (!envFlagTruthy("SYSY_CC_NO_SCEV"))
     pm.addPass<sys::SCEV>();
   pm.addPass<sys::RemoveEmptyLoop>();

@@ -12,6 +12,18 @@ std::map<std::string, int> LateInline::stats() {
 // Defined in Inline.cpp.
 bool inlIsRecursive(Op *op);
 
+namespace {
+
+int lateInlineBudget(const std::string &fname, int defaultThreshold) {
+  // Huffman / CRC style helpers: small at source, large if inlined late after mem2reg.
+  if (fname == "read_bits" || fname == "decode_fixed_huffman" ||
+      fname == "output_data" || fname == "crc32")
+    return defaultThreshold > 900 ? defaultThreshold : 900;
+  return defaultThreshold;
+}
+
+}  // namespace
+
 // This pass runs after Mem2Reg.
 void LateInline::run() {
   CallGraph(module).run();
@@ -47,10 +59,11 @@ void LateInline::run() {
         if (isa<CallOp>(op))
           callcount++;
       }
-    if (opcount >= threshold)
+    const int budget = lateInlineBudget(fname, threshold);
+    if (opcount >= budget)
       return false;
     // Penalize call-dense callees near threshold to avoid code growth.
-    if (callcount > 0 && opcount * 5 >= threshold * 4)
+    if (callcount > 0 && opcount * 5 >= budget * 4)
       return false;
 
     // Don't inline recursive functions here.

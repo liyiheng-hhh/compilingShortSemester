@@ -117,6 +117,18 @@ public:
   void run() override;
 };
 
+// Hoist repeated GetGlobal in loops (e.g. crc32table base) to preheader.
+class HoistLoopGlobal : public Pass {
+  int hoisted = 0;
+  void runOnLoop(LoopInfo *loop);
+public:
+  HoistLoopGlobal(ModuleOp *module): Pass(module) {}
+
+  std::string name() override { return "hoist-loop-global"; }
+  std::map<std::string, int> stats() override;
+  void run() override;
+};
+
 class ConstLoopUnroll : public Pass {
   std::map<Op*, Op*> phiMap;
   std::map<Op*, Op*> exitlatch;

@@ -246,16 +246,18 @@ Value CodeGen::cgcEmitExpr(ASTNode *node) {
 
     bool isFP = cgAstIsFloat(call->type);
     if (cgBitStubFoldEnabled() && !isFP) {
-      if (name == "_and" && args.size() == 2)
-        return builder.create<AndIOp>(args);
-      if (name == "_xor" && args.size() == 2)
-        return builder.create<XorIOp>(args);
-      if (name == "_or" && args.size() == 2)
-        return builder.create<OrIOp>(args);
+      if (args.size() == 2 && cgcIsBitwiseStubCallee(name)) {
+        if (name == "_and")
+          return builder.create<AndIOp>(args);
+        if (name == "_xor")
+          return builder.create<XorIOp>(args);
+        if (name == "_or")
+          return builder.create<OrIOp>(args);
+      }
       if (name == "rotr8" && args.size() == 1)
         return builder.create<RShiftOp>({ args[0], cgEmitShiftAmount(builder, 8) });
       if (args.size() == 2) {
-        if (auto kNode = dyn_cast<IntNode>(call->args[1])) {
+        if (auto *kNode = dyn_cast<IntNode>(call->args[1])) {
           int k = kNode->value;
           if (k >= 1 && k <= 30) {
             auto amt = cgEmitShiftAmount(builder, k);

@@ -3,6 +3,8 @@
 #define CODEGEN_H
 
 #include <map>
+#include <string>
+#include <unordered_map>
 #include "../dialect_parse/ASTNode.h"
 #include "OpBase.h"
 #include "Ops.h"
@@ -181,8 +183,10 @@ class CodeGen {
   Builder builder;
   SymbolTable symbols;
   SymbolTable globals;
+  std::unordered_map<std::string, FnDeclNode*> funcDecls_;
 
   void cgcEmit(ASTNode *node);
+  bool cgcIsBitwiseStubCallee(const std::string &name) const;
   Value cgcEmitExpr(ASTNode *node);
 
   Value cgcEmitBinary(BinaryNode *node);

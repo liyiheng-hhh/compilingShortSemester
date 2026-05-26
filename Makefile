@@ -56,7 +56,7 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/opt/AggressiveDCE.cpp \
 	$(SRCDIR)/opt/LoopInfo.cpp $(SRCDIR)/opt/LoopAnalysis.cpp \
 	$(SRCDIR)/opt/CanonicalizeLoop.cpp $(SRCDIR)/opt/LoopRotate.cpp \
-	$(SRCDIR)/opt/LoopUnroll.cpp $(SRCDIR)/opt/LICM.cpp $(SRCDIR)/opt/SCEV.cpp \
+	$(SRCDIR)/opt/LoopUnroll.cpp $(SRCDIR)/opt/HoistLoopGlobal.cpp $(SRCDIR)/opt/LICM.cpp $(SRCDIR)/opt/SCEV.cpp \
 	$(SRCDIR)/opt/RowScratchMatmul.cpp $(SRCDIR)/opt/LoopTiling.cpp \
 	$(SRCDIR)/opt/RemoveEmptyLoop.cpp $(SRCDIR)/opt/Inline.cpp \
 	$(SRCDIR)/opt/FlattenCFG.cpp \
