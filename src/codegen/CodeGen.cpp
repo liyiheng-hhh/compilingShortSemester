@@ -111,11 +111,19 @@ bool cgcAstBitwiseSimulatorBody(FnDeclNode *fn) {
       walk(ret->node);
       return;
     }
-    if (auto *un = dyn_cast<UnaryNode>(n))
+    if (auto *as = dyn_cast<AssignNode>(n)) {
+      walk(as->l);
+      walk(as->r);
+      return;
+    }
+    if (auto *un = dyn_cast<UnaryNode>(n)) {
       walk(un->node);
+      return;
+    }
     if (auto *call = dyn_cast<CallNode>(n)) {
       for (auto *arg : call->args)
         walk(arg);
+      return;
     }
   };
   walk(fn->body);
