@@ -50,7 +50,7 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/dialect_hir/DhirOps.cpp $(SRCDIR)/dialect_hir/DhirBuilder.cpp \
 	$(SRCDIR)/cfg/HIRToCFG.cpp $(SRCDIR)/cfg/CFGOps.cpp $(SRCDIR)/cfg/CFGToLegacy.cpp \
 	$(SRCDIR)/cfg/CFGLegality.cpp $(SRCDIR)/cfg/CFGVerifier.cpp \
-	$(SRCDIR)/opt/PassManager.cpp $(SRCDIR)/opt/Mem2Reg.cpp \
+	$(SRCDIR)/opt/PassManager.cpp $(SRCDIR)/opt/Mem2Reg.cpp $(SRCDIR)/opt/BitStubFold.cpp \
 	$(SRCDIR)/opt/Alias.cpp $(SRCDIR)/opt/Pureness.cpp $(SRCDIR)/opt/AtMostOnce.cpp \
 	$(SRCDIR)/opt/DSE.cpp $(SRCDIR)/opt/DLE.cpp $(SRCDIR)/opt/DAE.cpp \
 	$(SRCDIR)/opt/AggressiveDCE.cpp \

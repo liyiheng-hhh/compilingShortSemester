@@ -353,6 +353,18 @@ public:
   void run() override;
 };
 
+// Fold contest-style software bitwise helpers (_and/_xor/_or) and constant shifts.
+class BitStubFold : public Pass {
+  int bitwise = 0;
+  int shifts = 0;
+public:
+  BitStubFold(ModuleOp *module): Pass(module) {}
+
+  std::string name() override { return "bit-stub-fold"; }
+  std::map<std::string, int> stats() override;
+  void run() override;
+};
+
 class Verify : public Pass {
 public:
   Verify(ModuleOp *module): Pass(module) {}

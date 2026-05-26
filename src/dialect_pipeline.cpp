@@ -291,6 +291,10 @@ void appendDialectMidEndPasses(PassManager &pm) {
   if (dpipeUseStructuredCodegen())
     pm.addPass<sys::FlattenCFG>();
 
+  // Before function inlining: avoid cloning 32-iter bitwise simulators into hot loops.
+  if (!envFlagTruthy("SYSY_CC_NO_BIT_STUB_FOLD"))
+    pm.addPass<sys::BitStubFold>();
+
   if (dpipeDialectPassEnabled("SYSY_CC_NO_POST_FLATTEN_OPT"))
     dpipeAppendPostFlattenPasses(pm);
 

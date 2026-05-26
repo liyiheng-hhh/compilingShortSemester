@@ -2,6 +2,7 @@
 // compiler2026-x phase-E (codegen)
 
 #include "CodeGen.h"
+#include "../common.h"
 #include "../utils/DynamicCast.h"
 #include "Attrs.h"
 #include "OpBase.h"
@@ -13,6 +14,19 @@
 using namespace sys;
 
 namespace {
+
+bool cgBitStubFoldEnabled() {
+  if (envFlagTruthy("SYSY_CC_NO_BIT_STUB_FOLD"))
+    return false;
+  const char *v = std::getenv("SYSY_CC_ENABLE_BIT_STUB_FOLD");
+  if (!v || !v[0])
+    return true;
+  return envFlagTruthy("SYSY_CC_ENABLE_BIT_STUB_FOLD");
+}
+
+Op *cgEmitShiftAmount(Builder &builder, int bits) {
+  return builder.create<IntOp>({ new IntAttr(bits) });
+}
 
 bool cgAstIsFloat(Type *ty) {
   return ty && isa<FloatType>(ty);
@@ -231,6 +245,29 @@ Value CodeGen::cgcEmitExpr(ASTNode *node) {
       name = "_sysy_stoptime";
 
     bool isFP = cgAstIsFloat(call->type);
+    if (cgBitStubFoldEnabled() && !isFP) {
+      if (name == "_and" && args.size() == 2)
+        return builder.create<AndIOp>(args);
+      if (name == "_xor" && args.size() == 2)
+        return builder.create<XorIOp>(args);
+      if (name == "_or" && args.size() == 2)
+        return builder.create<OrIOp>(args);
+      if (name == "rotr8" && args.size() == 1)
+        return builder.create<RShiftOp>({ args[0], cgEmitShiftAmount(builder, 8) });
+      if (args.size() == 2) {
+        if (auto kNode = dyn_cast<IntNode>(call->args[1])) {
+          int k = kNode->value;
+          if (k >= 1 && k <= 30) {
+            auto amt = cgEmitShiftAmount(builder, k);
+            if (name == "rotrN")
+              return builder.create<RShiftOp>({ args[0], amt });
+            if (name == "rotlN")
+              return builder.create<LShiftOp>({ args[0], amt });
+          }
+        }
+      }
+    }
+
     auto callOp = builder.create<CallOp>(isFP ? Value::f32 : Value::i32, args, {
       new NameAttr(name),
     });
