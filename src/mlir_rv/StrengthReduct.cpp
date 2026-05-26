@@ -57,7 +57,7 @@ int StrengthReduct::runImpl() {
 
   int converted = 0;
   const bool enableMul =
-    envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MUL", true);
+    envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MUL", false);
   const bool enableMulwDecompose =
     envEnabled("SYSY_RV_ENABLE_MULW_DECOMPOSE", false);
 
@@ -297,7 +297,7 @@ strength_reduct_div:
       return true;
     }
 
-    if (!envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MAGIC_DIV", true))
+    if (!envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MAGIC_DIV", false))
       return false;
 
     // We truncate division toward zero.
@@ -337,7 +337,7 @@ strength_reduct_div:
   });
   }
 
-  if (envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_REM", true)) {
+  if (envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_REM", false)) {
   // ===================
   // Rewrite ModOp.
   // ===================
@@ -406,7 +406,7 @@ strength_reduct_div:
       return true;
     }
 
-    if (!envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MAGIC_REM", true))
+    if (!envEnabled("SYSY_RV_ENABLE_STRENGTH_REDUCT_MAGIC_REM", false))
       return false;
 
     // Replace with div-mul-sub.
