@@ -277,11 +277,20 @@ void Op::replaceAllUsesWith(Op *other) {
   uses.clear();
 }
 
+static std::vector<FromAttr*> collectPhiFromAttrs(const std::vector<Attr*> &attrs) {
+  std::vector<FromAttr*> froms;
+  froms.reserve(attrs.size());
+  for (auto *attr : attrs)
+    if (auto *from = dyn_cast<FromAttr>(attr))
+      froms.push_back(from);
+  return froms;
+}
+
 Op *Op::getPhiFrom(Op *phi, BasicBlock *bb) {
   const auto &ops = phi->operands;
-  const auto &attrs = phi->attrs;
-  for (int i = 0; i < ops.size(); i++) {
-    if (FROM(attrs[i]) == bb)
+  auto froms = collectPhiFromAttrs(phi->attrs);
+  for (int i = 0; i < (int) ops.size(); i++) {
+    if (i < (int) froms.size() && froms[i]->bb == bb)
       return phi->DEF(i);
   }
 
@@ -292,10 +301,10 @@ Op *Op::getPhiFrom(Op *phi, BasicBlock *bb) {
 
 BasicBlock *Op::getPhiFrom(Op *phi, Op *op) {
   const auto &ops = phi->operands;
-  const auto &attrs = phi->attrs;
-  for (int i = 0; i < ops.size(); i++) {
-    if (ops[i].defining == op)
-      return FROM(attrs[i]);
+  auto froms = collectPhiFromAttrs(phi->attrs);
+  for (int i = 0; i < (int) ops.size(); i++) {
+    if (ops[i].defining == op && i < (int) froms.size())
+      return froms[i]->bb;
   }
   assert(false);
   std::abort();

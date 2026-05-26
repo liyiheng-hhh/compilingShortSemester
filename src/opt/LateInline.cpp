@@ -24,6 +24,11 @@ void LateInline::run() {
     const auto &fname = NAME(call);
     if (isExtern(fname))
       return false;
+    // Row-scratch helpers are large, hand-tuned kernels; inlining them
+    // bloats main and often leaves the call site DCE'd while the scalar
+    // loop remains.
+    if (fname.rfind("__row_scratch_", 0) == 0)
+      return false;
 
     if (!fnMap.count(fname)) {
       std::cerr << "unknown function: " << fname << "\n";

@@ -34,6 +34,9 @@ public:
   std::string name() override { return "mem2reg"; };
   std::map<std::string, int> stats() override;
   void run() override;
+
+  // Promote allocas in a single function (e.g. helpers inserted after module mem2reg).
+  void promoteFunc(FuncOp *func);
 };
 
 // Global value numbering.
@@ -159,6 +162,16 @@ public:
 
   std::string name() override { return "row-scratch-matmul"; }
   std::map<std::string, int> stats() override;
+  void run() override;
+};
+
+// Re-apply RsmPinAttr on helper loop phis after mid-end opts (late in pipeline).
+class RsmHelperPin : public Pass {
+public:
+  RsmHelperPin(ModuleOp *module): Pass(module) {}
+
+  std::string name() override { return "rsm-helper-pin"; }
+  std::map<std::string, int> stats() override { return {}; }
   void run() override;
 };
 

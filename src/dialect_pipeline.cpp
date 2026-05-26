@@ -315,6 +315,10 @@ void appendDialectMidEndPasses(PassManager &pm) {
 
   if (dpipeDialectPassEnabled("SYSY_CC_NO_DIALECT_FINAL_OPT"))
     dpipeAppendFinalCleanupPasses(pm);
+
+  // Pinning loop vars to fixed callee-saved regs is opt-in (hurts many_mat_cal by default).
+  if (envFlagTruthy("SYSY_CC_ENABLE_RSM_HELPER_PIN"))
+    pm.addPass<sys::RsmHelperPin>();
 }
 
 std::string emitDialectModuleAsm(ModuleOp *module, bool enableSchedule,

@@ -1,5 +1,6 @@
 #include "RvPasses.h"
 #include "Regs.h"
+#include "../codegen/Attrs.h"
 #include "../backend/shared/RegAllocHotness.h"
 #include <algorithm>
 #include <cstdlib>
@@ -211,6 +212,46 @@ struct RaRegEvent {
   Op *op;
 };
 
+constexpr Reg kRsmPinReg[] = {
+  Reg::s2, Reg::s3, Reg::s4, Reg::s5, Reg::s6,
+};
+
+bool raRsmPinEnabled() {
+  return raEnvEnabled("SYSY_CC_ENABLE_RSM_HELPER_PIN", false);
+}
+
+void raApplyRsmPins(Region *region,
+                    std::unordered_map<Op*, Reg> &assignment,
+                    std::unordered_map<Op*, Op*> &prefer,
+                    std::unordered_map<Op*, int> &priority) {
+  if (!raRsmPinEnabled())
+    return;
+  std::vector<Op*> pinned;
+  for (auto *bb : region->getBlocks()) {
+    for (auto *op : bb->getOps()) {
+      auto *pin = op->find<RsmPinAttr>();
+      if (!pin || pin->slot < 0 || pin->slot >= 5)
+        continue;
+      Reg reg = kRsmPinReg[pin->slot];
+      assignment[op] = reg;
+      priority[op] = 100000;
+      pinned.push_back(op);
+    }
+  }
+
+  for (auto *op : pinned) {
+    if (!isa<PhiOp>(op))
+      continue;
+    for (auto v : op->getOperands()) {
+      Op *def = v.defining;
+      if (!def || def->has<RsmPinAttr>() || isa<IntOp>(def) || isa<FloatOp>(def))
+        continue;
+      prefer[def] = op;
+      priority[def] = 99999;
+    }
+  }
+}
+
 void RegAlloc::runImpl(Region *region, bool isLeaf) {
   const Reg *order = isLeaf ? leafOrder : normalOrder;
   const Reg *orderf = isLeaf ? leafOrderf : normalOrderf;
@@ -321,6 +362,10 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
     // Spilled to stack; don't do anything.
   }
 
+  std::unordered_map<Op*, Op*> prefer;
+  std::unordered_map<Op*, int> priority;
+  raApplyRsmPins(region, assignment, prefer, priority);
+
   region->updateLiveness();
 
   // Build a coarse block hotness model for spill heuristics:
@@ -342,9 +387,7 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
     std::unordered_map<Op*, int> callSpan;
 
     // Values of readreg, or operands of writereg, or phis (mvs), are prioritzed.
-    std::unordered_map<Op*, int> priority;
     // The `key` is preferred to have the same value as `value`.
-    std::unordered_map<Op*, Op*> prefer;
     // Maps a phi to its operands.
     std::unordered_map<Op*, std::vector<Op*>> phiOperand;
 
@@ -906,8 +949,8 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
     for (auto succ : bb->succs) {
       for (auto phis : succ->getPhis()) {
         for (auto attr : phis->getAttrs()) {
-          auto from = cast<FromAttr>(attr);
-          if (from->bb != bb)
+          auto from = dyn_cast<FromAttr>(attr);
+          if (!from || from->bb != bb)
             continue;
           if (succ == oldTarget)
             from->bb = edge1;
@@ -932,9 +975,8 @@ void RegAlloc::runImpl(Region *region, bool isLeaf) {
     std::vector<Op*> moves;
     for (auto phi : phis) {
       auto &ops = phi->getOperands();
-      auto &attrs = phi->getAttrs();
       for (size_t i = 0; i < ops.size(); i++) {
-        auto bb = FROM(attrs[i]);
+        auto bb = Op::getPhiFrom(phi, ops[i].defining);
         if (!bb || bb->getParent() != region || bb->getOpCount() == 0)
           continue;
         auto term = bb->getLastOp();

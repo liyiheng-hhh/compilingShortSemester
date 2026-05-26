@@ -311,6 +311,10 @@ bool sys::mayAlias(Op *a, Op *b) {
   return !neverAlias(a, b);
 }
 
+std::string RsmPinAttr::toString() {
+  return "<rsm-pin = " + std::to_string(slot) + ">";
+}
+
 std::string DimensionAttr::toString() {
   std::stringstream ss;
   ss << "<dims = ";

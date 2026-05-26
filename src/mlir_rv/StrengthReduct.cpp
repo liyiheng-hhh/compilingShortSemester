@@ -265,6 +265,14 @@ strength_reduct_div:
     if (i <= 0)
       return false;
 
+    // All magic paths (including power-of-two) require non-negative dividend
+    // for truncation-toward-zero semantics.
+    if (auto li = dyn_cast<LiOp>(x.defining)) {
+      if (V(li) < 0) return false;
+    } else {
+      return false; // unknown dividend, fallback
+    }
+
     if (i == 2) {
       // See clang output: x / 2 should become
       //   srliw   a1, a0, 31
@@ -364,6 +372,15 @@ strength_reduct_div:
       V(y.defining) = -i;
       return true;
     }
+
+    // Same truncation-safety guard as for Div: only apply power-of-two
+    // or magic transformations when dividend is known non-negative.
+    bool safeForMagicRem = false;
+    if (auto li = dyn_cast<LiOp>(x.defining)) {
+      if (V(li) >= 0) safeForMagicRem = true;
+    }
+    if (!safeForMagicRem)
+      return false;
 
     if (i == 2) {
       // Clang output of x % 2:

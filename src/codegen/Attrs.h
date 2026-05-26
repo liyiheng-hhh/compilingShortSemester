@@ -287,6 +287,17 @@ public:
   DimensionAttr *clone() override { return new DimensionAttr(dims); }
 };
 
+// Row-scratch helper: slot 0=i, 1=j, 2=k, 3=coeff, 4=mainCols → pinned in RegAlloc.
+class RsmPinAttr : public AttrImpl<RsmPinAttr, __LINE__> {
+public:
+  int slot;
+
+  explicit RsmPinAttr(int slot): slot(slot) {}
+
+  std::string toString() override;
+  RsmPinAttr *clone() override { return new RsmPinAttr(slot); }
+};
+
 bool mustAlias(Op *a, Op *b);
 bool neverAlias(Op *a, Op *b);
 bool mayAlias(Op *a, Op *b);

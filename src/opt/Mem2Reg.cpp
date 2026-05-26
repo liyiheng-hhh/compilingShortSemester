@@ -341,3 +341,11 @@ void Mem2Reg::run() {
   for (auto func : funcs)
     runImpl(func);
 }
+
+void Mem2Reg::promoteFunc(FuncOp *func) {
+  if (!func)
+    return;
+  runImpl(func);
+  if (auto region = func->getRegion())
+    region->updatePreds();
+}
