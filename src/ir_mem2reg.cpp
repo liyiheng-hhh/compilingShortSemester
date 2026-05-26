@@ -417,9 +417,125 @@ public:
     int nVars = static_cast<int>(variables.size());
     nameStack.assign(nVars, {});
     vector<uint8_t> onStack(static_cast<size_t>(fn->blocks.size()), 0);
-    renameBlock(0, skipSyms, onStack);
+    renameBlockIter(0, skipSyms, onStack);
   }
 
+  // 迭代版 rename（避免大函数递归栈溢出）
+  void renameBlockIter(int root, const unordered_set<Symbol *> &skipSyms,
+                       vector<uint8_t> &onStack) {
+    struct Frame {
+      int blockIdx;
+      int childIdx;
+      vector<int> stackHeights;
+    };
+
+    vector<Frame> stk;
+    stk.reserve(fn->blocks.size());
+
+    auto pushFrame = [&](int b) {
+      if (b < 0 || b >= static_cast<int>(onStack.size()) || onStack[static_cast<size_t>(b)]) {
+        return false;
+      }
+      onStack[static_cast<size_t>(b)] = 1;
+
+      int nVars = static_cast<int>(variables.size());
+      vector<int> heights(nVars);
+      for (int v = 0; v < nVars; v++) {
+        heights[v] = static_cast<int>(nameStack[v].size());
+      }
+
+      // Phi push
+      for (int phiIdx : blockPhis[b]) {
+        auto &phi = phis[phiIdx];
+        if (phi.var && skipSyms.count(phi.var)) continue;
+        auto vit = varIndex.find(phi.var);
+        if (vit == varIndex.end()) continue;
+        int vidx = vit->second;
+        nameStack[vidx].push_back(phi.dstVreg);
+      }
+
+      // Instructions
+      auto &blk = fn->blocks[b];
+      for (int i = blk.begin; i < static_cast<int>(blk.end); i++) {
+        auto &inst = fn->insts[i];
+        if (inst.op == IROp::LoadLocal && isPromotable(inst.sym) &&
+            !skipSyms.count(inst.sym)) {
+          auto it = varIndex.find(inst.sym);
+          if (it != varIndex.end()) {
+            int vidx = it->second;
+            if (!nameStack[vidx].empty()) {
+              inst.op = IROp::Copy;
+              inst.u = nameStack[vidx].back();
+              inst.sym = nullptr;
+            }
+          }
+        } else if (inst.op == IROp::StoreLocal && isPromotable(inst.sym) &&
+                   !skipSyms.count(inst.sym)) {
+          auto it = varIndex.find(inst.sym);
+          if (it != varIndex.end()) {
+            int vidx = it->second;
+            if (inst.u >= 0) {
+              nameStack[vidx].push_back(inst.u);
+            }
+            inst.op = IROp::Nop;
+          }
+        }
+      }
+
+      // Fill successor Phi
+      for (int succ : fn->blocks[b].succ) {
+        for (int phiIdx : blockPhis[succ]) {
+          auto &phi = phis[phiIdx];
+          if (phi.var && skipSyms.count(phi.var)) continue;
+          auto vit = varIndex.find(phi.var);
+          if (vit == varIndex.end()) continue;
+          int vidx = vit->second;
+          for (size_t i = 0; i < phi.preds.size(); i++) {
+            if (phi.preds[i] == b) {
+              if (!nameStack[vidx].empty()) {
+                phi.vregs[i] = nameStack[vidx].back();
+              } else {
+                phi.vregs[i] = zeroVreg_;
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      stk.push_back({b, 0, std::move(heights)});
+      return true;
+    };
+
+    auto popFrame = [&](Frame &f) {
+      int nVars = static_cast<int>(variables.size());
+      for (int v = 0; v < nVars; v++) {
+        while (static_cast<int>(nameStack[v].size()) > f.stackHeights[v]) {
+          nameStack[v].pop_back();
+        }
+      }
+      onStack[static_cast<size_t>(f.blockIdx)] = 0;
+    };
+
+    if (!pushFrame(root)) return;
+
+    while (!stk.empty()) {
+      Frame &cur = stk.back();
+      auto &children = dt.children[cur.blockIdx];
+      if (cur.childIdx < static_cast<int>(children.size())) {
+        int child = children[cur.childIdx];
+        cur.childIdx++;
+        pushFrame(child);  // 如果 child 已被访问则直接跳过
+      } else {
+        // 所有子节点处理完毕，执行回溯
+        Frame f = std::move(cur);
+        stk.pop_back();
+        popFrame(f);
+      }
+    }
+  }
+
+  // 旧的递归版本（保留以便必要时对比/回滚）
   void renameBlock(int blockIdx, const unordered_set<Symbol *> &skipSyms,
                    vector<uint8_t> &onStack) {
     if (blockIdx < 0 || blockIdx >= static_cast<int>(onStack.size()) ||
