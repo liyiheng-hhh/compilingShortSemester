@@ -182,7 +182,7 @@ runtime-eval: compiler libsysy.a
 
 runtime-summary:
 	@chmod +x scripts/runtime-summary.sh 2>/dev/null || true
-	@./scripts/runtime-summary.sh "$(if $(RUNTIME_CSV),$(RUNTIME_CSV),$(RUNTIME_ROOT_DIR))"
+	@./scripts/runtime-summary.sh "$(if $(RUNTIME_CSV),$(RUNTIME_CSV),tests/.out/runtime/sysy-performance-O1.csv)"
 
 runtime-compare: compiler libsysy.a
 	@chmod +x scripts/eval-compare-opt.sh 2>/dev/null || true

@@ -18,7 +18,8 @@ emit_csv_row() {
     for ((ri = 0; ri < RUNS; ++ri)); do
       printf ',%s' "${run_ms[$ri]:-}"
     done
-    printf ',%s,%s,%s,%s\n' "$asm_lines" "$compile_ok" "$link_ok" "$log"
+    printf ',%s,%s,%s,%s,%s\n' "$asm_lines" "$compile_ok" "$link_ok" \
+      "${median_kernel_s:-}" "$log"
   } >>"$PERF_CSV"
 }
 
@@ -95,11 +96,13 @@ printf 'suite,case_id,opt,label,status,compare,pass,median_ms,warmup_ms' >"$PERF
 for ((r = 1; r <= RUNS; ++r)); do
   printf ',run%d_ms' "$r" >>"$PERF_CSV"
 done
-printf ',asm_lines,compile_ok,link_ok,log\n' >>"$PERF_CSV"
+printf ',asm_lines,compile_ok,link_ok,median_kernel_s,log\n' >>"$PERF_CSV"
 
 total=0
 pass_count=0
 hard_fail=0
+kernel_sum_us=0
+kernel_scored=0
 
 while IFS= read -r -d '' sy; do
   base=$(basename "$sy" .sy)
@@ -130,7 +133,9 @@ while IFS= read -r -d '' sy; do
   warmup_ms=""
   run_ms=()
   run_rcs=()
+  run_kernel_us=()
   median_ms=""
+  median_kernel_s=""
 
   : >"$log"
   echo "[suite] $SUITE_NAME [opt] $OPT_NAME [case] $base" >>"$log"
@@ -173,6 +178,7 @@ while IFS= read -r -d '' sy; do
   fi
 
   ns_vals=()
+  kernel_us_vals=()
   for ((r = 1; r <= RUNS; ++r)); do
     runtime_run_timed "$elf" "$in_file" "$work/run${r}.out" "$work/run${r}.err" \
       "$TIMEOUT_SEC" "$QEMU"
@@ -180,7 +186,10 @@ while IFS= read -r -d '' sy; do
     run_ms+=("$ms")
     run_rcs+=("$RUNTIME_RUN_RC")
     ns_vals+=("$RUNTIME_RUN_NS")
-    echo "[run$r] rc=$RUNTIME_RUN_RC ms=$ms" >>"$log"
+    runtime_parse_kernel_us "$work/run${r}.err"
+    run_kernel_us+=("${RUNTIME_KERNEL_US:-}")
+    [[ -n "${RUNTIME_KERNEL_US:-}" ]] && kernel_us_vals+=("$RUNTIME_KERNEL_US")
+    echo "[run$r] rc=$RUNTIME_RUN_RC ms=$ms kernel_us=${RUNTIME_KERNEL_US:-N/A}" >>"$log"
     if [[ $RUNTIME_RUN_RC -eq 124 ]]; then
       status="timeout"
     elif [[ $RUNTIME_RUN_RC -ne 0 ]]; then
@@ -226,6 +235,12 @@ while IFS= read -r -d '' sy; do
     pass_count=$((pass_count + 1))
     med_ns="$(runtime_median_ns "${ns_vals[@]}")"
     median_ms="$(runtime_ns_to_ms "$med_ns")"
+    if [[ ${#kernel_us_vals[@]} -gt 0 ]]; then
+      med_kernel_us="$(runtime_median_ns "${kernel_us_vals[@]}")"
+      median_kernel_s="$(runtime_us_to_s "$med_kernel_us")"
+      kernel_sum_us=$((kernel_sum_us + med_kernel_us))
+      kernel_scored=$((kernel_scored + 1))
+    fi
   elif [[ "$SUITE_KIND" == "functional" ]]; then
     hard_fail=$((hard_fail + 1))
   fi
@@ -235,12 +250,25 @@ while IFS= read -r -d '' sy; do
   fi
 
   emit_csv_row
-  echo "[$base] status=$status pass=$pass median_ms=${median_ms:-N/A} asm_lines=$asm_lines"
+  if [[ "$pass" -eq 1 ]]; then
+    if [[ -n "${median_kernel_s:-}" ]]; then
+      med_kernel_us="$(awk -v s="$median_kernel_s" 'BEGIN{printf "%.0f", s*1000000}')"
+      kernel_ms="$(runtime_us_to_ms "$med_kernel_us")"
+      echo "[$base] ok  kernel=${kernel_ms}ms  wall=${median_ms}ms"
+    else
+      echo "[$base] ok  wall=${median_ms}ms"
+    fi
+  else
+    echo "[$base] fail  $status  compare=$compare"
+  fi
 done < <(find "$TESTDIR" -maxdepth 1 -type f -name '*.sy' -print0 | sort -z)
 
 echo ""
+if [[ "$kernel_scored" -gt 0 ]]; then
+  kernel_sum_ms="$(runtime_us_to_ms "$kernel_sum_us")"
+  echo "── 汇总: ${pass_count}/${total} 通过  |  平台 kernel 合计 ${kernel_sum_ms}ms  |  make runtime-summary"
+fi
 echo "csv=$PERF_CSV"
-echo "suite=$SUITE_NAME opt=$OPT_NAME total=$total pass=$pass_count fail=$((total - pass_count))"
 if [[ -n "$FAIL_LOG" ]]; then
   echo "failure_log=$FAIL_LOG"
 fi

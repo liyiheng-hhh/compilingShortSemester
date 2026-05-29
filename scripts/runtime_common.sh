@@ -42,6 +42,34 @@ runtime_median_ns() {
     }'
 }
 
+# 从 stderr 解析 starttime/stoptime 输出的 kernel 时间（与赛方 Time(s) 口径一致）。
+# 输出变量 RUNTIME_KERNEL_US（整数微秒）；无计时代码时为空。
+runtime_parse_kernel_us() {
+  local err_file="$1"
+  RUNTIME_KERNEL_US=""
+  [[ -f "$err_file" ]] || return 0
+  local line us
+  line="$(grep -E '^TOTAL:' "$err_file" | tail -1 || true)"
+  if [[ -n "$line" ]]; then
+    us="$(awk '{print $2}' <<<"$line")"
+    [[ -n "$us" && "$us" =~ ^[0-9]+$ ]] && RUNTIME_KERNEL_US="$us"
+    return 0
+  fi
+  line="$(grep -E '^Timer@' "$err_file" | tail -1 || true)"
+  if [[ -n "$line" ]]; then
+    us="$(awk '{print $NF}' <<<"$line")"
+    [[ -n "$us" && "$us" =~ ^[0-9]+$ ]] && RUNTIME_KERNEL_US="$us"
+  fi
+}
+
+runtime_us_to_s() {
+  awk -v us="$1" 'BEGIN { if (us == "" || us + 0 <= 0) print ""; else printf "%.8f", us / 1000000.0 }'
+}
+
+runtime_us_to_ms() {
+  awk -v us="$1" 'BEGIN { if (us == "" || us + 0 <= 0) print ""; else printf "%.3f", us / 1000.0 }'
+}
+
 runtime_run_timed() {
   local exe="$1" stdin_file="$2" stdout_file="$3" stderr_file="$4"
   local timeout_sec="$5" qemu="$6"
