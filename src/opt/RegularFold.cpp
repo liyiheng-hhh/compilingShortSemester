@@ -1,5 +1,6 @@
 #include "Passes.h"
 #include "../utils/Matcher.h"
+#include "../common.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -453,6 +454,12 @@ static int rfNormalizeCommutative(Region *region) {
   return changed;
 }
 
+static bool rfNormalizeEnabled() {
+  // Off by default: commutative canonicalization perturbs regalloc on crypto-like
+  // kernels without improving asm on matmul/transpose; opt in explicitly.
+  return envFlagTruthy("SYSY_CC_ENABLE_IR_NORMALIZE");
+}
+
 // This pass works on both structured control flow and flattened cfg.
 int RegularFold::runImpl(Region *region) {
   int folded = 0;
@@ -497,7 +504,8 @@ void RegularFold::run() {
     folded = 0;
     for (auto func : funcs) {
       auto region = func->getRegion();
-      folded += rfNormalizeCommutative(region);
+      if (rfNormalizeEnabled())
+        folded += rfNormalizeCommutative(region);
       folded += runImpl(region);
     }
 
