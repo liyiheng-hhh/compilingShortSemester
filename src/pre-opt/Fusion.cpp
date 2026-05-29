@@ -12,6 +12,15 @@ std::map<std::string, int> Fusion::stats() {
 
 namespace {
 
+static Op *fusBaseOf(Op *addr) {
+  auto *ba = addr ? addr->find<BaseAttr>() : nullptr;
+  return ba ? ba->base : nullptr;
+}
+
+static bool fusHasBase(Op *addr) {
+  return addr && addr->has<BaseAttr>();
+}
+
 bool fusSameExpr(Op *a, Op *b, const std::unordered_set<Op*> &written) {
   if (a == b)
     return true;
@@ -31,7 +40,7 @@ bool fusSameExpr(Op *a, Op *b, const std::unordered_set<Op*> &written) {
   }
 
   if (isa<LoadOp>(a))
-    return a->DEF()->has<BaseAttr>() && !written.count(BASE(a->DEF()));
+    return fusHasBase(a->DEF()) && !written.count(fusBaseOf(a->DEF()));
 
   return true;
 }
@@ -81,15 +90,15 @@ void Fusion::runImpl(FuncOp *func) {
       auto stores = loop->findAll<StoreOp>();
       for (auto store : stores) {
         auto addr = store->DEF(1);
-        BAD(!addr->has<BaseAttr>());
-        writes.insert(BASE(addr));
+        BAD(!fusHasBase(addr));
+        writes.insert(fusBaseOf(addr));
       }
 
       auto loads = loop->findAll<LoadOp>();
       for (auto load : loads) {
         auto addr = load->DEF();
-        BAD(!addr->has<BaseAttr>());
-        reads.insert(BASE(addr));
+        BAD(!fusHasBase(addr));
+        reads.insert(fusBaseOf(addr));
       }
       if (!good)
         continue;
@@ -103,11 +112,15 @@ void Fusion::runImpl(FuncOp *func) {
 
         // Stores and loads are hoistable when the first loop doesn't touch it.
         if (isa<StoreOp>(next)) {
-          auto addr = BASE(next->DEF(1));
+          auto *addrOp = next->DEF(1);
+          BAD(!fusHasBase(addrOp));
+          auto addr = fusBaseOf(addrOp);
           BAD(reads.count(addr) || writes.count(addr));
         }
         if (isa<LoadOp>(next)) {
-          auto addr = BASE(next->DEF());
+          auto *addrOp = next->DEF();
+          BAD(!fusHasBase(addrOp));
+          auto addr = fusBaseOf(addrOp);
           BAD(writes.count(addr));
         }
         hoisted.push_back(next);
@@ -123,8 +136,8 @@ void Fusion::runImpl(FuncOp *func) {
       auto nwrites = next->findAll<StoreOp>();
       for (auto op : nwrites) {
         auto addr = op->DEF(1);
-        BAD(!addr->has<BaseAttr>());
-        writes.insert(BASE(addr));
+        BAD(!fusHasBase(addr));
+        writes.insert(fusBaseOf(addr));
       }
 
       // Two consecutive for's. Check whether they can get combined.
@@ -182,7 +195,11 @@ void Fusion::runImpl(FuncOp *func) {
       // Check subscript.
       for (auto op : access) {
         auto addr = isa<LoadOp>(op) ? op->DEF() : op->DEF(1);
-        auto base = BASE(addr);
+        if (!fusHasBase(addr)) {
+          good = false;
+          break;
+        }
+        auto base = fusBaseOf(addr);
         if (!writes.count(base))
           continue;
 
