@@ -120,6 +120,13 @@ bool parseAsmLine(const std::string &line, AsmInst &out) {
         addUse(parts[1]);
         out.dst = parts[0];
       }
+    } else if (m == "slt" || m == "sltu") {
+      if (parts.size() >= 3) {
+        addDef(parts[0]);
+        addUse(parts[1]);
+        addUse(parts[2]);
+        out.dst = parts[0];
+      }
     } else if (m == "add" || m == "addw" || m == "sub" || m == "subw" ||
                m == "mul" || m == "mulw" || m == "and" || m == "or" ||
                m == "xor" || m == "sll" || m == "srl" || m == "sra") {

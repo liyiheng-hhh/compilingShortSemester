@@ -414,6 +414,45 @@ void normalizePhisAfterEdge(BasicBlock *bb, BasicBlock *from) {
     stripPhiEdgeFrom(phi, from);
 }
 
+// Reference NormalizationPass: put constants on the RHS of commutative ops so
+// later matchers (GVN, SCEV, loop patterns) see a single canonical shape.
+static bool rfIsConstOperand(Op *op) {
+  return isa<IntOp>(op) || isa<FloatOp>(op);
+}
+
+static bool rfSwapBinOperands(Op *op) {
+  if (op->getOperandCount() != 2)
+    return false;
+  auto *lhs = op->DEF(0);
+  auto *rhs = op->DEF(1);
+  if (!rfIsConstOperand(lhs) || rfIsConstOperand(rhs))
+    return false;
+  op->setOperand(0, rhs);
+  op->setOperand(1, lhs);
+  return true;
+}
+
+static int rfNormalizeCommutative(Region *region) {
+  int changed = 0;
+  for (auto *bb : region->getBlocks()) {
+    for (auto *op : bb->getOps()) {
+      if (op->has<ImpureAttr>())
+        continue;
+      bool swap = false;
+      if (isa<AddIOp>(op) || isa<MulIOp>(op) || isa<AddLOp>(op) || isa<MulLOp>(op) ||
+          isa<EqOp>(op) || isa<NeOp>(op) || isa<OrIOp>(op) || isa<AndIOp>(op) ||
+          isa<XorIOp>(op) || isa<AddFOp>(op) || isa<MulFOp>(op) || isa<EqFOp>(op) ||
+          isa<NeFOp>(op))
+        swap = rfSwapBinOperands(op);
+      if (swap)
+        changed++;
+      for (auto *r : op->getRegions())
+        changed += rfNormalizeCommutative(r);
+    }
+  }
+  return changed;
+}
+
 // This pass works on both structured control flow and flattened cfg.
 int RegularFold::runImpl(Region *region) {
   int folded = 0;
@@ -458,6 +497,7 @@ void RegularFold::run() {
     folded = 0;
     for (auto func : funcs) {
       auto region = func->getRegion();
+      folded += rfNormalizeCommutative(region);
       folded += runImpl(region);
     }
 

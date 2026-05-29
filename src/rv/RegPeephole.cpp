@@ -66,6 +66,15 @@ void regPeephole(std::vector<std::string> &lines, PassStats *stats) {
       if (stats) ++stats->removedMv;
       continue;
     }
+    if (inst.mnemonic == "add" && inst.defs.size() == 1 && inst.uses.size() >= 2) {
+      const std::string &dst = inst.defs[0];
+      const std::string &rs = inst.uses[0];
+      if (inst.uses.size() >= 2 &&
+          (inst.uses[1] == "x0" || inst.uses[1] == "zero") && dst == rs) {
+        if (stats) ++stats->removedMv;
+        continue;
+      }
+    }
     if ((inst.mnemonic == "addi" || inst.mnemonic == "addiw") &&
         inst.raw.find(", 0") != std::string::npos) {
       size_t p = inst.raw.find('\t');
@@ -97,17 +106,17 @@ void regPeephole(std::vector<std::string> &lines, PassStats *stats) {
       immToReg.clear();
     }
 
-    if (inst.mnemonic == "li" && inst.defs.size() == 1) {
+    if ((inst.mnemonic == "li" || inst.mnemonic == "la") && inst.defs.size() == 1) {
       size_t comma = line.find(',');
       if (comma != std::string::npos) {
-        std::string imm = rvpeTrim(line.substr(comma + 1));
-        auto it = immToReg.find(imm);
+        std::string key = rvpeTrim(line.substr(comma + 1));
+        auto it = immToReg.find(key);
         if (it != immToReg.end() && it->second != inst.defs[0]) {
           out.push_back("\tmv\t" + inst.defs[0] + ", " + it->second);
           if (stats) ++stats->combined;
           continue;
         }
-        immToReg[imm] = inst.defs[0];
+        immToReg[key] = inst.defs[0];
       }
     }
 

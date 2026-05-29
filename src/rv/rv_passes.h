@@ -19,6 +19,7 @@ struct PassStats {
 void runRvAsmPasses(std::vector<std::string> &lines, PassStats *stats = nullptr);
 
 void regPeephole(std::vector<std::string> &lines, PassStats *stats = nullptr);
+void branchPeephole(std::vector<std::string> &lines, PassStats *stats = nullptr);
 void instCombine(std::vector<std::string> &lines, PassStats *stats = nullptr);
 void rvSchedule(std::vector<std::string> &lines, PassStats *stats = nullptr);
 void strengthReductAsm(std::vector<std::string> &lines);

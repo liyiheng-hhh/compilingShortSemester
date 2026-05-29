@@ -118,6 +118,9 @@ void dpipeAppendPreOptPasses(sys::PassManager &pm) {
     pm.addPass<sys::Parallelizable>();
   if (!envFlagTruthy("SYSY_CC_NO_PREOPT_LOOP_DCE"))
     pm.addPass<sys::LoopDCE>();
+  // Adjacent structured-loop fusion (reference: LoopFusionPass); must run before Lower.
+  if (!envFlagTruthy("SYSY_CC_NO_PREOPT_FUSION"))
+    pm.addPass<sys::Fusion>();
   if (!envFlagTruthy("SYSY_CC_NO_PREOPT_LOWER"))
     pm.addPass<sys::Lower>();
 }
@@ -140,6 +143,9 @@ void dpipeAppendMemoryOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::DCE>(/*elimBlocks=*/true);
   pm.addPass<sys::DAE>();
   pm.addPass<sys::Alias>();
+  // Reshape add trees before GVN (reference: AddChainReduction + reassociate for CSE).
+  if (!envFlagTruthy("SYSY_CC_NO_REASSOCIATE"))
+    pm.addPass<sys::Reassociate>();
   if (!envFlagTruthy("SYSY_CC_NO_DSE_DLE")) {
     pm.addPass<sys::DSE>();
     pm.addPass<sys::DLE>();
