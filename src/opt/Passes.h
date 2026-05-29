@@ -342,6 +342,28 @@ public:
   void run() override;
 };
 
+// if (c) { acc += x } latch merge  ->  acc += select(c, x, 0)
+class GuardedAccum : public Pass {
+  int lifted = 0;
+public:
+  GuardedAccum(ModuleOp *module): Pass(module) {}
+
+  std::string name() override { return "guarded-accum"; }
+  std::map<std::string, int> stats() override;
+  void run() override;
+};
+
+// After full matrix transpose, rewrite a[k][j] loads to use transposed buffer.
+class MatTransposePair : public Pass {
+  int rewrites = 0;
+public:
+  MatTransposePair(ModuleOp *module): Pass(module) {}
+
+  std::string name() override { return "mat-transpose-pair"; }
+  std::map<std::string, int> stats() override;
+  void run() override;
+};
+
 // Specialize functions according to argument signs.
 class Specialize : public Pass {
   bool specialize();

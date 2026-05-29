@@ -138,6 +138,8 @@ void dpipeAppendPostFlattenPasses(sys::PassManager &pm) {
 
 void dpipeAppendMemoryOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::Alias>();
+  if (!envFlagTruthy("SYSY_CC_NO_MAT_TRANSPOSE_PAIR"))
+    pm.addPass<sys::MatTransposePair>();
   if (!envFlagTruthy("SYSY_CC_NO_REGULAR_FOLD"))
     pm.addPass<sys::RegularFold>();
   pm.addPass<sys::DCE>(/*elimBlocks=*/true);
@@ -164,6 +166,10 @@ void dpipeAppendLoopOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::LICM>();
   if (!envFlagTruthy("SYSY_CC_NO_HOIST_LOOP_GLOBAL"))
     pm.addPass<sys::HoistLoopGlobal>();
+  if (!envFlagTruthy("SYSY_CC_NO_GUARDED_ACCUM"))
+    pm.addPass<sys::GuardedAccum>();
+  if (!envFlagTruthy("SYSY_CC_NO_MAT_TRANSPOSE_PAIR"))
+    pm.addPass<sys::MatTransposePair>();
   if (dpipeDialectPassEnabled("SYSY_CC_ENABLE_CONST_LOOP_UNROLL", true))
     pm.addPass<sys::ConstLoopUnroll>();
   if (!envFlagTruthy("SYSY_CC_NO_SCEV"))
@@ -172,6 +178,8 @@ void dpipeAppendLoopOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::GVN>();
   pm.addPass<sys::RegularFold>();
   pm.addPass<sys::RemoveEmptyLoop>();
+  if (!envFlagTruthy("SYSY_CC_NO_MAT_TRANSPOSE_PAIR"))
+    pm.addPass<sys::MatTransposePair>();
 }
 
 void dpipeAppendMiscOptPasses(sys::PassManager &pm) {
@@ -185,6 +193,8 @@ void dpipeAppendMiscOptPasses(sys::PassManager &pm) {
     pm.addPass<sys::DSE>();
     pm.addPass<sys::DLE>();
   }
+  if (!envFlagTruthy("SYSY_CC_NO_GUARDED_ACCUM"))
+    pm.addPass<sys::GuardedAccum>();
   if (!envFlagTruthy("SYSY_CC_NO_SELECT"))
     pm.addPass<sys::Select>();
   pm.addPass<sys::RegularFold>();
@@ -224,7 +234,11 @@ void dpipeAppendLoopRoundPasses(sys::PassManager &pm) {
     pm.addPass<sys::HoistLoopGlobal>();
   if (!envFlagTruthy("SYSY_CC_NO_SCEV"))
     pm.addPass<sys::SCEV>();
+  if (!envFlagTruthy("SYSY_CC_NO_GUARDED_ACCUM"))
+    pm.addPass<sys::GuardedAccum>();
   pm.addPass<sys::RemoveEmptyLoop>();
+  if (!envFlagTruthy("SYSY_CC_NO_MAT_TRANSPOSE_PAIR"))
+    pm.addPass<sys::MatTransposePair>();
   pm.addPass<sys::GVN>();
   if (!envFlagTruthy("SYSY_CC_NO_REGULAR_FOLD"))
     pm.addPass<sys::RegularFold>();
