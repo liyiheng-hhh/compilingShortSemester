@@ -5,7 +5,7 @@
 
 namespace rv {
 
-// One parsed RISC-V instruction line (tab-indented codegen output).
+// One parsed RISC-V instruction line (space- or tab-indented codegen output).
 struct AsmInst {
   std::string raw;
   std::string mnemonic;
@@ -21,6 +21,12 @@ struct AsmInst {
 };
 
 bool parseAsmLine(const std::string &line, AsmInst &out);
+
+// Leading whitespace before mnemonic (empty for labels/directives).
+std::string asmLeadingWhitespace(const std::string &line);
+
+// True if line is a branch/jump/ret terminator.
+bool isBlockTerminatorLine(const std::string &line);
 
 // Split asm into basic blocks; each block is [start, end) indices into lines.
 void splitBasicBlocks(const std::vector<std::string> &lines,

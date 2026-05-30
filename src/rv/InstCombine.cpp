@@ -12,6 +12,14 @@ bool rvicEnabled() {
   return !envFlagTruthy("SYSY_CC_NO_RV_INST_COMBINE");
 }
 
+std::string rvicFormatInsn(const std::string &line, const std::string &body) {
+  std::string indent = asmLeadingWhitespace(line);
+  if (indent.empty() && (line.empty() || (line[0] != '\t' && line[0] != ' ')))
+    return body;
+  if (indent.empty()) indent = "  ";
+  return indent + body;
+}
+
 // Phase 4.1: additional zero-risk identity rules
 // addi rd, rs, 0  ->  mv rd, rs  (or nop if rd==rs)
 bool rvicTryAddiZero(const std::string &line, std::string &out) {
@@ -30,9 +38,7 @@ bool rvicTryAddiZero(const std::string &line, std::string &out) {
     out = line;  // keep, harmless
     return false;
   }
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "mv\t" + i.defs[0] + ", " + i.uses[0];
+  out = rvicFormatInsn(line, "mv " + i.defs[0] + ", " + i.uses[0]);
   return true;
 }
 
@@ -47,9 +53,7 @@ bool rvicTryOriZero(const std::string &line, std::string &out) {
   immStr.erase(0, immStr.find_first_not_of(" \t"));
   if (immStr != "0" && immStr != "0x0") return false;
   if (i.defs[0] == i.uses[0]) return false;
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "mv\t" + i.defs[0] + ", " + i.uses[0];
+  out = rvicFormatInsn(line, "mv " + i.defs[0] + ", " + i.uses[0]);
   return true;
 }
 
@@ -64,9 +68,7 @@ bool rvicTryAndiMinus1(const std::string &line, std::string &out) {
   immStr.erase(0, immStr.find_first_not_of(" \t"));
   if (immStr != "-1" && immStr != "0xffffffff" && immStr != "4294967295") return false;
   if (i.defs[0] == i.uses[0]) return false;
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "mv\t" + i.defs[0] + ", " + i.uses[0];
+  out = rvicFormatInsn(line, "mv " + i.defs[0] + ", " + i.uses[0]);
   return true;
 }
 
@@ -77,9 +79,7 @@ bool rvicTrySubSelf(const std::string &line, std::string &out) {
   if (i.mnemonic != "sub" || i.defs.size() != 1 || i.uses.size() < 2) return false;
   if (i.uses[0] != i.uses[1]) return false;
   if (i.defs[0] == i.uses[0]) return false;  // sub rd, rd, rd is already 0, keep it
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "li\t" + i.defs[0] + ", 0";
+  out = rvicFormatInsn(line, "li " + i.defs[0] + ", 0");
   return true;
 }
 
@@ -117,9 +117,7 @@ bool rvicTryLiAddFuse(const std::string &a, const std::string &b, std::string &c
   if (imm < -2048 || imm > 2047) return false;
   // Determine which operand of add is the li result
   std::string other = (ib.uses[0] == ia.defs[0]) ? ib.uses[1] : ib.uses[0];
-  size_t tab = b.find('\t');
-  if (tab == std::string::npos) return false;
-  combined = b.substr(0, tab + 1) + "addi\t" + ib.defs[0] + ", " + other + ", " + std::to_string(imm);
+  combined = rvicFormatInsn(b, "addi " + ib.defs[0] + ", " + other + ", " + std::to_string(imm));
   return true;
 }
 
@@ -135,9 +133,7 @@ bool rvicTryShiftZero(const std::string &line, std::string &out) {
   immStr.erase(0, immStr.find_first_not_of(" \t"));
   if (immStr != "0" && immStr != "0x0") return false;
   if (i.defs[0] == i.uses[0]) return false;
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "mv\t" + i.defs[0] + ", " + i.uses[0];
+  out = rvicFormatInsn(line, "mv " + i.defs[0] + ", " + i.uses[0]);
   return true;
 }
 
@@ -152,9 +148,7 @@ bool rvicTryAndiZero(const std::string &line, std::string &out) {
   immStr.erase(0, immStr.find_first_not_of(" \t"));
   if (immStr != "0" && immStr != "0x0") return false;
   if (i.defs[0] == i.uses[0]) return false;
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "li\t" + i.defs[0] + ", 0";
+  out = rvicFormatInsn(line, "li " + i.defs[0] + ", 0");
   return true;
 }
 
@@ -169,9 +163,7 @@ bool rvicTryXoriZero(const std::string &line, std::string &out) {
   immStr.erase(0, immStr.find_first_not_of(" \t"));
   if (immStr != "0" && immStr != "0x0") return false;
   if (i.defs[0] == i.uses[0]) return false;
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "mv\t" + i.defs[0] + ", " + i.uses[0];
+  out = rvicFormatInsn(line, "mv " + i.defs[0] + ", " + i.uses[0]);
   return true;
 }
 
@@ -187,9 +179,7 @@ bool rvicTrySubZero(const std::string &line, std::string &out) {
   immStr.erase(0, immStr.find_first_not_of(" \t"));
   if (immStr != "0" && immStr != "0x0") return false;
   if (i.defs[0] == i.uses[0]) return false;
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "mv\t" + i.defs[0] + ", " + i.uses[0];
+  out = rvicFormatInsn(line, "mv " + i.defs[0] + ", " + i.uses[0]);
   return true;
 }
 
@@ -200,9 +190,7 @@ bool rvicTryOrSelf(const std::string &line, std::string &out) {
   if (i.mnemonic != "or" || i.defs.size() != 1 || i.uses.size() < 2) return false;
   if (i.uses[0] != i.uses[1]) return false;
   if (i.defs[0] == i.uses[0]) return false;
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "mv\t" + i.defs[0] + ", " + i.uses[0];
+  out = rvicFormatInsn(line, "mv " + i.defs[0] + ", " + i.uses[0]);
   return true;
 }
 
@@ -213,9 +201,7 @@ bool rvicTryAndSelf(const std::string &line, std::string &out) {
   if (i.mnemonic != "and" || i.defs.size() != 1 || i.uses.size() < 2) return false;
   if (i.uses[0] != i.uses[1]) return false;
   if (i.defs[0] == i.uses[0]) return false;
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "mv\t" + i.defs[0] + ", " + i.uses[0];
+  out = rvicFormatInsn(line, "mv " + i.defs[0] + ", " + i.uses[0]);
   return true;
 }
 
@@ -226,9 +212,7 @@ bool rvicTrySltSelf(const std::string &line, std::string &out) {
   if (i.mnemonic != "slt" || i.defs.size() != 1 || i.uses.size() < 2) return false;
   if (i.uses[0] != i.uses[1]) return false;
   if (i.defs[0] == i.uses[0]) return false;
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "li\t" + i.defs[0] + ", 0";
+  out = rvicFormatInsn(line, "li " + i.defs[0] + ", 0");
   return true;
 }
 
@@ -239,9 +223,7 @@ bool rvicTrySgtSelf(const std::string &line, std::string &out) {
   if (i.mnemonic != "sgt" || i.defs.size() != 1 || i.uses.size() < 2) return false;
   if (i.uses[0] != i.uses[1]) return false;
   if (i.defs[0] == i.uses[0]) return false;
-  size_t tab = line.find('\t');
-  if (tab == std::string::npos) return false;
-  out = line.substr(0, tab + 1) + "li\t" + i.defs[0] + ", 0";
+  out = rvicFormatInsn(line, "li " + i.defs[0] + ", 0");
   return true;
 }
 
@@ -252,9 +234,7 @@ bool rvicTryMvFuse(const std::string &a, const std::string &b, std::string &comb
   if (ia.mnemonic != "mv" || ib.mnemonic != "mv") return false;
   if (ia.defs.size() != 1 || ia.uses.size() != 1 || ib.defs.size() != 1 || ib.uses.size() != 1) return false;
   if (ib.uses[0] != ia.defs[0]) return false;
-  size_t tab = b.find('\t');
-  if (tab == std::string::npos) return false;
-  combined = b.substr(0, tab + 1) + "mv\t" + ib.defs[0] + ", " + ia.uses[0];
+  combined = rvicFormatInsn(b, "mv " + ib.defs[0] + ", " + ia.uses[0]);
   return true;
 }
 
@@ -285,10 +265,8 @@ bool rvicTryFuseAddi(const std::string &a, const std::string &b, std::string &co
   if (sum < -2048 || sum > 2047) return false;
 
   // Rebuild: addi rd2, rs, sum
-  size_t tab = b.find('\t');
-  if (tab == std::string::npos) return false;
-  combined = b.substr(0, tab + 1) + "addi\t" + ib.defs[0] + ", " + ia.uses[0] +
-               ", " + std::to_string(sum);
+  combined = rvicFormatInsn(b, "addi " + ib.defs[0] + ", " + ia.uses[0] +
+                             ", " + std::to_string(sum));
   return true;
 }
 

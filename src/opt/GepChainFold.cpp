@@ -15,17 +15,6 @@ bool envFlag(const char *name) {
   return std::strcmp(v, "0") != 0 && std::strcmp(v, "false") != 0;
 }
 
-// Check if op is a constant IntOp with specific value.
-static bool isConstInt(Op *op, int val) {
-  if (auto *intOp = dyn_cast<IntOp>(op))
-    return V(intOp) == val;
-  return false;
-}
-
-// Check if op is a Phi (likely induction variable).
-static bool isPhi(Op *op) {
-  return isa<PhiOp>(op);
-}
 
 // Extract the base GetGlobalOp from an address chain (if any).
 // Phase 2.3 improvement: also walk through Phi (for matmul2 hotspot patterns).
@@ -65,6 +54,104 @@ static GetGlobalOp *getBaseGlobal(Op *addr) {
 
 }  // namespace
 
+// Normalize operand order of a single address op (AddL/MulI) for canonical form.
+static bool normalizeAddrOp(Op *op, bool debug) {
+  if (auto *add = dyn_cast<AddLOp>(op)) {
+    auto *lhs = add->DEF(0);
+    auto *rhs = add->DEF(1);
+    if (isa<MulIOp>(rhs) && !isa<MulIOp>(lhs)) {
+      add->setOperand(0, rhs);
+      add->setOperand(1, lhs);
+      if (debug)
+        std::cerr << "[gep-chain-fold] normalized AddL operands (base left)\n";
+      return true;
+    }
+  }
+  if (auto *mul = dyn_cast<MulIOp>(op)) {
+    auto *lhs = mul->DEF(0);
+    auto *rhs = mul->DEF(1);
+    if (isa<IntOp>(rhs) && !isa<IntOp>(lhs)) {
+      mul->setOperand(0, rhs);
+      mul->setOperand(1, lhs);
+      if (debug)
+        std::cerr << "[gep-chain-fold] normalized MulI operands (const right)\n";
+      return true;
+    }
+  }
+  return false;
+}
+
+// Attempt a more aggressive rewrite: for static chains (no Phi), try to
+// reorganize nested AddL to expose common prefixes for GVN.
+// Example: addl(addl(base, x), y) -> addl(base, addl(x, y))
+// This does not reduce instruction count but may help GVN see redundancy.
+static bool tryReorganizeStaticChain(const std::vector<Op*> &chain, bool debug) {
+  if (chain.size() < 3)
+    return false;
+  // Skip if any Phi in chain
+  for (auto *op : chain) {
+    if (isa<PhiOp>(op))
+      return false;
+  }
+  Op *outer = chain[0];
+  auto *add1 = dyn_cast<AddLOp>(outer);
+  if (!add1)
+    return false;
+  Op *inner = add1->DEF(0);
+  auto *add2 = dyn_cast<AddLOp>(inner);
+  if (!add2)
+    return false;
+  // addl( addl(base, x), y ) -> addl( base, addl(x, y) )
+  Op *base = add2->DEF(0);
+  // Only reorganize if base is GetGlobal or looks like a base address
+  if (!isa<GetGlobalOp>(base))
+    return false;
+  if (debug)
+    std::cerr << "[gep-chain-fold] detected nested addl pattern\n";
+  return false; // placeholder: real rewrite needs Builder
+}
+
+// Try to rewrite a detected address chain into a more canonical form.
+// Handles both static chains and Phi-carrying chains (matmul2 k-loop).
+// For Phi chains, we normalize each incoming edge's address computation.
+static bool tryNormalizeAddressChain(const std::vector<Op*> &chain, bool debug) {
+  if (chain.size() < 3)
+    return false;
+
+  bool changed = false;
+
+  // First, normalize the outermost op (what Load/Store directly uses).
+  if (!chain.empty()) {
+    changed |= normalizeAddrOp(chain[0], debug);
+  }
+
+  // If chain contains Phi, also normalize address ops on Phi incoming edges.
+  for (auto *op : chain) {
+    if (auto *phi = dyn_cast<PhiOp>(op)) {
+      if (debug)
+        std::cerr << "[gep-chain-fold] processing Phi with " << phi->getOperandCount() << " incoming\n";
+      for (int i = 0; i < phi->getOperandCount(); i++) {
+        Op *inc = phi->DEF(i);
+        // Walk a few steps up the incoming address chain and normalize.
+        int steps = 0;
+        while (inc && steps < 4) {
+          if (normalizeAddrOp(inc, debug))
+            changed = true;
+          if (auto *add = dyn_cast<AddLOp>(inc))
+            inc = add->DEF(0);
+          else if (auto *mul = dyn_cast<MulIOp>(inc))
+            inc = mul->DEF(0);
+          else
+            break;
+          steps++;
+        }
+      }
+    }
+  }
+
+  return changed;
+}
+
 GepChainFold::GepChainFold(ModuleOp *module) : Pass(module) {
   debug = envFlag("SYSY_CC_GEP_CHAIN_DEBUG");
 }
@@ -91,12 +178,17 @@ void GepChainFold::runOnRegion(Region *region) {
 
       std::vector<Op*> chain;
       if (tryFoldChain(addr, chain)) {
-        // Phase 2.2: placeholder rewrite — just count for now.
-        // Real rewrite (Builder + replace uses) will be added after validation.
         folded++;
         if (debug) {
-          std::cerr << "[gep-chain-fold] found chain of size " << chain.size() << "\n";
+          std::cerr << "[gep-chain-fold] found chain of size " << chain.size();
+          for (auto *op : chain) {
+            std::cerr << " " << (op ? op->getName() : "null");
+          }
+          std::cerr << "\n";
         }
+        // Phase 2.4: attempt rewrite for chains without Phi (static address calc).
+        // For Phi-carrying chains (matmul2 k-loop), we only count for now.
+        tryRewriteChain(op, chain);
       }
     }
   }
@@ -151,9 +243,28 @@ bool GepChainFold::tryFoldChain(Op *addr, std::vector<Op*> &chain) {
   return false;
 }
 
-void GepChainFold::run() {
-  if (!envFlag("SYSY_CC_ENABLE_GEP_CHAIN"))
+void GepChainFold::tryRewriteChain(Op *memOp, const std::vector<Op*> &chain) {
+  if (!memOp || chain.empty())
     return;
+  // Rewrite: normalize operand order for both static and Phi-carrying chains.
+  // For Phi chains (matmul2 k-loop), we normalize incoming edge address ops.
+  // This helps GVN see common subexpressions without changing loop structure.
+  bool changed = tryNormalizeAddressChain(chain, debug);
+  if (changed) {
+    folded++;
+    if (debug)
+      std::cerr << "[gep-chain-fold] rewrite changed, folded now " << folded << "\n";
+  }
+  // Placeholder for more aggressive rewrite using Builder (common subexpr extraction).
+  // Real implementation would:
+  //   1. Identify repeated sub-chains (e.g., mul(i, N) used by multiple loads)
+  //   2. Use Builder to create a single definition
+  //   3. replaceAllUsesWith for duplicate sub-chains
+  // This requires per-region analysis (collect all chains first) and is left
+  // as future work after validating the current normalization.
+}
+
+void GepChainFold::run() {
   auto funcs = collectFuncs();
   for (auto *func : funcs) {
     runOnRegion(func->getRegion());

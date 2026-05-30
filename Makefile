@@ -15,7 +15,7 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/ir_schedule.cpp \
 	$(SRCDIR)/rv/rv_asm.cpp $(SRCDIR)/rv/rv_passes.cpp $(SRCDIR)/rv/BranchPeephole.cpp \
 	$(SRCDIR)/rv/RegPeephole.cpp \
-	$(SRCDIR)/rv/InstCombine.cpp $(SRCDIR)/rv/Schedule.cpp $(SRCDIR)/rv/StrengthReduct.cpp $(SRCDIR)/rv/BlockLocalCSE.cpp \
+	$(SRCDIR)/rv/InstCombine.cpp $(SRCDIR)/rv/Schedule.cpp $(SRCDIR)/rv/StrengthReduct.cpp $(SRCDIR)/rv/BlockLocalCSE.cpp $(SRCDIR)/rv/LICM.cpp \
 	$(SRCDIR)/codegen/OpBase.cpp $(SRCDIR)/codegen/OpBaseDom.cpp $(SRCDIR)/codegen/Attrs.cpp \
 	$(SRCDIR)/codegen/CodeGen.cpp $(SRCDIR)/codegen/CodeGenBuilder.cpp \
 	$(SRCDIR)/codegen/CodeGenEmitExpr.cpp $(SRCDIR)/codegen/CodeGenEmitStmt.cpp \

@@ -16,6 +16,8 @@ struct PassStats {
   int blockCSE_li = 0;
   int blockCSE_la = 0;
   int blockCSE_arith = 0;
+  int licm_hoisted = 0;
+  int licm_laMerged = 0;
 };
 
 // Run all enabled RV passes in order: RegPeephole -> InstCombine -> Schedule.

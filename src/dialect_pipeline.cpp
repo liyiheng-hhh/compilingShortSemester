@@ -16,6 +16,7 @@
 #include "opt/Passes.h"
 #include "opt/GepChainFold.h"
 #include "opt/LoopNestSplit.h"
+#include "opt/ScalarPromotion.h"
 #include "opt/SMTPasses.h"
 #include "opt/LoopPasses.h"
 #include "pre-opt/PrePasses.h"
@@ -145,7 +146,7 @@ void dpipeAppendMemoryOptPasses(sys::PassManager &pm) {
   // Reshape add trees before GVN (reference: AddChainReduction + reassociate for CSE).
   if (!envFlagTruthy("SYSY_CC_NO_REASSOCIATE"))
     pm.addPass<sys::Reassociate>();
-  if (envFlagTruthy("SYSY_CC_ENABLE_GEP_CHAIN"))
+  if (!envFlagTruthy("SYSY_CC_NO_GEP_CHAIN"))
     pm.addPass<sys::GepChainFold>();
   if (!envFlagTruthy("SYSY_CC_NO_DSE_DLE")) {
     pm.addPass<sys::DSE>();
@@ -158,8 +159,10 @@ void dpipeAppendLoopOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::CanonicalizeLoop>(/*lcssa=*/true);
   pm.addPass<sys::LoopRotate>();
   pm.addPass<sys::CanonicalizeLoop>(/*lcssa=*/false);
-  if (envFlagTruthy("SYSY_CC_ENABLE_NEST_SPLIT"))
+  if (!envFlagTruthy("SYSY_CC_NO_NEST_SPLIT"))
     pm.addPass<sys::LoopNestSplit>();
+  if (!envFlagTruthy("SYSY_CC_NO_SCALAR_PROMOTION"))
+    pm.addPass<sys::ScalarPromotion>();
   if (!envFlagTruthy("SYSY_CC_NO_ROW_SCRATCH_MATMUL"))
     pm.addPass<sys::RowScratchMatmul>();
   if (!envFlagTruthy("SYSY_CC_NO_LOOP_TILING"))

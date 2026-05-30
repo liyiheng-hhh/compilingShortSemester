@@ -50,8 +50,6 @@ void LoopNestSplit::runOnFunc(FuncOp *func) {
 }
 
 void LoopNestSplit::run() {
-  if (!envFlag("SYSY_CC_ENABLE_NEST_SPLIT"))
-    return;
   auto funcs = collectFuncs();
   for (auto *func : funcs) {
     runOnFunc(func);

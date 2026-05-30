@@ -623,10 +623,9 @@ bool rsmTryMatchMatmulFromK(LoopInfo *kLoop, const std::map<std::string, GlobalO
 
   RsmSumReduction redForm;
   if (rsmFindKLoopSumReduction(kLoop, redForm) && isa<PhiOp>(redForm.step)) {
-    // Phase 3.3 (stable): when SYSY_CC_ENABLE_NEST_SPLIT=1, LoopNestSplit has
-    // detected a 3+ level nest and we trust it to be interior (matmul-like).
-    // This avoids complex attr matching on while-style loops.
-    if (!rsmEnvEnabled("SYSY_CC_ENABLE_NEST_SPLIT", false))
+    // LoopNestSplit runs before RowScratch in O1 by default; allow guarded k-loops
+    // unless explicitly disabled (SYSY_CC_NO_NEST_SPLIT=1).
+    if (rsmEnvEnabled("SYSY_CC_NO_NEST_SPLIT", false))
       return reject("guarded-k");
   }
 
