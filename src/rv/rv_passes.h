@@ -13,6 +13,9 @@ struct PassStats {
   int removedDupLoad = 0;
   int combined = 0;
   int scheduled = 0;
+  int blockCSE_li = 0;
+  int blockCSE_la = 0;
+  int blockCSE_arith = 0;
 };
 
 // Run all enabled RV passes in order: RegPeephole -> InstCombine -> Schedule.
