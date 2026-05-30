@@ -53,8 +53,8 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/opt/RowScratchMatmul.cpp $(SRCDIR)/opt/LoopTiling.cpp \
 	$(SRCDIR)/opt/RemoveEmptyLoop.cpp $(SRCDIR)/opt/Inline.cpp \
 	$(SRCDIR)/opt/FlattenCFG.cpp \
-	$(SRCDIR)/opt/RegularFold.cpp \
-	$(SRCDIR)/opt/MatKernelOpt.cpp \
+	$(SRCDIR)/opt/RegularFold.cpp $(SRCDIR)/opt/GepChainFold.cpp \
+	$(SRCDIR)/opt/LoopNestSplit.cpp $(SRCDIR)/opt/MatKernelOpt.cpp \
 	$(SRCDIR)/opt/GCM.cpp $(SRCDIR)/opt/Select.cpp $(SRCDIR)/opt/InstSchedule.cpp \
 	$(SRCDIR)/opt/LateInline.cpp $(SRCDIR)/opt/Reassociate.cpp \
 	$(SRCDIR)/opt/ArrayStrideAnalysis.cpp $(SRCDIR)/opt/Globalize.cpp \

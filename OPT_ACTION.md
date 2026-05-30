@@ -204,6 +204,11 @@ Phase 4 gate 仍 fail；单靠关任一 pass 无法回到 baseline，需按 case
 
 | 2026-05-30 | platform | 8619151 vs 改前：总分 +6.50；**matmul1/2/3 +6.36**；crypto 不变；many_mat_cal-1 −0.08 |
 | 2026-05-30 | fix | GuardedAccum 拒 `matmul-step`（then 含 MulIOp），避免 matmul 误 lift |
+| 2026-05-30 | Phase 1 | GuardedAccum 松绑：then 内 load+muli+addi 允许（无副作用），matmul2 `lifted=1`，asm DIFFERS，60/60 AC |
+| 2026-05-30 | Phase 2 | GepChainFold 新建：检测 base+iv*stride 地址链，matmul2 `folded=11`，asm DIFFERS，功能 AC |
+| 2026-05-30 | Phase 3 | LoopNestSplit 新建：3+ 层 nest 检测 + guarded-k 放行（env 控制），功能稳定 |
+| 2026-05-30 | Phase 4 | RV InstCombine 扩展：16 条零风险规则（mv 消除、常量折叠、self-op→0），功能 AC |
+| 2026-05-30 | Phase 5 | 全量功能验证通过，关键题 asm DIFFERS，性能冒烟脚本就绪，准备平台提交 |
 | 2026-05-30 | 2.2 | LoopTiling：live-out 仅查 outer/inner；`ltInnerHasMul` 跳过无乘 inner；默认 1 轮；**matmul2 热点 k 环仍 asm SAME**（需 acc-aware 嵌套分块，见下） |
 | 2026-05-30 | 2.2+ | **acc-aware strip-mine**：`tileAcc` + `select(firstTile, entry, tileAcc)`；exit/j 层 merge phi 重定向；**新增** `ltPhiEntryIsConst` 限制 accumulator entry 必须是常数（temp=0），拒绝 sl1/sl2 的非 const entry phi；`NESTED=1` matmul2 **asm DIFF**（192 vs 189，k 热点 tiled）、A–D OK；sl1/sl2 NESTED 也 A–D OK（已修复） |
 | 2026-05-30 | 2.2+ | **默认开启 NESTED**：`ltEnvEnabled(..., true)`；**新增** `ltInnerIsSimpleReduction` 过滤（跳过含 Mod/Branch/Select 的 inner），matmul2 k 环不 tile（恢复 169 行），many_mat_cal/sl1/sl2 仍受益 |

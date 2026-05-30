@@ -1,6 +1,7 @@
 #include "Passes.h"
 #include "LoopPasses.h"
 #include "Analysis.h"
+#include "../pre-opt/PreAttrs.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -621,8 +622,13 @@ bool rsmTryMatchMatmulFromK(LoopInfo *kLoop, const std::map<std::string, GlobalO
     return reject("loads");
 
   RsmSumReduction redForm;
-  if (rsmFindKLoopSumReduction(kLoop, redForm) && isa<PhiOp>(redForm.step))
-    return reject("guarded-k");
+  if (rsmFindKLoopSumReduction(kLoop, redForm) && isa<PhiOp>(redForm.step)) {
+    // Phase 3.3 (stable): when SYSY_CC_ENABLE_NEST_SPLIT=1, LoopNestSplit has
+    // detected a 3+ level nest and we trust it to be interior (matmul-like).
+    // This avoids complex attr matching on while-style loops.
+    if (!rsmEnvEnabled("SYSY_CC_ENABLE_NEST_SPLIT", false))
+      return reject("guarded-k");
+  }
 
   auto jLoop = kLoop->parent;
   if (!jLoop)

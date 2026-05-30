@@ -297,16 +297,19 @@ bool mkoPureThenBody(BasicBlock *thenBB, Op *addInst) {
 
 // Matmul k-loop: acc += a[i][k]*b[k][j]. Lifting to select+add regresses on real RISC-V
 // (platform matmul1/2/3 +6.36 vs pre-GuardedAccum); conv/sl patterns don't use mul in then.
-bool mkoGuardedMatmulStep(BasicBlock *thenBB, AddIOp *addInst) {
-  if (isa<MulIOp>(addInst->DEF(1)))
-    return true;
+// Phase 1.2 relaxation: allow Mul in then if the block is side-effect free (only load/mul/addi).
+// This matches the spirit of CondGuardedAccumulatePass (hoist + cond*val) without copying code.
+bool mkoGuardedMatmulStep(BasicBlock *thenBB, AddIOp *addInst, PhiOp *accPhi = nullptr) {
+  // If thenBB only contains load + mul + add (no call/store/impure), allow it.
   for (auto *op : thenBB->getOps()) {
-    if (op == addInst || isa<GotoOp>(op))
+    if (op == addInst || isa<GotoOp>(op) || isa<BranchOp>(op))
       continue;
-    if (isa<MulIOp>(op))
-      return true;
+    if (isa<LoadOp>(op) || isa<MulIOp>(op) || isa<AddIOp>(op) || isa<IntOp>(op))
+      continue;
+    if (isa<StoreOp>(op) || isa<CallOp>(op) || op->has<ImpureAttr>())
+      return true;  // still reject if has side effects
   }
-  return false;
+  return false;  // side-effect free thenBB with mul is now allowed
 }
 
 AddIOp *mkoFindGuardedAdd(BasicBlock *thenBB, Op *&acc, Op *&addend) {
@@ -355,6 +358,7 @@ bool mkoAccLatchMerge(BasicBlock *mergeBB, PhiOp *accPhi) {
   }
   return phis == 1;
 }
+
 
 bool mkoGuardedAddOrientation(BasicBlock *bb, BranchOp *br, BasicBlock *&thenBB,
                              BasicBlock *&mergeBB, bool &addInElse, Op *&acc,
@@ -533,7 +537,7 @@ bool mkoTryGuardedAccum(FuncOp *func, BasicBlock *bb, int &converted) {
       dbg("merge-shape");
       continue;
     }
-    if (mkoGuardedMatmulStep(thenBB, addInst)) {
+    if (mkoGuardedMatmulStep(thenBB, addInst, accPhi)) {
       dbg("matmul-step");
       continue;
     }

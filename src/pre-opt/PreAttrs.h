@@ -53,6 +53,13 @@ public:
   NoStoreAttr *clone() override { return new NoStoreAttr; }
 };
 
+// Phase 3.3: marks a loop as "interior" for RowScratchMatmul (skip guarded-k reject).
+class RsmInteriorAttr : public AttrImpl<RsmInteriorAttr, PREOPTLINE> {
+public:
+  std::string toString() override { return "<rsm-interior>"; }
+  RsmInteriorAttr *clone() override { return new RsmInteriorAttr; }
+};
+
 }
 
 #define SUBSCRIPT(op) (op)->get<SubscriptAttr>()->subscript
