@@ -7,8 +7,3 @@
 # eval-runtime.sh / cmp_o1_tiers.sh 已自动 source 本文件。
 unset SYSY_CC_NO_GUARDED_ACCUM 2>/dev/null || true
 unset SYSY_CC_NO_MAT_TRANSPOSE_PAIR 2>/dev/null || true
-
-# 实验性：嵌套分块（matmul2 k 环 acc-aware strip-mine）
-# 平台验证用，sl1/sl2 会 WA，勿长期默认开
-export SYSY_CC_ENABLE_NESTED_LOOP_TILING=1
-export SYSY_CC_TILE_ROUNDS=1

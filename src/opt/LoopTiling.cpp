@@ -619,7 +619,7 @@ void LoopTiling::run() {
 
           bool nestedPair = cur->parent != nullptr;
           bool nestedEnabled =
-              ltEnvEnabled("SYSY_CC_ENABLE_NESTED_LOOP_TILING", false);
+              ltEnvEnabled("SYSY_CC_ENABLE_NESTED_LOOP_TILING", true);
           // Default: only top-level pairs. Nested mode: tile inner loops that
           // contain mul (matmul k); skip transpose-style outers (no mul in inner).
           bool tileInnerLoop = nestedEnabled && ltInnerHasMul(inner);
