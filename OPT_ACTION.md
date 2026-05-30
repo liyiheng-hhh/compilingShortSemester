@@ -202,6 +202,9 @@ CSV：`tests/.out/runtime/bisect-{all-on,no-guarded,no-rsm,no-tiling}.csv`
 
 Phase 4 gate 仍 fail；单靠关任一 pass 无法回到 baseline，需按 case 选择性禁用或修 crypto/sort 回归。
 
+| 2026-05-30 | platform | 8619151 vs 改前：总分 +6.50；**matmul1/2/3 +6.36**；crypto 不变；many_mat_cal-1 −0.08 |
+| 2026-05-30 | fix | GuardedAccum 拒 `matmul-step`（then 含 MulIOp），避免 matmul 误 lift |
+
 ---
 
 ## 5. 你给我指令时的推荐格式

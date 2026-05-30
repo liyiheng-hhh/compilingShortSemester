@@ -295,6 +295,20 @@ bool mkoPureThenBody(BasicBlock *thenBB, Op *addInst) {
   return true;
 }
 
+// Matmul k-loop: acc += a[i][k]*b[k][j]. Lifting to select+add regresses on real RISC-V
+// (platform matmul1/2/3 +6.36 vs pre-GuardedAccum); conv/sl patterns don't use mul in then.
+bool mkoGuardedMatmulStep(BasicBlock *thenBB, AddIOp *addInst) {
+  if (isa<MulIOp>(addInst->DEF(1)))
+    return true;
+  for (auto *op : thenBB->getOps()) {
+    if (op == addInst || isa<GotoOp>(op))
+      continue;
+    if (isa<MulIOp>(op))
+      return true;
+  }
+  return false;
+}
+
 AddIOp *mkoFindGuardedAdd(BasicBlock *thenBB, Op *&acc, Op *&addend) {
   acc = addend = nullptr;
   auto &ops = thenBB->getOps();
@@ -517,6 +531,10 @@ bool mkoTryGuardedAccum(FuncOp *func, BasicBlock *bb, int &converted) {
     auto *accPhi = cast<PhiOp>(phi);
     if (!mkoAccLatchMerge(mergeBB, accPhi)) {
       dbg("merge-shape");
+      continue;
+    }
+    if (mkoGuardedMatmulStep(thenBB, addInst)) {
+      dbg("matmul-step");
       continue;
     }
 

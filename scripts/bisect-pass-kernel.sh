@@ -54,4 +54,8 @@ run_one "no-all-three" SYSY_CC_NO_GUARDED_ACCUM SYSY_CC_NO_ROW_SCRATCH_MATMUL SY
 
 echo ""
 echo "=== bisect summary (baseline ref 3876.724) ==="
-column -t -s, tests/.out/runtime/bisect/summary.csv
+if command -v column >/dev/null 2>&1; then
+  column -t -s, tests/.out/runtime/bisect/summary.csv
+else
+  cat tests/.out/runtime/bisect/summary.csv
+fi
