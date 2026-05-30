@@ -486,6 +486,37 @@ bool ltApplyStripMine(LoopInfo *loop, int tileSize) {
     }
   }
 
+  // Fix phis in the original exit block (j-layer merge phis like %193).
+  // The inner loop's exit edge now comes via tileHeader (final tile exit) or tileLatch.
+  // Redirect FromAttrs that pointed into the inner loop to tileHeader, and for acc
+  // phis use the final tileAcc value (the carried partial sum after last tile).
+  for (auto op : exit->getOps()) {
+    auto *phi = dyn_cast<PhiOp>(op);
+    if (!phi)
+      continue;
+    const auto &phiAs = phi->getAttrs();
+    for (int i = 0; i < (int) phiAs.size(); i++) {
+      auto from = dyn_cast<FromAttr>(phiAs[i]);
+      if (!from)
+        continue;
+      if (loop->contains(from->bb) || from->bb == latch || from->bb == header ||
+          from->bb == innerSetup) {
+        cast<FromAttr>(phi->getAttrs()[i])->bb = tileHeader;
+        // For accumulator phis, the final value after all tiles is the tileAcc
+        // at the point tileHeader decides to exit.
+        if (accPhiSet.count(phi)) {
+          // Find the corresponding tileAcc for this phi
+          for (auto &ac : accCarries) {
+            if (ac.acc == phi) {
+              phi->setOperand(i, Value(ac.tileAcc));
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+
   return true;
 }
 
