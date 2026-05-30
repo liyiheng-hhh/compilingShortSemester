@@ -204,6 +204,51 @@ Phase 4 gate 仍 fail；单靠关任一 pass 无法回到 baseline，需按 case
 
 | 2026-05-30 | platform | 8619151 vs 改前：总分 +6.50；**matmul1/2/3 +6.36**；crypto 不变；many_mat_cal-1 −0.08 |
 | 2026-05-30 | fix | GuardedAccum 拒 `matmul-step`（then 含 MulIOp），避免 matmul 误 lift |
+| 2026-05-30 | 2.2 | LoopTiling：live-out 仅查 outer/inner；`ltInnerHasMul` 跳过无乘 inner；默认 1 轮；**matmul2 热点 k 环仍 asm SAME**（需 acc-aware 嵌套分块，见下） |
+
+**matmul2 Phase 2 阻塞（2026-05-30）**
+
+| 检查 | 结果 |
+|------|------|
+| RSM | `guarded-k` 正确拒绝（条件累加 `%2==0`） |
+| LoopTiling 默认 | 只 tile 无 mul 的 transpose i-j；热点 j-k：`outer-phi`(temp)+`inner-phi`+需 `NESTED` |
+| 实验性 k 分块 | `NESTED=1` + inner strip-mine → GVN phi 空操作数 **crash**（acc phi 跨 tile 未修） |
+| 平台试验 env | `SYSY_CC_ENABLE_NESTED_LOOP_TILING=1 SYSY_CC_TILE_ROUNDS=1`（勿默认开，sl2 需回归） |
+
+下一 patch：**acc-aware strip-mine**（k 环 temp phi 跨 tile 保留 partial sum，勿每 tile 重置 0）。
+| 2026-05-30 | 1.x diag | **matmul2**：asm vs abbf8a4 **SAME** 189 行；RSM `replaced=0`，**guarded-k×3**（正确）；GA `lifted=0`；LoopTiling `tiled=1` 但 asm 不变（tile 仅改 .Lbb20 外圈步长） |
+
+**matmul2 诊断（Phase 1 → Phase 2 转向）**
+
+源码热点（`performance/matmul2.sy:41-45`）：
+
+```c
+if (a[i][k]*b[k][j] % 2 == 0)
+    temp = temp + b[i][k]*a[k][j];  // 非标准 matmul 索引 + 条件累加
+```
+
+| 检查项 | 结果 |
+|--------|------|
+| asm vs abbf8a4 | **SAME**（189 行） |
+| RSM | `loads` 多数 k 环无 reduction；唯一候选 k 环 → **`guarded-k` reject**（merge-phi 条件累加，不能替换成无条件 helper） |
+| GuardedAccum | `matmul-step` reject → `lifted=0` |
+| LoopTiling | `tiled=1`；`TILE_SIZE=16/64` 仅改 `.Lbb20` 外圈 `addiw …, N`，热点 `.Lbb9` k 环不变 |
+| 平台 | 18.71 vs 榜首 5.82（×3.2）— 与 RSM 无关，需 **Phase 2 分块 / 内层 peephole** |
+
+**P0 asm A/B（cand vs abbf8a4）**
+
+| case | base | cand | asm | pass_stats |
+|------|-----:|-----:|-----|------------|
+| matmul2 | 189 | 189 | SAME | tiled:1 |
+| 01_mm2 | 300 | 300 | SAME | - |
+| matmul1 | 189 | 189 | SAME | tiled:1 |
+| many_mat_cal-1 | 536 | 539 | **DIFF** | **replaced:1** tiled:3 |
+
+**下一项优化队列**
+
+1. **matmul2 → Phase 2**（放弃 RSM）：试 `SYSY_CC_TILE_SIZE` / `NESTED_LOOP_TILING` 作用于 i-j-k 区；内层 `.Lbb9` 的 `remw`+分支暂不动（SysY 负数 mod 语义）。
+2. **many_mat_cal-1/2/3 → Phase 1 继续**：已有 `replaced=1`，扩到 -2/-3。
+3. **01_mm2**：k-i-j saxpy + `if continue`，RSM 全 `loads` reject — 非 i-j-k matmul，另立项。
 
 ---
 

@@ -166,12 +166,6 @@ Op *ltFindUnitIvPhi(LoopInfo *loop) {
   return nullptr;
 }
 
-LoopInfo *nestRoot(LoopInfo *loop) {
-  while (loop && loop->parent)
-    loop = loop->parent;
-  return loop;
-}
-
 Op *ltLoopInductionVar(LoopInfo *loop) {
   if (Op *iv = ltFindUnitIvPhi(loop))
     return iv;
@@ -190,30 +184,27 @@ bool ltIvHasUseOutsideLoop(Op *iv, LoopInfo *loop) {
   return false;
 }
 
-// Strip-mining preserves iteration order but not the IV value after the loop
-// when the IV is used outside the loop being tiled.
+// Only check IV live-out for the pair being tiled (not ancestor IVs reused later in main).
 bool ltNestPreservesLiveOuts(LoopInfo *outer, LoopInfo *inner) {
-  LoopInfo *root = nestRoot(outer);
-  if (!root)
-    return false;
-
   Op *outerIv = ltLoopInductionVar(outer);
   if (outerIv && ltIvHasUseOutsideLoop(outerIv, outer))
     return false;
-
   Op *innerIv = ltLoopInductionVar(inner);
   if (innerIv && ltIvHasUseOutsideLoop(innerIv, inner))
     return false;
-
-  for (LoopInfo *L = outer; L; L = L->parent) {
-    Op *iv = ltLoopInductionVar(L);
-    if (iv && ltIvHasUseOutsideLoop(iv, root))
-      return false;
-    if (L == root)
-      break;
-  }
-
   return true;
+}
+
+bool ltInnerHasMul(LoopInfo *inner) {
+  if (!inner)
+    return false;
+  for (auto bb : inner->getBlocks()) {
+    for (auto op : bb->getOps()) {
+      if (isa<MulIOp>(op))
+        return true;
+    }
+  }
+  return false;
 }
 
 // Build the strip-mined loop structure.
@@ -231,7 +222,7 @@ bool ltApplyStripMine(LoopInfo *loop, int tileSize) {
   if (!preheader || !header || !exit || !latch)
     return false;
 
-  auto iv = loop->getInduction();
+  auto iv = ltLoopInductionVar(loop);
   if (!iv) return false;
 
   // Find step from IV phi: the latch value should be iv + step
@@ -393,7 +384,7 @@ void LoopTiling::run() {
     return;
 
   int tileSize = ltEnvInt("SYSY_CC_TILE_SIZE", ltEnvInt("SYSY_TILE_SIZE", kDefaultTileSize));
-  int maxRounds = ltEnvInt("SYSY_CC_TILE_ROUNDS", 3);
+  int maxRounds = ltEnvInt("SYSY_CC_TILE_ROUNDS", 1);
 
   // Run multiple rounds to handle deeper nests (tile from inside out).
   for (int round = 0; round < maxRounds; round++) {
@@ -446,8 +437,8 @@ void LoopTiling::run() {
           // Don't tile if outer has extra phis (state-carrying across iterations)
           // Strip-mining is only safe when non-IV phis are absent or loop-invariant.
           {
-            auto outerIV = cur->getInduction();
-            auto innerIV = inner->getInduction();
+            auto outerIV = ltLoopInductionVar(cur);
+            auto innerIV = ltLoopInductionVar(inner);
             if (!outerIV || !innerIV)
               continue;
             // Both must have only the IV phi — any extra phi means
@@ -485,6 +476,10 @@ void LoopTiling::run() {
 
           int trip = ltEstimateTrip(cur);
           if (trip > 0 && trip < kMinTripForTiling) {
+            rejectedProfit++;
+            continue;
+          }
+          if (!ltInnerHasMul(inner)) {
             rejectedProfit++;
             continue;
           }
