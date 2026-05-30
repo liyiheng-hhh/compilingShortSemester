@@ -1,387 +1,405 @@
-# Compiler2026 RISC-V Baseline
+# Compiler2026-x — SysY RISC-V 编译器
 
-这是 2026 编译系统设计赛（编译系统实现赛 · 初赛 · **RISC-V 赛道**）的 SysY2022 编译器基线工程，源码位于本目录，可提交到希冀平台 GitLab 供官方拉取评测。
+2026 年全国大学生计算机系统能力大赛 · 编译系统设计赛 · **RISC-V 赛道**参赛工程。
 
-## 评测与仓库约定（请务必核对）
+本仓库在官方 baseline 上自研 **Dialect IR 中端 + 模式匹配优化 pass 管线**。优化实施纪律见 [`OPT_ACTION.md`](OPT_ACTION.md)，评测 bug 记录见 [`EVAL_BUGLOG.md`](EVAL_BUGLOG.md)。
 
-- **拉取分支**：官方评测默认拉取 **`master`** 分支；若需指定其他分支，在提交面板的仓库 HTTPS 地址后**空格**再写分支名（见提交页帮助）。
-- **可执行文件名**：生成的编译器可执行文件必须命名为 **`compiler`**（本仓库 `make` 产物即为此名）。
-- **实现语言**：C++，需符合 **C++17**；项目中须有且仅有 **一个** `main`（本实现入口为 **`src/main.cpp`**）。
-- **评测编译命令**：官方使用 `clang++` **递归扫描**仓库内 `.h/.hpp/.c/.cc/.cpp/...` 并链接为 `compiler`。
-  - **切勿**在仓库中提交 **第二套** 与 `src/` 重复的 `.cpp` 副本（例如历史遗留的 `.docker-compiler-build/` 镜像内拷贝），否则会出现 **`_main` / duplicate symbol** 等链接错误，评测直接 **CE**。
-  - 推荐仅通过本仓库根目录 **`Makefile`** 所列 **`SRCS`** 参与构建；Docker 内编译请使用 **`BUILD_DIR=/tmp/compiler-build`**（或任意**未跟踪**目录），勿把构建副本提交进 Git。
-- **功能测试命令**：`compiler -S -o testcase.s testcase.sy`（路径在评测机上为绝对路径）。
-- **性能测试命令**：`compiler -S -o testcase.s testcase.sy -O1`
-- **`-O1` 分层（`src/opt_config.h`）**：平台提交默认 **档 D**（`SYSY_O1_DEFAULT_TIER=4`：含 C 的 LICM/CSE + CFG LICM + store→load + 转置交换）。本地回退：`SYSY_O1_TIER=B` 或 `CXXFLAGS_EXTRA=-DSYSY_O1_DEFAULT_TIER=2 make`。记录见 **`EVAL_BUGLOG.md`**。
-
-生成汇编为 **64 位 RISC-V**，需能与官方 SysY 运行时一并汇编、链接并在指定 RISC-V Linux 环境运行；地址空间上需满足 **`-mcmodel=medany`**（或等价）的大地址模型约定。
-
-## 构建
-
-```sh
-make
-```
-
-也可以直接使用评测环境的 C++17 编译器（与 `Makefile` 中 **`SRCS`** 一致的多文件编译；源文件在 **`src/`**）：
-
-```sh
-clang++ -std=c++17 -O2 -c src/main.cpp -o main.o
-clang++ -std=c++17 -O2 -c src/common.cpp -o common.o
-clang++ -std=c++17 -O2 -c src/lexer.cpp -o lexer.o
-clang++ -std=c++17 -O2 -c src/parser.cpp -o parser.o
-clang++ -std=c++17 -O2 -c src/semantic.cpp -o semantic.o
-clang++ -std=c++17 -O2 -c src/codegen.cpp -o codegen.o
-clang++ -std=c++17 -O2 -c src/ir_build.cpp -o ir_build.o
-clang++ -std=c++17 -O2 -c src/ir_opt.cpp -o ir_opt.o
-clang++ -std=c++17 -O2 -o compiler main.o common.o lexer.o parser.o semantic.o codegen.o ir_build.o ir_opt.o
-```
-
-## 使用
-
-```sh
-./compiler -S -o testcase.s testcase.sy
-./compiler -S -o testcase.s testcase.sy -O1
-```
-
-## 本地冒烟（可选）
-
-```sh
-make check
-```
-
-会在 `examples/` 下生成 `smoke.s`、`smoke_O1.s`（已被 `.gitignore` 忽略），并 **`-O1` 编译** `examples/golden_magic_div/boundary.sy` 做除常数/取模边界 CE 检查。需在具备 RISC-V 工具链与 SysY 运行时的环境中再将 `.s` 汇编链接执行以做端到端验证。
-
-### 无隐藏点时的本地套（`local_eval_cases`）
-
-- **`make local-eval`**（需 **`LIBSYSY`**）：跑 `scripts/run_local_eval.sh` — 对 `local_eval_cases/` 做 O0/O1 批测，并对每个 `.sy`（除 `_gen_divmod`）跑 **`scripts/cmp_o0_o1.sh`**，判断 WA 是否仅出在优化路径。
-- 若环境无 `python3`，脚本仍使用仓库内已提交的 **`_gen_divmod.sy` / `.out`**；有 Python 时会用 **`tools/gen_divmod_property_sy.py`** 再生除法属性用例。
-- **`scripts/compile_memlimit.sh`**：在受限虚拟内存下执行 **`./compiler ...`**，模拟评测机编译阶段 **`Killed`**。示例：  
-  `./scripts/compile_memlimit.sh 512M ./compiler -S -O1 -o /tmp/x.s path/to/large.sy`
-- **一键（推荐）**：宿主机仓库根执行 **`make docker-init`**（首次）后 **`make docker-local-eval`** — 在容器内 **`make /work`**、若无则编 **`/tmp/sysy-runtime-lib/build/libsysy.a`**，再跑 **`run_local_eval`**，**不必**在宿主机 `export LIBSYSY`。
-- 若自行在容器里跑脚本：在挂载的仓库根（如 **`/work`**）先 **`make`**，使 **`./compiler`** 与容器 glibc 一致。
-
-## 批量编译 / 回归 / 体积对比
-
-| 目标 | 说明 |
-|------|------|
-| `make local-eval` | 需 `LIBSYSY`；跑 `local_eval_cases` + O0/O1 对拍（见上节） |
-| `make compile-all` | 递归编译 `SY_DIRS`（默认 `examples`）下全部 `*.sy` → 同名 `.s`，**不需要** qemu |
-| `make compile-all-o1` | 同上且加 **`-O1`** |
-| `make sytest` | 需 `LIBSYSY`、`TESTDIR`；沿用 `scripts/run_sy_tests.sh` |
-| `make sytest-o0` / `make sytest-o1` | 固定 `USE_O1=0/1` 的 qemu 比对 |
-| `make size-report` | 对每个用例输出 O0/O1 汇编行数及差值（默认扫描 `SY_DIRS`） |
-
-## 本地性能测试（runtime-eval）
-
-在 **QEMU + RISC-V 交叉工具链** 下批量测 **运行时间中位数** 与 **输出正确性**，结果写入 CSV，便于改优化后对比。与 `make sytest` / `docker-test-performance`（只测 AC/WA）互补。
-
-**不需要 Docker**：本机已安装 `riscv64-linux-gnu-gcc`、`qemu-riscv64-static`（或 `qemu-riscv64`）、`timeout` 时，在仓库根直接执行下列命令即可。仅当本机没有工具链时，再用文末 Docker 的 `docker-runtime-*` 目标。
-
-### 完整流程（一步步）
-
-在仓库根目录执行。性能题需事先放在 **`performance/`**（每题有 `.sy`，多数还有 `.in` / `.out`）。
-
-**① 准备（每次改代码后都要做）**
-
-```sh
-make && make libsysy.a
-```
-
-**② 跑性能 + 看结果（最常用）**
-
-```sh
-make runtime-eval SUITE=performance OPT=O1
-make runtime-summary
-```
-
-- 数据文件：`tests/.out/runtime/sysy-performance-O1.csv`
-- `runtime-summary` 会列出最慢的题、哪些 WA/超时。
-- 失败归档（可选）：`PERF_FAILURE_LOG=tests/.out/runtime/failures.log make runtime-eval …`，WA/CE 会追加 diff；比对前默认去掉 `TOTAL:` / `Timer@` 行（`PERF_STRIP_TIMING=0` 可关闭）。
-- 寄存器分配自检（调试用）：`SYSY_CC_VERIFY_REGALLOC=1` 编译时在着色后检查干涉图与预着色一致性。
-
-**③ 改优化前后对比（旧 vs 新）**
-
-改 **compiler 之前**先存一份 baseline：
-
-```sh
-make && make libsysy.a
-RUNTIME_CSV=tests/.out/runtime/before-O1.csv \
-  make runtime-eval SUITE=performance OPT=O1
-```
-
-改 IR/codegen 等并 **`make`** 之后，再跑 candidate：
-
-```sh
-RUNTIME_CSV=tests/.out/runtime/after-O1.csv \
-  make runtime-eval SUITE=performance OPT=O1
-```
-
-对比谁变快/变慢：
-
-```sh
-./scripts/eval-vs-baseline.sh \
-  tests/.out/runtime/before-O1.csv \
-  tests/.out/runtime/after-O1.csv
-```
-
-**④ 提交希冀前（功能必过 + 性能粗测）**
-
-```sh
-make runtime-gate PERF_TIMEOUT=20
-```
-
-功能集有错会失败；性能集超时只记 CSV，不拦脚本。
-
-**IR 通用优化（档 D，`-O1`）**  
-`src/ir_loop_opt.cpp`：基本块内标量 `LoadLocal`/`StoreLocal` → `Copy`（简易 mem2reg）。关闭：`SYSY_CC_NO_IR_LOOP_OPT=1`。  
-指纹式 AST pass（`knapsack_dp` / `mm_hoist`）可用 `SYSY_CC_DISABLE_PATTERN_PASSES=1` 关掉，便于对比通用路线。
-
-**⑤ 没有本机工具链时**
-
-```sh
-make docker-init
-make docker-runtime-perf    # 等同容器里 performance O1
-```
+**仓库**：[栈上开花队 / Compiler2026-X](https://gitlab.eduxiji.net/T2026104862010524/compiler2026-x)（希冀 GitLab）  
+**开发分支**：`big`（提交时可指定 `master` 或 `big`，见 §3）
 
 ---
 
-### 准备（每次改完编译器建议执行）
+## 目录
+
+1. [项目概述与原创性](#1-项目概述与原创性)
+2. [项目结构](#2-项目结构)
+3. [官方评测说明](#3-官方评测说明)
+4. [合规性要求](#4-合规性要求)
+5. [本地测评方法](#5-本地测评方法)
+6. [中间代码优化](#6-中间代码优化o1-dialect-pipeline)
+7. [现阶段问题](#7-现阶段问题)
+8. [后续优化策略](#8-后续优化策略)
+9. [构建与常用命令](#9-构建与常用命令)
+10. [待你补充的信息](#10-待你补充的信息)
+
+---
+
+## 1. 项目概述与原创性
+
+### 核心思路
+
+| 维度 | 本仓库做法 | 与常见参考实现的差异 |
+|------|-----------|---------------------|
+| IR | 自研 **结构化 Dialect IR**（`ModuleOp` / `FuncOp` / `WhileOp`），flatten 后走 Mem2Reg + GVN | 非 LLVM IR 直搬；非纯 AST 直出汇编 |
+| 优化 | **IR 结构模式匹配 pass**（RowScratchMatmul、GuardedAccum、LoopTiling 等），带显式 reject 条件 | 非函数名/输入硬编码；每个 pass 有 stats / env 开关 |
+| Pipeline | `dialect_pipeline.cpp` 分阶段注册（pre-opt → flatten → mem → loop → late → rv） | 可 bisect 单 pass，见 `scripts/bisect-kernel-passes.sh` |
+| 后端 | `mlir_rv/` 图着色 RegAlloc + `rv/` asm peephole | 性能 `-O1` 专用后端 |
+| 工程 | `OPT_ACTION.md` 分 Phase；**asm A/B 为涨分判据** | 避免 asm 未变就声称提升 |
+
+### 原创 pass（Dialect O1）
+
+RowScratchMatmul · GuardedAccum · LoopTiling · MatTransposePair · Pureness — 均在 `src/opt/`，见 [`OPT_ACTION.md`](OPT_ACTION.md)。
+
+---
+
+## 2. 项目结构
+
+### 为什么不是「双路径 O1」？
+
+历史上存在两套 **O1** 实现（legacy 档 D AST/IR + 新 dialect），评测时 **只有 dialect 一条在用**：
+
+| 官方命令 | 实际路径 | 说明 |
+|---------|---------|------|
+| `compiler -S -o out.s f.sy` | **Legacy O0** | 功能测 **不带 `-O1`**，走 `lexer→parser→codegen.cpp` 直出汇编 |
+| `compiler -S -O1 -o out.s f.sy` | **Dialect O1** | 性能测，走 `dialect_parse→opt/*→mlir_rv` 全管线 |
+
+**2026-05-30 已删除** 最近一次测评未使用的 legacy O1 代码：`loop_interchange/tiling/unroll`、`row_scratch_matmul`（AST 版）、`knapsack_dp`（AST 版）、`mm_hoist`、`land_lor_split`、`hir/`、`cfg/` 等。
+
+**仍保留**：legacy **O0 最小路径**（官方功能测必需）+ `codegen.cpp` 内嵌的 `ir_*` 链接（O0 不触发 IR 后端，但尚未从 codegen 剥离）。
+
+```
+compiler2026-x/
+├── src/
+│   ├── main.cpp                 # O1→dialect；O0→legacy 最小路径
+│   │
+│   ├── dialect_parse/           # Dialect 前端
+│   ├── codegen/                 # 结构化 IR（ModuleOp）+ CodeGen
+│   ├── pre-opt/                 # Flatten 前 pass
+│   ├── opt/                     # Flatten 后 pass（RowScratch/LoopTiling/…）
+│   ├── mlir_rv/                 # Dialect→RISC-V
+│   ├── rv_mlir_pipeline.cpp
+│   ├── dialect_pipeline.cpp     # 中端 pipeline 工厂
+│   │
+│   ├── lexer*.cpp parser*.cpp   # Legacy O0 前端
+│   ├── semantic*.cpp codegen.cpp # Legacy O0 汇编发射
+│   ├── ir_*.cpp                 # codegen 内 IR 后端（仅链接，O0 不启用）
+│   └── rv/                      # asm peephole（O1 dialect 后处理）
+│
+├── scripts/                     # eval / bisect / Docker
+├── examples/                    # 冒烟 golden
+├── local_eval_cases/
+├── performance/                 # 性能用例（.gitignore）
+├── runtime/sysy_runtime.c
+├── OPT_ACTION.md
+├── EVAL_BUGLOG.md
+└── Makefile                     # SRCS 白名单
+```
+
+### 编译路径（当前）
+
+```
+O0（官方功能测）:
+  lexer → parser → semantic → codegen.cpp（无优化）→ .s
+
+O1（官方性能测）:
+  dialect_parse → codegen/ → pre-opt → FlattenCFG → Mem2Reg
+    → opt/* → mlir_rv → rv/ peephole → .s
+```
+
+`-O1` 若设 `SYSY_CC_NO_DIALECT_PIPELINE=1` 将 **直接报错**（不再 fallback 到 legacy O1）。
+
+### 关于 Makefile vs 官方编译
+
+- **本地**：`make` 只编译 `Makefile` 中 **`SRCS` 白名单**（当前 ~139 个 `.cpp`）。
+- **官方希冀**：`clang++` **递归扫描**仓库内所有 `.cpp` 并链接。
+- **务必**：不要提交未列入 `SRCS` 且含 `main`/重复符号的 `.cpp` 副本，否则 **CE（duplicate symbol）**。
+- 2026-05-30 已清理 ~6000 行废弃代码（`hir/`、`cfg/`、`dialect_hir/`、orphan `ir_*`、未接入 pipeline 的 pre-opt），降低官方递归编译风险。
+
+---
+
+## 3. 官方评测说明
+
+| 项 | 要求 |
+|----|------|
+| 拉取分支 | 默认 **`master`**；其它分支在仓库 URL 后空格指定（如 `…git big`） |
+| 可执行文件 | 必须名为 **`compiler`** |
+| 语言 | C++17；**唯一** `main`（`src/main.cpp`） |
+| 功能测试 | `compiler -S -o testcase.s testcase.sy` |
+| 性能测试 | `compiler -S -o testcase.s testcase.sy -O1` |
+| 目标 | 64-bit RISC-V，`-mcmodel=medany`，链接官方 `libsysy.a` |
+| 计时 | 官方使用 `starttime()` / `stoptime()`（`gettimeofday`） |
+
+### 观察官方结果的方式
+
+希冀平台提交后查看：**功能分 / 性能分 / CE / RE / WA / TLE**。本地无法完全复现官方 `libsysy.a` 与机器，以 **AC/WA + kernel 时间趋势** 为准，见下节。
+
+---
+
+## 4. 合规性要求
+
+大赛技术委员会明确 **反对投机性优化**。本仓库策略：
+
+| 允许 ✅ | 禁止 ❌ |
+|--------|--------|
+| 基于 IR 结构（phi、loop nest、load/store 索引）的通用变换 | 匹配函数名 / 特定字符串触发优化 |
+| 循环交换、分块、guard 累加折叠等通用 loop transform | 对特定测试用例硬编码结果 |
+| 利用 Pureness / Alias 分析保证语义 | 利用 UB 换性能 |
+| env 开关 bisect（`SYSY_CC_NO_*`） | 依赖特定输入大小/模式的投机路径 |
+
+当前 pass 均通过 **IR 形状 + reject 规则** 匹配，详见 [`OPT_ACTION.md`](OPT_ACTION.md) 与各 pass 内 `reject` 计数。
+
+---
+
+## 5. 本地测评方法
+
+### 5.1 编译冒烟（无需 QEMU）
+
+```sh
+make && make check
+```
+
+`make check` 对 `examples/` 下多组 golden 做 **O0 + O1 编译 CE 检查**（不链接运行）。
+
+### 5.2 功能回归（需 RISC-V 工具链 + libsysy.a）
+
+```sh
+make libsysy.a
+export LIBSYSY=$PWD/libsysy.a
+
+# 单目录批测
+make sytest-o0 TESTDIR=examples/golden_smoke
+make sytest-o1 TESTDIR=performance
+
+# 本地小套 + O0/O1 对拍（判断 WA 是否只在优化路径出现）
+make local-eval
+```
+
+### 5.3 性能测评（kernel 时间，推荐）
 
 ```sh
 make && make libsysy.a
-```
 
-- `make libsysy.a` 用 `runtime/sysy_runtime.c` 交叉编译静态库（含 `starttime` / `stoptime` 的 `gettimeofday` 计时，与赛方习惯一致）。
-- 性能用例默认目录为仓库根下 **`performance/`**（`.gitignore`，需自行放入官方或本地 perf 包）。其它路径见下节 `SUITE`。
+# 跑 performance 全集，CSV 输出
+RUNTIME_PERF_TIMEOUT_SEC=120 make runtime-eval SUITE=performance OPT=O1
 
-### O0 与 O1 的区别
-
-| 档位 | 命令 | 含义 |
-|------|------|------|
-| **O0** | 不加 `-O1` | 几乎不做优化，作对照 baseline |
-| **O1** | `-O1` | 开启 `src/opt_config.h` 分层优化（提交默认 **档 D**：IR LICM/CSE、CFG LICM、store→load、AST 循环交换/分块等） |
-
-官方性能评测使用 **`compiler … -O1`**。本地 `runtime-compare` 在同一套题上先跑 O0 再跑 O1，对比每题 **median** 是否变快。
-
-### 日常命令（推荐）
-
-```sh
-# 1. 跑一整包性能题，生成 CSV（warmup + 3 次取中位数）
-make runtime-eval SUITE=performance OPT=O1
-
-# 2. 看汇总：通过率、最慢题、失败列表
+# 汇总：通过率、最慢题、WA 列表
 make runtime-summary
 
-# 3. 可选：O0 vs O1 整体对比（报告在 tests/.out/runtime/compare/）
-make runtime-compare SUITE=performance PERF_TIMEOUT=20
+# 改优化前后对比
+RUNTIME_CSV=tests/.out/runtime/before.csv make runtime-eval SUITE=performance OPT=O1
+# … 改代码 make …
+RUNTIME_CSV=tests/.out/runtime/after.csv make runtime-eval SUITE=performance OPT=O1
+./scripts/eval-vs-baseline.sh tests/.out/runtime/before.csv tests/.out/runtime/after.csv
 ```
 
-用例不在 `performance/` 时：
+**如何读 CSV**
+
+| 列 | 含义 |
+|----|------|
+| `median_ms` | warmup 后 3 次运行的 **中位数**（主指标） |
+| `pass` | AC/WA/TLE/CE |
+| kernel 合计 | `runtime-summary` 对 `pass=AC` 的题求和，用于 pass bisect |
+
+**Pass bisect**（哪个 pass 帮/害整体）：
 
 ```sh
-make runtime-eval SUITE=/path/to/cases OPT=O1
+./scripts/bisect-kernel-passes.sh   # 或见 OPT_ACTION.md §4 bisect 表
 ```
 
-只测名称含某关键字（如 matmul）：
+**Asm 是否真正变化**（涨分前置条件）：
 
 ```sh
-RUNTIME_CASE_FILTER=matmul make runtime-eval SUITE=performance OPT=O1
+./scripts/asm-ab-perf.sh performance/matmul2.sy
+# 或
+SYSY_CC_PASS_STATS=1 ./compiler -S -O1 -o /tmp/x.s performance/matmul2.sy 2>&1 \
+  | grep -iE 'replaced|tiled|lifted|reject'
 ```
 
-改优化前后对比见上文 **③**（`before-O1.csv` / `after-O1.csv`）。
-
-提交前功能 + 性能门禁见上文 **④**：
-
-```sh
-make runtime-gate PERF_TIMEOUT=20
-```
-
-### Make 与脚本对照
-
-| 目标 / 脚本 | 说明 |
-|-------------|------|
-| `make runtime-eval` | 主入口；等价 `./scripts/eval-runtime.sh <suite> <O0\|O1>` |
-| `make runtime-summary` | 汇总 `tests/.out/runtime/` 或指定 `RUNTIME_CSV=` |
-| `make runtime-compare` | O0 与 O1 两套 CSV + 回归/改进列表 |
-| `make runtime-hotspots` | 按 matmul、fft、sort 等子串分批测 |
-| `make runtime-gate` | functional O1（硬）+ performance O1（软） |
-| `make perf-eval` / `make perf-summary` | 兼容旧名，行为同上 |
-| `scripts/eval-hotspots.sh` | 热点子集（`O1`、超时秒数） |
-| `scripts/eval-vs-baseline.sh` | 两份 CSV 或 `--run suite opt /path/to/other/compiler` |
-
-默认 CSV 路径示例：`tests/.out/runtime/sysy-performance-O1.csv`（列含 `suite,case_id,opt,median_ms,run1_ms…,pass` 等）。
-
-### 环境变量（常用）
-
-| 变量 | 默认 | 含义 |
-|------|------|------|
-| `RUNTIME_PERF_DIR` | `performance/` | 性能用例根目录 |
-| `RUNTIME_FUNCTIONAL_DIR` | `2026初赛RISCV赛道功能用例/functional` | 功能用例根目录 |
-| `RUNTIME_CSV` | 自动 | 指定输出 CSV 路径 |
-| `RUNTIME_SOFT_PERF` | perf 为 `1` | `1` 时性能失败不令脚本 exit 1 |
-| `RUNTIME_TIMEOUT_SEC` | `10` | 功能集单题超时（秒） |
-| `RUNTIME_PERF_TIMEOUT_SEC` | `20` | 性能集单题超时（秒） |
-| `RUNTIME_CASE_FILTER` | 空 | 只跑 `case_id` 含该子串的题 |
-| `RUNTIME_CASE_LIMIT` | `0` | `>0` 时最多跑 N 题（调试） |
-
-### 单题 Profiling（调试用）
-
-```sh
-make perf-profile PERF_SY=performance/matmul1.sy LIBSYSY=$(pwd)/libsysy.a
-```
-
-### Docker（可选，无本机工具链时）
+### 5.4 Docker（无本机工具链时）
 
 ```sh
 make docker-init
-make docker-runtime-perf          # 容器内 performance + O1 + CSV
-make docker-runtime-gate          # 容器内功能 + 性能门禁
-# 或：
-./scripts/docker-test-container.sh perf performance O1
-./scripts/docker-test-container.sh gate 20
+make docker-local-eval          # local_eval_cases
+make docker-test-functional     # 功能集 AC/WA
+make docker-runtime-perf        # performance O1 + CSV
+make docker-runtime-gate        # 功能硬门 + 性能软门
 ```
 
-`docker-test-performance` 仍只做 **功能回归**（AC/WA），不测 median；测性能请用 **`runtime-eval`** / **`docker-runtime-perf`**。
+### 5.5 关键环境变量
 
-**Docker 常驻容器**（`scripts/docker-test-container.sh`）：先 `make docker-init`，再对容器内路径跑批测（仓库根挂载为 **`/work`**）。本地若把官方树放在仓库根下，默认路径为下表 `DOCKER_*`；否则自行改 `DOCKER_FUNC` / `DOCKER_PERF` 或直接用 `test` 子命令传目录。
-
-| 目标 | 说明 |
+| 变量 | 作用 |
 |------|------|
-| `make docker-init` | 创建/启动容器并安装 RISC-V 工具链与 qemu（同 `e2e-docker.sh`） |
-| `make docker-local-eval` | 容器内 `local_eval_cases` + O0/O1 对拍；自动编 `libsysy.a`（需 `runtime/sysy_runtime.c`） |
-| `make docker-test-functional` | `SY_TEST_DIR=$(DOCKER_FUNC)`，`USE_O1` 默认 0，可覆盖 |
-| `make docker-test-performance` | `SY_TEST_DIR=$(DOCKER_PERF)`，`USE_O1` 默认 1；**只测 AC/WA**，不测运行时间 |
-| `make docker-runtime-perf` | 容器内 `runtime-eval`（performance + O1，输出 CSV） |
-| `make docker-runtime-gate` | 容器内 `runtime-gate`（功能硬门 + 性能软门） |
-| `make docker-test-dirs` | 需设 **`SY_TEST_DIRS="dir1 dir2..."`**（容器内路径），走 `e2e-docker.sh` 多目录逻辑 |
+| `SYSY_CC_NO_DIALECT_PIPELINE=1` | `-O1` 直接失败（已无 legacy O1 fallback） |
+| `SYSY_CC_NO_ROW_SCRATCH_MATMUL=1` | 关 RowScratchMatmul |
+| `SYSY_CC_NO_LOOP_TILING=1` | 关 LoopTiling |
+| `SYSY_CC_NO_GUARDED_ACCUM=1` | 关 GuardedAccum |
+| `SYSY_CC_PASS_STATS=1` | 打印 pass 统计 |
+| `SYSY_O1_TIER=B/C/D` | legacy 路径 O1 档位（见 opt_config.h） |
 
-日常基线示例：
+默认 eval 脚本会 `source scripts/opt-passes-on.sh`（开启 GuardedAccum + MatTransposePair）。
+
+---
+
+## 6. 中间代码优化（O1 Dialect Pipeline）
+
+> Pass 注册顺序见 [`src/dialect_pipeline.cpp`](src/dialect_pipeline.cpp)。  
+> 涨分判据与 bisect 数据见 [`OPT_ACTION.md` §4](OPT_ACTION.md#4-已完成记录实施时更新)。
+
+### 6.1 Pipeline 阶段
+
+```
+pre-opt（结构化 IR）→ FlattenCFG → Mem2Reg
+  → 内存优化（Alias / DSE / DLE / GVN / Reassociate）
+  → 循环优化（Canonicalize / Rotate / RowScratch / LoopTiling / LICM / …）
+  → 杂项清理（SimplifyCFG / GCM / Select / …）
+  → 晚期内联 + SynthConstArray
+  → 3× 循环轮（LICM / SCEV / GuardedAccum / RemoveEmptyLoop）
+  → 最终 DCE + SimplifyCFG + InstSchedule
+  → mlir_rv（Lower / InstCombine / RegAlloc）→ rv/ asm peephole
+```
+
+各 pass 可通过 `SYSY_CC_NO_*` / `SYSY_CC_ENABLE_*` 单独 bisect（见 §5.5）。
+
+---
+
+### 6.2 优化效果分析
+
+#### 效果较好的优化
+
+| 优化 | 对应 Pass | 作用 | 本仓库观测 |
+|------|-----------|------|-----------|
+| **常量传播 / 常量折叠** | `early-const-fold`、`regular-fold` | 编译期将已知常量替换变量、折叠算术，减少运行时计算 | 全管线多次运行；`EarlyConstFold` 在 Pureness 前后各一轮 |
+| **函数内联** | `early-inline`、`inline`、`late-inline` | 将 callee 体展开到 caller，消除 call/ret 与参数传递开销 | 默认 threshold=200；`BitStubFold` 在内联前折叠 32 轮 bitwise 模拟器，避免热点膨胀 |
+| **LICM（循环不变代码外提）** | `licm` | 将不依赖归纳变量的计算/可证明安全的 store 提到循环外 | 主循环轮 + 3× loop-round 重复运行；对 matmul 内层地址计算有帮助 |
+| **寄存器分配（图着色）** | `rv-regalloc` | 将 SSA 虚拟寄存器映射到物理寄存器，溢出时才写栈 | `mlir_rv/RegAlloc`；可选 `SYSY_CC_MLIR_RV_FAST_RA` |
+| **GVN（全局值编号）** | `gvn` | 识别等价表达式并 CSE，复用已有计算结果 | 管线内 **≥8 轮**；配合 `Pureness` 标记 impure call，避免误 CSE `get_random()` |
+| **Mem2Reg** | `mem2reg` | alloca/load/store 提升为 SSA 寄存器，减少内存 traffic | Flatten 后 **必经**；后续 GVN/LICM/DSE 均依赖 |
+| **DCE（死代码删除）** | `dce`、`aggressive-dce`、`loop-dce` | 删除不可达 BB、无用 op、无用函数 | `loop-dce` 在结构化阶段删纯循环体；`aggressive-dce` 在循环轮末清扫 |
+| **CFG 简化** | `simplify-cfg` | 合并空块、消除冗余分支/跳转 | 杂项阶段 + 最终清理各一轮 |
+| **循环展开** | `const-loop-unroll` | 对 trip count 为常数的循环完全展开 | 默认开启；适合小循环、DP 表初始化 |
+| **尾调用优化** | `tco` | 尾递归改循环，消除栈帧增长 | pre-opt 阶段，对递归题有效 |
+| **死存储/加载消除** | `dse`、`dle` | 删除冗余 store 与重复 load | 多轮运行；2026-05-30 修复 DSE 重复 erase 导致 segfault |
+| **表达式重结合** | `reassociate` | 调整加法链形状，便于 GVN CSE | 在 experimental 脚本中；默认 eval **关闭**（shuffle/h-5 会退化） |
+| **强度削弱** | `strength-reduction`（RV + asm） | 乘除/比较改 cheaper 指令 | RV 中端 + `rv/` asm peephole 双层 |
+
+#### 效果一般的优化
+
+| 优化 | 对应 Pass | 说明 |
+|------|-----------|------|
+| **InstCombine** | `rv-inst-combine` + `rv/` `instCombine` | RV 层指令级 peephole（如 `addi 0` 消除）；单条收益小，靠全管线累积 |
+| **过程间分析（非完整 IPO-DCE）** | `call-graph` + `pureness` + `dce` | 标记 impure 函数、删未被调用的 dead function；**无**跨函数常量传播/全程序 DDE |
+| **GCM（全局代码移动）** | `gcm` | 将指令调度到更早/更晚的合法位置；本仓库 RV 调度较简，收益有限 |
+| **DAE（死参数消除）** | `dae` | 删未使用形参；SysY 小题调用模式下触发少 |
+| **SCEV 归纳变量替换** | `scev` | 多项式 IV 替换；对简单 for 有效，复杂 nest 常 no-op |
+| **Select 化** | `select` | if 改 cmov 风格；RISC-V 无原生 select，后端需再展开 |
+| **指令调度** | `inst-schedule`、`rv-schedule` | 列表调度藏 load/mul 延迟；默认 schedule 关闭，需 `SYSY_CC_ENABLE_RV_SCHEDULE` |
+| **MatTransposePair** | `mat-transpose-pair` | 识别 `b[i][j]=a[j][i]` swap；performance 集上常 `rewrites=0`（pass 前 IR 已变形） |
+| **InlineStore** | `inline-store` | 默认 **关闭**；小 store 内联实验性 |
+| **SynthConstArray** | `synth-const-array` | 合成常量数组初始化；触发面窄 |
+
+#### 针对性原创优化（效果因题而异）
+
+| Pass | 针对场景 | 平台/本地观测 |
+|------|---------|--------------|
+| **RowScratchMatmul** | 矩阵乘 `C[i][j]+=A[i][k]*B[k][j]` → 行缓冲 + helper | 平台 matmul1/2/3 **+6.36**；many_mat_cal asm DIFF；`guarded-k` 仍拒条件累加 |
+| **LoopTiling** | 多层循环 strip-mine / 嵌套分块 | many_mat_cal/sl 受益；matmul2 **热点 k 环**默认不 tile（`ltInnerIsSimpleReduction` 过滤含 Mod 内层） |
+| **GuardedAccum** | `if (cond) acc += …` 分支less 化 | matmul2/sl/shuffle2 有 lift；**回归** crypto-1、03_sort1、01_mm2 |
+| **BitStubFold** | 内联前折叠 bitwise 模拟循环 | 防 crypto 类题 IR 膨胀 |
+| **ColumnMajor / Fusion** | 列主序识别、相邻循环融合 | experimental；Fusion 对 shuffle 类题有害 |
+| **KnapsackDp**（前端） | DP 表滚动优化 | 仅 dialect 前端 AST 改写，非 IR pass |
+
+**2026-05-30 本地 kernel bisect**（相对 all-on 关 pass 更慢 → 净收益为正，但仍 ×2 于 abbf8a4 baseline）：
+
+| 关 pass | kernel 合计 | 净收益 |
+|---------|------------:|-------:|
+| ALL_ON | 7933 ms | — |
+| NO_GUARDED_ACCUM | 11068 ms | +3135 ms |
+| NO_ROW_SCRATCH | 9136 ms | +1203 ms |
+| NO_LOOP_TILING | 9867 ms | +1934 ms |
+
+---
+
+### 6.3 已删除 / 移出管线的 Pass
+
+| 项 | 原因 |
+|----|------|
+| **Legacy AST O1 全套**（`loop_interchange/tiling/unroll`、`row_scratch_matmul` AST 版、`knapsack_dp` AST 版、`mm_hoist`、`land_lor_split`） | 官方 `-O1` 已不走 legacy；2026-05-30 删除 |
+| **`hir/`、`cfg/`、`dialect_hir/`** | 废弃 HIR→CFG 双轨 lowering |
+| **`pre-opt/Parallelize`、`Unswitch`、`Unroll`** | 未接入 dialect pipeline，源码已删 |
+| **`ir_cleanup`、`ir_dom`、`ir_reassociate`** | orphan 文件，未进 Makefile |
+| **`dialect_fallback`** | O1 不再 fallback 到 legacy |
+
+---
+
+### 6.4 存在问题 / 待修
+
+| Pass / 项 | 问题 | 状态 |
+|-----------|------|------|
+| **RemoveEmptyLoop**（空循环消除） | CFG 层删除「无副作用」循环；对跨块 use、隐式副作用判断保守不足，存在误删风险 | **仍在 pipeline**（loop 轮末 2×）；建议 bisect 验证后考虑移除或加严条件 |
+| **LoopDCE**（结构化无用循环消除） | 删 step=1 的纯循环体；与 `RemoveEmptyLoop` 职责重叠 | pre-opt 保留；与上项不同 IR 层 |
+| **DSE** | 同一 store 重复入 remove 集 → 双 erase UAF | **已修复**（`unordered_set`） |
+| **LoopTiling NESTED** | acc phi 跨 tile 未修全时 GVN crash | 默认关 `NESTED`；matmul2 k 分块仍 blocked |
+| **GuardedAccum** | 误匹配 matmul-step / conv2d | 已加 reject；crypto/sort 仍回归 |
+| **全量 kernel 合计** | all-on 7933 ms vs baseline 3877 ms（×2.05） | 需按题型选择性开 pass，非全开最优 |
+
+---
+
+### 6.5 基础设施改动（工程向）
+
+- **Dialect pipeline** 分阶段 pass 注册 + env bisect（`scripts/bisect-kernel-passes.sh`）
+- **Pureness + CallGraph**：impure 标记，支撑 GVN/DCE 安全 CSE
+- **2026-05-30 代码清理**：删 ~6000 行废弃路径；`make check` / 官方路径可用
+
+### 6.6 平台观测（2026-05-30，希冀）
+
+- 总分 **+6.50**；matmul1/2/3 **+6.36**；crypto 不变；many_mat_cal-1 −0.08
+
+---
+
+## 7. 现阶段问题
+
+| 问题 | 现状 | 影响 |
+|------|------|------|
+| **matmul2 热点未优化** | RSM `guarded-k` reject；GA `matmul-step` reject；LoopTiling 默认跳过含 Mod 内层 | 平台 matmul 仍落后榜首 ~3× |
+| **Pass 回归** | GuardedAccum/LoopTiling 害 crypto-1、shuffle1、03_sort1 | 全量 kernel 合计 ×2 vs baseline |
+| **MatTransposePair** | performance 集常 `rewrites=0`（IR 在 pass 前已变形） | transpose 题无明显 asm diff |
+| **双路径维护成本** | legacy 档 D + dialect 两套优化 | 改 pass 需明确路径 |
+| **本地 ≠ 官方** | libsysy / 机器 / 超时不同 | 以 AC + 趋势为准，不以绝对 ms 为准 |
+
+---
+
+## 8. 后续优化策略
+
+按 [`OPT_ACTION.md`](OPT_ACTION.md) Phase 顺序，**先 asm A/B 再 QEMU**：
+
+| Phase | 目标 | 关键动作 |
+|-------|------|---------|
+| **1 RowScratch** | many_mat_cal 全覆盖 | 逐条放宽 reject（一次一条） |
+| **2 LoopTiling** | matmul2 k 环 tile | acc-aware NESTED + phi 对齐；或补 LoopInterchange |
+| **3 GuardedAccum** | matmul2 branchless | 放宽 `matmul-step`，保留语义 |
+| **4 Gate** | 60/60 + kernel ≤ baseline×1.05 | case 级 pass 禁用 / 修回归 |
+
+**不做的事**（除非明确例外）：整 pipeline 重排、为涨分放宽 merge 条件、依赖 UB、匹配函数名。
+
+---
+
+## 9. 构建与常用命令
 
 ```sh
-make check
-USE_O1=1 ./scripts/docker-test-container.sh test /work/performance
-./scripts/docker-test-container.sh test "/work/2026初赛RISCV赛道功能用例/functional"
-make docker-local-eval
-make docker-test-functional
+make                  # 生成 ./compiler
+make clean && make -j4
+make check            # 编译冒烟
+make libsysy.a        # 本地运行时静态库
+
+# 官方等价用法
+./compiler -S -o out.s foo.sy       # O0
+./compiler -S -O1 -o out.s foo.sy   # O1（dialect 主路径）
 ```
 
-## `libsysy.a`：从哪里来、什么「版本」、怎么「下载」
+### 相关文档
 
-逻辑集中在 **`scripts/e2e-docker.sh`**（Docker 批测由 **`scripts/docker-test-container.sh`** 调用）。本仓库**不会**从网盘或赛方直接下载现成的 **`libsysy.a`**，也**没有** `libsysy.so` / `-shared` 动态库流程。
+- [`OPT_ACTION.md`](OPT_ACTION.md) — 优化 Phase 步骤与验收命令
+- [`EVAL_BUGLOG.md`](EVAL_BUGLOG.md) — 历史 WA/CE 与 fix 记录
+- [`scripts/opt-passes-on.sh`](scripts/opt-passes-on.sh) — 默认开启的 pass
 
-### 1. 存放与构建位置（容器内）
+---
 
-| 项 | 值 |
-|----|-----|
-| 工作目录 | `RT=/tmp/sysy-runtime-lib` |
-| 产物 | `$RT/build/libsysy.a`（如 `/tmp/sysy-runtime-lib/build/libsysy.a`） |
-| 交给批测 | `export LIBSYSY="$RT/build/libsysy.a"` → `scripts/run_sy_tests.sh` |
+## 10. 待补充的信息
 
-每次完整跑 `e2e-docker.sh`（非 `INSTALL_ONLY=1`）会先 **`rm -rf "$RT"`** 再重编，因此 **libsysy.a 是当次构建产物**，不是长期缓存的官方二进制。
+1. **最近几次希冀提交的分数**（功能/性能/分题耗时 CSV 或截图）
+2. **`performance/` 用例** 实际存放路径（仓库内 / Docker 挂载）
+3. 若计划 **O0 也切 dialect**（可彻底删 `lexer/` legacy 与 `ir_*`），需单独立项
 
-### 2. 运行时 C 源：两条路径（二选一）
+---
 
-**路径 A（当前仓库默认）** — 若挂载进容器存在：
-
-`/work/runtime/sysy_runtime.c`
-
-则用本地 C 源交叉编译为 `sysy.o`，**不 clone**。「版本」即 **Git 里这份 `runtime/sysy_runtime.c` 的内容**；是否与本届希冀官方运行时逐字节一致，需你们自行对照大赛资料或官方库维护。
-
-**路径 B（仅当本地没有 `sysy_runtime.c` 时）** — 从网络拉**源码仓库**（不是下载 `.a`）：
-
-`git clone --depth 1 https://github.com/pku-minic/sysy-runtime-lib.git`
-
-编译 `$RT/src/src/sysy.c`。脚本**未固定** branch/tag/commit，`--depth 1` 表示默认分支**当时最新**提交，**不可复现**到固定版本（若要固定，需自行改脚本加 `-b` 或 `checkout`）。此路径下 `apt install` 会额外装 **`ca-certificates`**、**`git`**。
-
-### 3. 从 `.o` 到 `libsysy.a`
-
-`riscv64-linux-gnu-gcc -c` → `riscv64-linux-gnu-ar rc` → `riscv64-linux-gnu-ranlib`。工具链来自 Ubuntu 包 **`gcc-riscv64-linux-gnu`**、**`binutils-riscv64-linux-gnu`** 等（同脚本 `apt-get install`）。
-
-### 4. Docker 如何串起来
-
-| 阶段 | 行为 |
-|------|------|
-| `make docker-init` | `docker-test-container.sh` → `e2e-docker.sh` 且 **`INSTALL_ONLY=1`**：只做 apt/工具链，**不**编 libsysy |
-| `make docker-test-functional` 等 | 再次跑 `e2e-docker.sh`（通常 **`SKIP_APT=1`**，缺工具链会自动补 apt），**重建** libsysy.a 并批测 |
-
-### 5. 与「官方 libsysy.a」、本机 `make sytest` 的关系
-
-- **希冀评测**：组委会环境使用**官方提供的静态运行时**（习惯称 `libsysy.a`）；与本文 Docker 里**现场 ar 出来的**库在实现细节上可能略有差别，本地对拍以 **`.out` 一致** 为准。
-- **本机不用 Docker**：`make sytest` / `scripts/run_sy_tests.sh` 要求你自行设置 **`LIBSYSY=/path/to/libsysy.a`**（可来自大赛资料包、或自己用官方/ minic 源码交叉编译），脚本**不会**替你下载。
-- **链接模型**：默认 **`LINK_FLAGS=-static -mcmodel=medany`**，与赛方 RISC-V 大地址模型说明对齐。
-
-## 仓库目录（概要）
-
-| 路径 | 内容 |
-|------|------|
-| `src/` | 编译器 C++ 源码（唯一 `main` 在 `src/main.cpp`） |
-| `scripts/` | 批测、`eval-runtime` 性能评测、`runtime-summary`、`e2e-docker`、`run_sy_tests` 等 |
-| `runtime/` | Docker 内用于生成 `libsysy.a` 的 `sysy_runtime.c` |
-| `examples/` | 冒烟与小型 golden |
-| `tools/` | 辅助脚本（如 `split_compiler.py`） |
-| `performance/` | 性能用例目录（默认 `.gitignore`；放仓库根便于 `DOCKER_PERF`） |
-
-## 源码布局（模块化）
-
-| 文件 | 职责 |
-|------|------|
-| `src/main.cpp` | 命令行、`compileFile` 流水线入口 |
-| `src/common.*` | `CompileError`、文件读写、`product`、`floatBits`、汇编字符串转义 |
-| `src/token.h` | 词法记号 |
-| `src/ast.h` | AST / 符号 / 类型 |
-| `src/lexer.*` | 词法分析 |
-| `src/parser.*` | 递归下降语法分析 |
-| `src/semantic.*` | 语义分析与常量折叠 |
-| `src/codegen.*` | RISC-V64 汇编生成（含 `-O1` 下 IR 后端发射） |
-| `src/ir.h` | 中端 IR（含 `Label`/`J`/`Beqz` 控制流、`IRBlock` 视野与 CFG 刷新） |
-| `src/ir_build.cpp` | 将满足 `irFunctionEligible` 的函数体降为 IR，并刷新基本块划分 |
-| `src/ir_opt.cpp` | 常量折叠、CSE、Copy 合并、不变量外提、块级活跃信息辅助的 slot 等 |
-
-从旧版 **单文件** 重建模块时：先从 Git 历史恢复当时的 `compiler.cpp` 于仓库根，再运行 `python3 tools/split_compiler.py`（输出写入 **`src/`**）。
-
-## 实现范围与后续优化方向（概要）
-
-**当前能力**：直接生成 RISC-V64；语言层支持 **`<<` / `>>`**（32 位有符号语义：左移按低位掩码、右移为算术右移；移位量按低 5 位）；`-O1` 下对满足 `irFunctionEligible`（无局部数组、`&&`/`||` 等约束）的函数优先走 **IR → 优化 → 槽位分配 → 发射**；**允许含函数调用的函数**进入 IR（与寄存器/活跃区间协同演进中）；仍为 **扁平 `insts` 发射**，`IRBlock` 为分析与作用域辅助。
-
-**与性能测试强相关的后续路线**（按投入/收益权衡推进）：
-
-1. **IR 与控制流**：由单块 IR 扩展为带 **Label / 条件分支 / 循环** 的非 SSA CFG，再上做跨块的 **常量传播、DCE、CSE** 与 **load/store forwarding**。
-2. **循环专项**：不变量外提、归纳变量与 **数组基址 + 指针步进**（减少每轮 `i * stride`）。
-3. **寄存器分配**：在基本块或全局上做活跃变量分析，将常用 vreg 固定在 **t/a/ft**，跨调用再 spill。
-4. **除法/取模**：对 32 位有符号除常数实现 **magic multiply**（处理负除数、`INT_MIN`、`-1` 等边界），与现有 2 的幂路径互补。
-5. **内联**：在无副作用前提下放宽小函数内联（参数个数、多语句、float 返回等）。
-6. **语义兜底**：调用实参个数/类型、const 左值赋值等在进入激进优化前严格报错。
-
-### 性能榜单对照：慢用例 → 瓶颈假设 → 推荐落地顺序
-
-下面与你贴的榜单（`conv2d-1` ~244s、`many_mat_cal-*` ~150s、`transpose2` ~119s、`matmul2` ~59s 等）对齐，便于按**投入产出**排期（均需 **`compiler … -O1`** + 对拍正确后再看计时）。
-
-| 热点类型 | 代表用例 | 典型瓶颈 | 优先策略 |
-|----------|----------|----------|----------|
-| 多维矩阵 / 卷积 | `conv2d-*`, `matmul*`, `01_mm*`, `many_mat_cal*` | 内层 `idx`/下标乘法重复、`%`/除法在循环内、访存顺序差 | **跨循环 LICM**（把 `r*N+c`、`base` 地址不变量提出）；**归纳变量**（指针步进替代每轮 `i*stride`）；可选 **分块/交换循环**（需正确性证明） |
-| 转置 / 访存模式 | `transpose*`, `matmul2` 中 `b[i][j]=a[j][i]` | cache miss、行优先 vs 列优先 | **循环交换 + 分块**（tiling）；编译器侧可做 **末维连续访问优先** 的启发式 |
-| 背包 / DP | `knapsack_naive*` | 内层循环访存 + 分支 | **边界分支外提**、减少 redundant load、IR **全局数组 load 外提**（已有雏形，可扩展到 `LoadMem` 的不变基址） |
-| Huffman / 排序 / 复杂控制流 | `huffman*`, `03_sort*` | 分支预测、指针追逐 | **内联**小函数、**块布局**（hot edge fall-through）；大树堆操作可考虑 **迭代化**（源码级） |
-| CRC / 位运算 | `crc*` | 内层查表或逐位 | **查表不变量外提**、** strength reduce**（对固定宽度的移位/掩码） |
-| FFT / 浮点 | `fft*` | `float` 路径、调用 | 保证 **float 寄存器**尽量驻留；减少 `fcvt`；小函数 **内联** |
-
-### 分阶段实现步骤（建议在仓库内的落点）
-
-**阶段 A — 低风险、见效快（1～3 天量级）**
-
-1. **IR：固定点多轮块优化（已实现）**：`irOptimizeBlock` 外层按 **`irInstructionFingerprint`** 迭代（最多 16 轮）；每轮仍含 hoist、单遍扫描 + CSE/常量折叠、DCE（实现于 `irOptimizeBlockOneRound`）。**`codegen.cpp` 中只对 IR 函数调用一次 `irOptimizeBlock`**。
-2. **窥孔 / 强度削弱（部分落地）**：IR 内需已含 **2 的幂乘法→`Sll`**、**/±1、`0 / c`、`0 % c`** 常量折叠、`Rem`/`Div`/`Mul`/`Add`/`Sub`/`Neg`/`F*` 等对 `codegen.cpp`/`emitIr*` 的补充请继续按热点加；汇编侧 **magic 有符号除常数** 仍在发射阶段。
-3. **Profiling（已实现）**：日常批量测性能用 **`make runtime-eval` + `make runtime-summary`**（见上文「本地性能测试」）；单题用 **`make perf-profile`**；改优化前后用 **`make runtime-compare`** 或 **`eval-vs-baseline.sh`**。汇编行数粗筛仍可用 **`make size-report`**。
-
-**阶段 B — 中端（1～2 周）**
-
-4. **放宽 `irFunctionEligible`**：允许**小**局部数组或带 `LeaLocal` 的栈槽，使含 `temp`/`buf` 的核心循环仍走 IR（`ir_build.cpp` + `ir.h` 扩展）。
-5. **跨基本块 LICM**：在已有 `irRefreshCFG` / 块划分之上，对「单入口循环」把不变 `LoadGlobal` / `LeaGlobal+offset` / 纯算术提到循环头（扩展 `ir_opt.cpp` 里 hoist 逻辑）。
-6. **简单 mem2reg 或 SSA 构造**：减少跨迭代的虚假依赖，为后续 CSE 服务。
-
-**阶段 C — 进攻榜单顶部（持续）**
-
-7. **仿射访问分析**：识别 `a[i][k]`、`b[k][j]` 的仿射关系，做 **tile** 或 **unroll**（需上限防止代码爆炸）。
-8. **协作式优化**：与赛题允许的 **手写 intrinsic** 无关时，仅靠语言子集则依赖上述通用循环与访存优化。
-
-命令行会正确识别 **`-O1`**；语义阶段含基础常量折叠，**`-O1`** 将选项传入 `CodeGen` 与 IR 流水线。
+*最后更新：2026-05-30 — 删除 legacy O1 AST pass；O1 仅 dialect；O0 保留 legacy 最小路径。*

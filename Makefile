@@ -13,8 +13,6 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/codegen.cpp $(SRCDIR)/ir_build.cpp $(SRCDIR)/ir_opt.cpp \
 	$(SRCDIR)/ir_loop_opt.cpp $(SRCDIR)/ir_regalloc.cpp $(SRCDIR)/ir_mem2reg.cpp $(SRCDIR)/ir_expr_gvn.cpp \
 	$(SRCDIR)/ir_schedule.cpp \
-	$(SRCDIR)/loop_interchange.cpp $(SRCDIR)/loop_tiling.cpp $(SRCDIR)/land_lor_split.cpp \
-	$(SRCDIR)/knapsack_dp.cpp $(SRCDIR)/mm_hoist.cpp $(SRCDIR)/loop_unroll.cpp $(SRCDIR)/row_scratch_matmul.cpp \
 	$(SRCDIR)/rv/rv_asm.cpp $(SRCDIR)/rv/rv_passes.cpp $(SRCDIR)/rv/BranchPeephole.cpp \
 	$(SRCDIR)/rv/RegPeephole.cpp \
 	$(SRCDIR)/rv/InstCombine.cpp $(SRCDIR)/rv/Schedule.cpp $(SRCDIR)/rv/StrengthReduct.cpp \
@@ -36,7 +34,7 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/mlir_rv/StrengthReduct.cpp $(SRCDIR)/mlir_rv/Schedule.cpp $(SRCDIR)/mlir_rv/RegAlloc.cpp $(SRCDIR)/mlir_rv/RegPeephole.cpp \
 	$(SRCDIR)/mlir_rv/Dump.cpp \
 	$(SRCDIR)/rv_mlir_pipeline.cpp \
-	$(SRCDIR)/dialect_pipeline.cpp $(SRCDIR)/dialect_fallback.cpp \
+	$(SRCDIR)/dialect_pipeline.cpp \
 	$(SRCDIR)/dialect_parse/Lexer.cpp $(SRCDIR)/dialect_parse/LexerKeywords.cpp \
 	$(SRCDIR)/dialect_parse/LexerNext.cpp 	$(SRCDIR)/dialect_parse/ParserConst.cpp \
 	$(SRCDIR)/dialect_parse/ParserToken.cpp $(SRCDIR)/dialect_parse/ParserType.cpp \

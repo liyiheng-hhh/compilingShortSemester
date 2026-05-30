@@ -183,7 +183,7 @@ void DSE::run() {
   // The second store is useless.
   // Only do this on each basic block to avoid complicated analysis.
   auto loads = module->findAll<LoadOp>();
-  std::vector<Op*> remove;
+  std::unordered_set<Op*> remove;
   for (auto load : loads) {
     auto loadAddr = load->DEF();
     for (auto runner = load->nextOp(); runner; runner = runner->nextOp()) {
@@ -192,7 +192,7 @@ void DSE::run() {
         if (value == load && addr != loadAddr)
           continue;
         if (value == load && addr == loadAddr) {
-          remove.push_back(runner);
+          remove.insert(runner);
           continue;
         }
         break;
@@ -213,7 +213,7 @@ void DSE::run() {
         break;
       if (isa<StoreOp>(runner)) {
         if (runner->DEF(1) == storeAddr) {
-          remove.push_back(store);
+          remove.insert(store);
           continue;
         }
         break;
