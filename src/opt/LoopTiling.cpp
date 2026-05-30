@@ -230,7 +230,25 @@ bool ltIsUnitIvStepOnLatch(PhiOp *phi, LoopInfo *loop) {
          (b == phi && isa<IntOp>(a) && V(a) == 1);
 }
 
+// Check if a phi's entry value (preheader incoming) is a constant literal.
+bool ltPhiEntryIsConst(PhiOp *phi, LoopInfo *loop) {
+  if (!phi || !loop || !loop->preheader)
+    return false;
+  const auto &ops = phi->getOperands();
+  const auto &attrs = phi->getAttrs();
+  for (int i = 0; i < (int) attrs.size(); i++) {
+    auto from = dyn_cast<FromAttr>(attrs[i]);
+    if (!from || from->bb != loop->preheader)
+      continue;
+    auto v = ops[i].defining;
+    if (isa<IntOp>(v) || isa<FloatOp>(v))
+      return true;
+  }
+  return false;
+}
+
 // Inner strip-mine may carry an accumulator phi alongside the IV.
+// Allow accumulator only if its entry value is a constant (e.g. temp=0).
 bool ltInnerPhisOkForStripMine(LoopInfo *inner, Op *innerIV) {
   if (!inner || !innerIV)
     return false;
@@ -240,11 +258,15 @@ bool ltInnerPhisOkForStripMine(LoopInfo *inner, Op *innerIV) {
       continue;
     if (ltIsUnitIvStepOnLatch(phi, inner))
       return false;
+    // Non-IV phi is allowed only if it's an accumulator with const entry.
+    if (!ltPhiEntryIsConst(phi, inner))
+      return false;
   }
   return true;
 }
 
 // Outer loop may hold loop-invariant state (e.g. temp/i) when tiling the inner IV.
+// Allow only if the state phi has const entry (or is not an accumulator).
 bool ltOuterPhisOkForStripMine(LoopInfo *outer, Op *outerIV) {
   if (!outer || !outerIV)
     return false;
@@ -253,6 +275,8 @@ bool ltOuterPhisOkForStripMine(LoopInfo *outer, Op *outerIV) {
     if (!phi || phi == outerIV)
       continue;
     if (ltIsUnitIvStepOnLatch(phi, outer))
+      return false;
+    if (!ltPhiEntryIsConst(phi, outer))
       return false;
   }
   return true;
