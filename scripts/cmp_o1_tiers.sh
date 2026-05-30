@@ -7,6 +7,8 @@
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=opt-passes-on.sh
+source "$ROOT/scripts/opt-passes-on.sh"
 COMPILER="${COMPILER:-$ROOT/compiler}"
 RISCV_GCC="${RISCV_GCC:-riscv64-linux-gnu-gcc}"
 QEMU="${QEMU:-qemu-riscv64}"

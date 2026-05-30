@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 两份 CSV A/B 对比（改 pass 前后、或与本机 baseline 编译器对比）
+# 默认用 median_kernel_s（平台 kernel ms），不用 median_ms（QEMU wall，h-5/shuffle 会失真）。
 #
 #   ./scripts/eval-vs-baseline.sh baseline.csv candidate.csv
 #   ./scripts/eval-vs-baseline.sh --run performance O1 /path/to/other/compiler
@@ -38,59 +39,68 @@ B_CSV="$2"
 STAGE_A_RATIO="${VS_BASELINE_STAGE_A_RATIO:-1.15}"
 STAGE_B_RATIO="${VS_BASELINE_STAGE_B_RATIO:-1.05}"
 
-declare -A a_ms a_pass
-while IFS=, read -r _ cid _ _ _ _ pass med _; do
-  [[ "$cid" == "case_id" ]] && continue
-  a_pass["$cid"]="$pass"
-  a_ms["$cid"]="$med"
-done <"$A_CSV"
+python3 - "$A_CSV" "$B_CSV" "$STAGE_A_RATIO" "$STAGE_B_RATIO" << 'PY'
+import csv, sys
 
-ratios=()
-regressed=0
-improved=0
-common=0
+a_csv, b_csv, stage_a, stage_b = sys.argv[1:5]
+stage_a, stage_b = float(stage_a), float(stage_b)
 
-printf '%-40s %10s %10s %10s %s\n' "case_id" "base_ms" "cand_ms" "ratio" "verdict"
-while IFS=, read -r _ cid _ _ _ _ pass med _; do
-  [[ "$cid" == "case_id" ]] && continue
-  [[ -z "${a_ms[$cid]+x}" ]] && continue
-  [[ "${a_pass[$cid]}" != "1" || "$pass" != "1" ]] && continue
-  [[ -z "${a_ms[$cid]}" || -z "$med" ]] && continue
-  common=$((common + 1))
-  ratio="$(awk -v c="$med" -v b="${a_ms[$cid]}" 'BEGIN { printf "%.4f", c / b }')"
-  ratios+=("$ratio")
-  verdict="ok"
-  if awk -v r="$ratio" 'BEGIN { exit !(r > 1.001) }'; then
-    regressed=$((regressed + 1))
-    verdict="slower"
-  elif awk -v r="$ratio" 'BEGIN { exit !(r < 0.999) }'; then
-    improved=$((improved + 1))
-    verdict="faster"
-  fi
-  printf '%-40s %10s %10s %10s %s\n' "$cid" "${a_ms[$cid]}" "$med" "$ratio" "$verdict"
-done <"$B_CSV"
+def load(path):
+    out = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            if row.get("pass") != "1":
+                continue
+            cid = row["case_id"]
+            ks = row.get("median_kernel_s", "").strip()
+            if ks:
+                out[cid] = float(ks) * 1000.0
+            else:
+                out[cid] = float(row["median_ms"])
+    return out
 
-median_ratio="N/A"
-if [[ ${#ratios[@]} -gt 0 ]]; then
-  median_ratio="$(printf '%s\n' "${ratios[@]}" | sort -n | awk '
-    { a[NR]=$1 }
-    END {
-      if (NR % 2 == 1) printf "%.4f", a[(NR+1)/2]
-      else printf "%.4f", (a[NR/2] + a[NR/2+1]) / 2
-    }')"
-fi
+base = load(a_csv)
+cand = load(b_csv)
+common = sorted(set(base) & set(cand))
+ratios = []
+regressed = improved = 0
+base_sum = cand_sum = 0.0
 
-echo ""
-echo "common_pass_cases=$common regressed=$regressed improved=$improved"
-echo "median_ratio(candidate/baseline)=$median_ratio"
-echo "gate stageA: median<=$STAGE_A_RATIO  stageB: median<=$STAGE_B_RATIO"
+print(f"{'case_id':<40} {'base_ms':>10} {'cand_ms':>10} {'ratio':>10} verdict")
+print(f"{'':40} {'(kernel)':>10} {'(kernel)':>10}")
+for cid in common:
+    b, c = base[cid], cand[cid]
+    base_sum += b
+    cand_sum += c
+    ratio = c / b if b > 0 else 0.0
+    ratios.append(ratio)
+    if ratio > 1.001:
+        regressed += 1
+        verdict = "slower"
+    elif ratio < 0.999:
+        improved += 1
+        verdict = "faster"
+    else:
+        verdict = "ok"
+    print(f"{cid:<40} {b:10.3f} {c:10.3f} {ratio:10.4f} {verdict}")
 
-gate="fail"
-if [[ "$median_ratio" != "N/A" ]]; then
-  if awk -v m="$median_ratio" -v t="$STAGE_A_RATIO" 'BEGIN { exit !(m <= t) }'; then
-    gate="stageA"
-  elif awk -v m="$median_ratio" -v t="$STAGE_B_RATIO" 'BEGIN { exit !(m <= t) }'; then
-    gate="stageB"
-  fi
-fi
-echo "gate=$gate"
+ratios.sort()
+n = len(ratios)
+if n:
+    median = ratios[n // 2] if n % 2 else (ratios[n // 2 - 1] + ratios[n // 2]) / 2
+else:
+    median = float("nan")
+
+print()
+print(f"common_pass_cases={n} regressed={regressed} improved={improved}")
+print(f"kernel_sum base={base_sum:.3f} cand={cand_sum:.3f} sum_ratio={cand_sum/base_sum:.4f}")
+print(f"median_ratio(candidate/baseline)={median:.4f}  metric=platform_kernel")
+print(f"gate stageA: median<={stage_a}  stageB: median<={stage_b}")
+if median <= stage_b:
+    gate = "stageB"
+elif median <= stage_a:
+    gate = "stageA"
+else:
+    gate = "fail"
+print(f"gate={gate}")
+PY

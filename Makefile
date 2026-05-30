@@ -151,7 +151,7 @@ perf-profile: compiler
 
 # ---- 运行时性能评测（eval-runtime 工作流）----
 #   make libsysy.a
-#   make runtime-eval SUITE=performance OPT=O1
+#   RUNTIME_PERF_TIMEOUT_SEC=120 make runtime-eval SUITE=performance OPT=O1
 #   make runtime-summary
 #   make runtime-compare SUITE=performance
 #   make runtime-gate PERF_TIMEOUT=20

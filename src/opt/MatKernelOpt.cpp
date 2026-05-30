@@ -1,6 +1,7 @@
 #include "Passes.h"
 #include "LoopPasses.h"
 #include "../pre-opt/PreAttrs.h"
+#include "../common.h"
 
 #include <functional>
 #include <set>
@@ -323,7 +324,7 @@ bool mkoLatchMerge(BasicBlock *mergeBB, BasicBlock *&header) {
   return header != nullptr;
 }
 
-// Merge must be a single-acc latch: one phi plus optional iv bump, no other phis.
+// Merge must be a single-acc latch: one acc phi plus optional iv bump / loop branch.
 bool mkoAccLatchMerge(BasicBlock *mergeBB, PhiOp *accPhi) {
   if (!mergeBB || !accPhi)
     return false;
@@ -335,13 +336,45 @@ bool mkoAccLatchMerge(BasicBlock *mergeBB, PhiOp *accPhi) {
       phis++;
       continue;
     }
-    if (isa<GotoOp>(op))
-      continue;
-    if (isa<AddIOp>(op))
-      continue;
-    return false;
+    if (isa<StoreOp>(op) || isa<CallOp>(op) || op->has<ImpureAttr>())
+      return false;
   }
   return phis == 1;
+}
+
+bool mkoGuardedAddOrientation(BasicBlock *bb, BranchOp *br, BasicBlock *&thenBB,
+                             BasicBlock *&mergeBB, bool &addInElse, Op *&acc,
+                             Op *&addend, AddIOp *&addInst) {
+  thenBB = mergeBB = nullptr;
+  addInElse = false;
+  acc = addend = nullptr;
+  addInst = nullptr;
+  if (!bb || !br)
+    return false;
+
+  BasicBlock *candidates[2] = { TARGET(br), ELSE(br) };
+  for (int i = 0; i < 2; i++) {
+    BasicBlock *thenCand = candidates[i];
+    BasicBlock *mergeCand = candidates[1 - i];
+    if (!thenCand || !mergeCand)
+      continue;
+    auto *thenTerm = thenCand->getLastOp();
+    if (!thenTerm || !thenTerm->has<TargetAttr>() || TARGET(thenTerm) != mergeCand)
+      continue;
+    Op *accCand = nullptr;
+    Op *addendCand = nullptr;
+    auto *addCand = mkoFindGuardedAdd(thenCand, accCand, addendCand);
+    if (!addCand || !mkoPureThenBody(thenCand, addCand))
+      continue;
+    thenBB = thenCand;
+    mergeBB = mergeCand;
+    addInElse = (thenCand == ELSE(br));
+    acc = accCand;
+    addend = addendCand;
+    addInst = addCand;
+    return true;
+  }
+  return false;
 }
 
 void mkoHoistThenCompute(BasicBlock *dst, BasicBlock *thenBB, AddIOp *addInst) {
@@ -354,6 +387,39 @@ void mkoHoistThenCompute(BasicBlock *dst, BasicBlock *thenBB, AddIOp *addInst) {
   }
   for (auto *op : toMove)
     op->moveBefore(br);
+}
+
+void mkoFinalizeGuardedAccumCompact(FuncOp *func, BasicBlock *bb, BasicBlock *thenBB,
+                                    BasicBlock *mergeBB, BranchOp *br, Op *cond, Op *acc,
+                                    Op *addend, AddIOp *addInst, PhiOp *accPhi,
+                                    bool addInElse) {
+  Builder builder;
+  builder.setBeforeOp(br);
+
+  mkoHoistThenCompute(bb, thenBB, addInst);
+
+  auto zero = builder.create<IntOp>({ new IntAttr(0) });
+  Op *scaled = addInElse
+                   ? static_cast<Op*>(builder.create<SelectOp>({ cond, zero, addend }))
+                   : static_cast<Op*>(builder.create<SelectOp>({ cond, addend, zero }));
+  auto newAcc = builder.create<AddIOp>(std::vector<Value>{ acc, scaled });
+
+  builder.replace<GotoOp>(br, { new TargetAttr(mergeBB) });
+
+  for (int i = accPhi->getOperandCount() - 1; i >= 0; i--) {
+    const auto &attrs = accPhi->getAttrs();
+    if (i < (int)attrs.size() && FROM(attrs[i]) == thenBB)
+      accPhi->removeOperand(i);
+  }
+  for (int i = 0; i < accPhi->getOperandCount(); i++) {
+    const auto &attrs = accPhi->getAttrs();
+    if (i < (int)attrs.size() && FROM(attrs[i]) == bb)
+      accPhi->setOperand(i, newAcc);
+  }
+
+  func->getRegion()->updatePreds();
+  thenBB->forceErase();
+  func->getRegion()->updatePreds();
 }
 
 void mkoFinalizeGuardedAccum(FuncOp *func, BasicBlock *bb, BasicBlock *thenBB,
@@ -405,31 +471,33 @@ void mkoFinalizeGuardedAccum(FuncOp *func, BasicBlock *bb, BasicBlock *thenBB,
 }
 
 bool mkoTryGuardedAccum(FuncOp *func, BasicBlock *bb, int &converted) {
+  const bool debug = envFlagTruthy("SYSY_CC_GUARDED_ACCUM_DEBUG");
+  auto dbg = [&](const char *why) {
+    if (debug)
+      std::cerr << "[guarded-accum] reject " << why << "\n";
+  };
+
   auto *br = dyn_cast<BranchOp>(bb->getLastOp());
   if (!br || br->getOperandCount() != 1 || !br->has<TargetAttr>() || !br->has<ElseAttr>())
     return false;
 
-  BasicBlock *thenBB = TARGET(br);
-  BasicBlock *mergeBB = ELSE(br);
-  if (!thenBB || !mergeBB)
-    return false;
-  auto *thenTerm = thenBB->getLastOp();
-  if (!thenTerm || !thenTerm->has<TargetAttr>() || TARGET(thenTerm) != mergeBB)
-    return false;
-
+  BasicBlock *thenBB = nullptr;
+  BasicBlock *mergeBB = nullptr;
+  bool addInElse = false;
   Op *acc = nullptr;
   Op *addend = nullptr;
-  auto *addInst = mkoFindGuardedAdd(thenBB, acc, addend);
-  if (!addInst || !mkoPureThenBody(thenBB, addInst))
-    return false;
-
-  BasicBlock *header = nullptr;
-  if (!mkoLatchMerge(mergeBB, header))
+  AddIOp *addInst = nullptr;
+  if (!mkoGuardedAddOrientation(bb, br, thenBB, mergeBB, addInElse, acc, addend, addInst))
     return false;
 
   Op *cond = br->DEF(0);
-  if (!cond || cond->getResultType() != Value::i32)
+  if (!cond || cond->getResultType() != Value::i32) {
+    dbg("cond");
     return false;
+  }
+
+  auto *mergeTerm = mergeBB->getLastOp();
+  bool compact = mergeTerm && isa<BranchOp>(mergeTerm);
 
   for (auto *phi : mergeBB->getPhis()) {
     if (phi->getOperandCount() != 2)
@@ -438,19 +506,39 @@ bool mkoTryGuardedAccum(FuncOp *func, BasicBlock *bb, int &converted) {
     Op *fromThen = mkoPhiIncoming(cast<PhiOp>(phi), thenBB);
     if (!fromPred || !fromThen)
       continue;
-    if (!mkoSame(fromPred, acc))
+    if (!mkoSame(fromPred, acc)) {
+      dbg("acc-mismatch");
       continue;
-    if (!mkoSame(fromThen, addInst))
+    }
+    if (!mkoSame(fromThen, addInst)) {
+      dbg("add-mismatch");
       continue;
+    }
     auto *accPhi = cast<PhiOp>(phi);
-    if (!mkoAccLatchMerge(mergeBB, accPhi))
+    if (!mkoAccLatchMerge(mergeBB, accPhi)) {
+      dbg("merge-shape");
       continue;
+    }
 
-    mkoFinalizeGuardedAccum(func, bb, thenBB, mergeBB, header, br, cond, acc,
-                            addend, addInst, accPhi);
+    if (compact) {
+      mkoFinalizeGuardedAccumCompact(func, bb, thenBB, mergeBB, br, cond, acc, addend,
+                                     addInst, accPhi, addInElse);
+    } else {
+      if (addInElse)
+        continue;
+      BasicBlock *header = nullptr;
+      if (!mkoLatchMerge(mergeBB, header))
+        continue;
+      mkoFinalizeGuardedAccum(func, bb, thenBB, mergeBB, header, br, cond, acc, addend,
+                              addInst, accPhi);
+    }
+    if (debug)
+      std::cerr << "[guarded-accum] lifted compact=" << compact
+                << " addInElse=" << addInElse << "\n";
     converted++;
     return true;
   }
+  dbg("no-phi");
   return false;
 }
 

@@ -20,6 +20,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=opt-passes-on.sh
+source "$ROOT/scripts/opt-passes-on.sh"
 # shellcheck source=runtime_common.sh
 source "$ROOT/scripts/runtime_common.sh"
 

@@ -372,6 +372,7 @@ struct RsmMatmulShape {
   StoreOp *store = nullptr;
   std::string aName;
   std::string cName;
+  std::string outName;  // store target; equals aName when output overlaps saxpy matrix
   Op *iBound = nullptr;
   Op *jBound = nullptr;
   Op *kBound = nullptr;
@@ -423,6 +424,32 @@ struct RsmSumReduction {
   LoadOp *rhs = nullptr;
 };
 
+// Latch update may be add(phi, mul) or merge phi(phi, add(phi, mul)) from guarded accum.
+MulIOp *rsmReductionMulFromStep(PhiOp *phi, Op *step) {
+  if (!phi || !step)
+    return nullptr;
+  if (auto mul = dyn_cast<MulIOp>(step))
+    return mul;
+  if (auto add = dyn_cast<AddIOp>(step)) {
+    Op *a = add->DEF(0);
+    Op *b = add->DEF(1);
+    if (a == phi)
+      return dyn_cast<MulIOp>(b);
+    if (b == phi)
+      return dyn_cast<MulIOp>(a);
+  }
+  if (auto merge = dyn_cast<PhiOp>(step)) {
+    for (int i = 0; i < merge->getOperandCount(); i++) {
+      Op *incoming = merge->DEF(i);
+      if (incoming == phi)
+        continue;
+      if (auto mul = rsmReductionMulFromStep(phi, incoming))
+        return mul;
+    }
+  }
+  return nullptr;
+}
+
 bool rsmFindKLoopSumReduction(LoopInfo *kLoop, RsmSumReduction &red) {
   red = {};
   if (!kLoop)
@@ -462,12 +489,7 @@ bool rsmFindKLoopSumReduction(LoopInfo *kLoop, RsmSumReduction &red) {
       if (!rawStart || !isa<IntOp>(rawStart) || V(rawStart) != 0)
         continue;
 
-      MulIOp *mul = dyn_cast<MulIOp>(step);
-      if (!mul && isa<AddIOp>(step)) {
-        Op *a = step->DEF(0);
-        Op *b = step->DEF(1);
-        mul = dyn_cast<MulIOp>(a == phi ? b : (b == phi ? a : nullptr));
-      }
+      MulIOp *mul = rsmReductionMulFromStep(phi, step);
       if (!mul)
         continue;
 
@@ -514,34 +536,57 @@ bool rsmValidateReduction(StoreOp *store, LoopInfo *kLoop,
   return rsmStoredMatchesSumValue(store->DEF(0), red.sumPhi, red.step);
 }
 
-bool rsmValidateAddressShape(StoreOp *store, const std::vector<LoadOp*> &loads,
-                          const std::string &aName, const std::string &cName,
-                          Op *i, Op *j, Op *k) {
+// Classic matmul indexing: out[i][j] = sum_k coeff[i][k] * row[k][j].
+// coeff matrix uses (i,k); saxpy row matrix uses (k,j); store uses (i,j).
+bool rsmResolveMatmulGlobals(StoreOp *store, const std::vector<LoadOp*> &loads,
+                             Op *i, Op *j, Op *k,
+                             std::string &outName, std::string &aName, std::string &cName) {
+  if (loads.size() != 2)
+    return false;
+
+  auto storeGlobals = rsmGlobalsIn(store->DEF(1));
+  if (storeGlobals.size() != 1)
+    return false;
+  outName = *storeGlobals.begin();
+
   auto storeAddr = store->DEF(1);
   if (!rsmUsesValue(storeAddr, i) || !rsmUsesValue(storeAddr, j) || rsmUsesValue(storeAddr, k))
     return false;
 
-  bool sawA = false;
-  bool sawC = false;
+  LoadOp *rowLoad = nullptr;
+  LoadOp *coeffLoad = nullptr;
   for (auto load : loads) {
     auto addr = load->DEF(0);
     auto names = rsmGlobalsIn(addr);
     if (names.size() != 1)
       return false;
-    const auto &name = *names.begin();
-    if (name == aName) {
-      if (!rsmUsesValue(addr, k) || !rsmUsesValue(addr, j) || rsmUsesValue(addr, i))
-        return false;
-      sawA = true;
-    } else if (name == cName) {
-      if (!rsmUsesValue(addr, i) || !rsmUsesValue(addr, k) || rsmUsesValue(addr, j))
-        return false;
-      sawC = true;
-    } else {
+    bool hasI = rsmUsesValue(addr, i);
+    bool hasJ = rsmUsesValue(addr, j);
+    bool hasK = rsmUsesValue(addr, k);
+    if (hasK && hasJ && !hasI)
+      rowLoad = load;
+    else if (hasI && hasK && !hasJ)
+      coeffLoad = load;
+    else
       return false;
-    }
   }
-  return sawA && sawC;
+  if (!rowLoad || !coeffLoad)
+    return false;
+
+  aName = *rsmGlobalsIn(rowLoad->DEF(0)).begin();
+  cName = *rsmGlobalsIn(coeffLoad->DEF(0)).begin();
+  return true;
+}
+
+bool rsmValidateAddressShape(StoreOp *store, const std::vector<LoadOp*> &loads,
+                          const std::string &aName, const std::string &cName,
+                          Op *i, Op *j, Op *k) {
+  std::string outName;
+  std::string resolvedA;
+  std::string resolvedC;
+  if (!rsmResolveMatmulGlobals(store, loads, i, j, k, outName, resolvedA, resolvedC))
+    return false;
+  return resolvedA == aName && resolvedC == cName;
 }
 
 bool rsmCollectReductionLoads(LoopInfo *kLoop, std::vector<LoadOp*> &loads) {
@@ -574,6 +619,10 @@ bool rsmTryMatchMatmulFromK(LoopInfo *kLoop, const std::map<std::string, GlobalO
   std::vector<LoadOp*> loads;
   if (!rsmCollectReductionLoads(kLoop, loads))
     return reject("loads");
+
+  RsmSumReduction redForm;
+  if (rsmFindKLoopSumReduction(kLoop, redForm) && isa<PhiOp>(redForm.step))
+    return reject("guarded-k");
 
   auto jLoop = kLoop->parent;
   if (!jLoop)
@@ -614,25 +663,11 @@ bool rsmTryMatchMatmulFromK(LoopInfo *kLoop, const std::map<std::string, GlobalO
   if (!iBound || !jBound || !kBound || !iPhi || !jPhi || !kPhi)
     return reject("bounds");
 
-  auto storeGlobals = rsmGlobalsIn(store->DEF(1));
-  if (storeGlobals.size() != 1)
-    return reject("store-global");
-  std::string aName = *storeGlobals.begin();
-
-  std::set<std::string> loadGlobalSet;
-  for (auto load : loads) {
-    auto names = rsmGlobalsIn(load->DEF(0));
-    if (names.size() != 1)
-      return reject("load-global");
-    loadGlobalSet.insert(*names.begin());
-  }
-  if (loadGlobalSet.size() != 2 || !loadGlobalSet.count(aName))
-    return reject("load-global-set");
-
+  std::string outName;
+  std::string aName;
   std::string cName;
-  for (const auto &name : loadGlobalSet)
-    if (name != aName)
-      cName = name;
+  if (!rsmResolveMatmulGlobals(store, loads, iPhi, jPhi, kPhi, outName, aName, cName))
+    return reject("load-global-set");
 
   int aRows = 0, aCols = 0, cRows = 0, cCols = 0;
   if (!rsmMatrixGlobalInfo(globals, aName, aRows, aCols) ||
@@ -645,8 +680,6 @@ bool rsmTryMatchMatmulFromK(LoopInfo *kLoop, const std::map<std::string, GlobalO
     return reject("side-effect");
   if (!rsmValidateReduction(store, kLoop, loads))
     return reject("reduction");
-  if (!rsmValidateAddressShape(store, loads, aName, cName, iPhi, jPhi, kPhi))
-    return reject("address-shape");
 
   shape.iLoop = iLoop;
   shape.jLoop = jLoop;
@@ -654,6 +687,7 @@ bool rsmTryMatchMatmulFromK(LoopInfo *kLoop, const std::map<std::string, GlobalO
   shape.store = store;
   shape.aName = aName;
   shape.cName = cName;
+  shape.outName = outName;
   shape.iBound = iBound;
   shape.jBound = jBound;
   shape.kBound = kBound;
@@ -709,25 +743,12 @@ bool rsmTryMatchMatmul(LoopInfo *iLoop, const std::map<std::string, GlobalOp*> &
     return reject("stores");
   auto store = stores[0];
 
-  auto storeGlobals = rsmGlobalsIn(store->DEF(1));
-  if (storeGlobals.size() != 1)
-    return reject("store-global");
-  std::string aName = *storeGlobals.begin();
-
-  std::set<std::string> loadGlobalSet;
-  for (auto load : loads) {
-    auto names = rsmGlobalsIn(load->DEF(0));
-    if (names.size() != 1)
-      return reject("load-global");
-    loadGlobalSet.insert(*names.begin());
-  }
-  if (loadGlobalSet.size() != 2 || !loadGlobalSet.count(aName))
-    return reject("load-global-set");
-
+  std::string outName;
+  std::string aName;
   std::string cName;
-  for (const auto &name : loadGlobalSet)
-    if (name != aName)
-      cName = name;
+  if (!rsmResolveMatmulGlobals(store, loads, iShape.induction, jShape.induction,
+                               kShape.induction, outName, aName, cName))
+    return reject("load-global-set");
 
   int aRows = 0, aCols = 0, cRows = 0, cCols = 0;
   if (!rsmMatrixGlobalInfo(globals, aName, aRows, aCols) ||
@@ -740,9 +761,6 @@ bool rsmTryMatchMatmul(LoopInfo *iLoop, const std::map<std::string, GlobalOp*> &
     return reject("side-effect");
   if (!rsmValidateReduction(store, kLoop, loads))
     return reject("reduction");
-  if (!rsmValidateAddressShape(store, loads, aName, cName,
-                            iShape.induction, jShape.induction, kShape.induction))
-    return reject("address-shape");
 
   shape.iLoop = iLoop;
   shape.jLoop = jLoop;
@@ -750,6 +768,7 @@ bool rsmTryMatchMatmul(LoopInfo *iLoop, const std::map<std::string, GlobalOp*> &
   shape.store = store;
   shape.aName = aName;
   shape.cName = cName;
+  shape.outName = outName;
   shape.iBound = iShape.stop;
   shape.jBound = jShape.stop;
   shape.kBound = kShape.stop;
@@ -1230,9 +1249,9 @@ void rsmBuildHelper(ModuleOp *module) {
   builder.setToRegionStart(module->getRegion());
   auto func = builder.create<FuncOp>({
     new NameAttr(kHelperName),
-    new ArgCountAttr(8),
+    new ArgCountAttr(9),
     new ArgTypesAttr({ Value::i32, Value::i32, Value::i32, Value::i32, Value::i32,
-                       Value::i64, Value::i64, Value::i64 }),
+                       Value::i64, Value::i64, Value::i64, Value::i64 }),
     new ImpureAttr
   });
   auto region = func->appendRegion();
@@ -1271,7 +1290,8 @@ void rsmBuildHelper(ModuleOp *module) {
   auto cRowStride = builder.create<GetArgOp>(Value::i32, { new IntAttr(4) });
   auto a = builder.create<GetArgOp>(Value::i64, { new IntAttr(5) });
   auto c = builder.create<GetArgOp>(Value::i64, { new IntAttr(6) });
-  auto scratch = builder.create<GetArgOp>(Value::i64, { new IntAttr(7) });
+  auto out = builder.create<GetArgOp>(Value::i64, { new IntAttr(7) });
+  auto scratch = builder.create<GetArgOp>(Value::i64, { new IntAttr(8) });
 
   auto rem = builder.create<ModIOp>(rsmVals({ cols, rsmI32(builder, kFastUnroll) }));
   auto mainColsVal = rsmBin<SubIOp>(builder, cols, rem);
@@ -1359,7 +1379,7 @@ void rsmBuildHelper(ModuleOp *module) {
 
   builder.setToBlockEnd(writeEntry);
   auto wi = rsmLoadVar(builder, iSlot);
-  auto aOutRow0 = rsmMatrixAddr(builder, a, wi, rsmI32(builder, 0), aRowStride);
+  auto aOutRow0 = rsmMatrixAddr(builder, out, wi, rsmI32(builder, 0), aRowStride);
   rsmStoreVar(builder, rsmI32(builder, 0), jSlot);
   builder.create<GotoOp>({ new TargetAttr(writeUnrollCond) });
 
@@ -1482,12 +1502,15 @@ bool rsmReplaceWithHelper(ModuleOp *module, const RsmMatmulShape &shape) {
   builder.setToBlockEnd(helperBB);
   auto a = builder.create<GetGlobalOp>({ new NameAttr(shape.aName) });
   auto c = builder.create<GetGlobalOp>({ new NameAttr(shape.cName) });
+  auto outGlob = shape.outName.empty() || shape.outName == shape.aName
+                     ? a
+                     : builder.create<GetGlobalOp>({ new NameAttr(shape.outName) });
   auto scratch = builder.create<GetGlobalOp>({ new NameAttr(rsmScratchNameFor(shape.scratchDim)) });
   auto aRowStride = rsmI32(builder, shape.aRowStrideBytes);
   auto cRowStride = rsmI32(builder, shape.cRowStrideBytes);
   builder.create<CallOp>(Value::i32,
                          rsmVals({ shape.iBound, shape.jBound, shape.kBound,
-                                aRowStride, cRowStride, a, c, scratch }),
+                                aRowStride, cRowStride, a, c, outGlob, scratch }),
                          rsmAttrs({ new NameAttr(kHelperName), new ImpureAttr }));
   builder.create<GotoOp>({ new TargetAttr(exit) });
   return true;
