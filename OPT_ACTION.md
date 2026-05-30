@@ -205,7 +205,7 @@ Phase 4 gate 仍 fail；单靠关任一 pass 无法回到 baseline，需按 case
 | 2026-05-30 | platform | 8619151 vs 改前：总分 +6.50；**matmul1/2/3 +6.36**；crypto 不变；many_mat_cal-1 −0.08 |
 | 2026-05-30 | fix | GuardedAccum 拒 `matmul-step`（then 含 MulIOp），避免 matmul 误 lift |
 | 2026-05-30 | 2.2 | LoopTiling：live-out 仅查 outer/inner；`ltInnerHasMul` 跳过无乘 inner；默认 1 轮；**matmul2 热点 k 环仍 asm SAME**（需 acc-aware 嵌套分块，见下） |
-| 2026-05-30 | 2.2+ | **acc-aware strip-mine（WIP）**：`tileAcc` phi + `select(firstTile, entry, tileAcc)`；`NESTED=1` 时 tile 含 mul 的 inner（j-k）；**默认路径不变**（asm SAME、tiled:1）；`NESTED=1` 仍 GVN/verify fail（header/exit phi 前驱未对齐，待修） |
+| 2026-05-30 | 2.2+ | **acc-aware strip-mine**：`tileAcc` + `select(firstTile, entry, tileAcc)` 携带 partial sum；exit/j 层 merge phi（%193 类）FromAttr 重定向到 tileHeader 并用 tileAcc 作为 final 值；`NESTED=1` matmul2 编译通过、A–D OK、asm **DIFF**（192 vs 189）；sl1/sl2 NESTED WA（预期，勿默认开） |
 
 **matmul2 Phase 2 阻塞（2026-05-30）**
 
@@ -216,7 +216,7 @@ Phase 4 gate 仍 fail；单靠关任一 pass 无法回到 baseline，需按 case
 | 实验性 k 分块 | `NESTED=1` + inner strip-mine → GVN phi 空操作数 **crash**（acc phi 跨 tile 未修） |
 | 平台试验 env | `SYSY_CC_ENABLE_NESTED_LOOP_TILING=1 SYSY_CC_TILE_ROUNDS=1`（勿默认开，sl2 需回归） |
 
-下一 patch：**acc-aware strip-mine** — 已实现 `tileAcc` 骨架；`NESTED=1` 仍 crash（phi 前驱/支配），需修 exit/LCSSA 后再平台测。
+下一 patch：**acc-aware strip-mine** — 已完成（f70773d）；`NESTED=1` matmul2 k 环 tiled、asm DIFF，可上平台测（默认 pass 集仍用 d98dd89/b00e15d 级别）。
 | 2026-05-30 | 1.x diag | **matmul2**：asm vs abbf8a4 **SAME** 189 行；RSM `replaced=0`，**guarded-k×3**（正确）；GA `lifted=0`；LoopTiling `tiled=1` 但 asm 不变（tile 仅改 .Lbb20 外圈步长） |
 
 **matmul2 诊断（Phase 1 → Phase 2 转向）**
