@@ -207,6 +207,57 @@ bool ltInnerHasMul(LoopInfo *inner) {
   return false;
 }
 
+bool ltIsUnitIvStepOnLatch(PhiOp *phi, LoopInfo *loop) {
+  if (!phi || !loop || loop->latches.size() != 1)
+    return false;
+  auto latch = loop->getLatch();
+  if (!latch)
+    return false;
+  const auto &ops = phi->getOperands();
+  const auto &attrs = phi->getAttrs();
+  Op *latchVal = nullptr;
+  for (int i = 0; i < (int) attrs.size(); i++) {
+    auto from = dyn_cast<FromAttr>(attrs[i]);
+    if (!from || from->bb != latch)
+      continue;
+    latchVal = ops[i].defining;
+  }
+  if (!latchVal || !isa<AddIOp>(latchVal) || latchVal->getOperandCount() != 2)
+    return false;
+  auto a = latchVal->DEF(0);
+  auto b = latchVal->DEF(1);
+  return (a == phi && isa<IntOp>(b) && V(b) == 1) ||
+         (b == phi && isa<IntOp>(a) && V(a) == 1);
+}
+
+// Inner strip-mine may carry an accumulator phi alongside the IV.
+bool ltInnerPhisOkForStripMine(LoopInfo *inner, Op *innerIV) {
+  if (!inner || !innerIV)
+    return false;
+  for (auto op : inner->header->getPhis()) {
+    auto *phi = dyn_cast<PhiOp>(op);
+    if (!phi || phi == innerIV)
+      continue;
+    if (ltIsUnitIvStepOnLatch(phi, inner))
+      return false;
+  }
+  return true;
+}
+
+// Outer loop may hold loop-invariant state (e.g. temp/i) when tiling the inner IV.
+bool ltOuterPhisOkForStripMine(LoopInfo *outer, Op *outerIV) {
+  if (!outer || !outerIV)
+    return false;
+  for (auto op : outer->header->getPhis()) {
+    auto *phi = dyn_cast<PhiOp>(op);
+    if (!phi || phi == outerIV)
+      continue;
+    if (ltIsUnitIvStepOnLatch(phi, outer))
+      return false;
+  }
+  return true;
+}
+
 // Build the strip-mined loop structure.
 // Original:   for i = 0..N step 1: body(i)
 // After:      for ii = 0..N step T:
@@ -319,6 +370,41 @@ bool ltApplyStripMine(LoopInfo *loop, int tileSize) {
   auto region = header->getParent();
   Builder builder;
 
+  struct AccCarry {
+    PhiOp *acc;
+    Op *entryVal;
+    Op *latchVal;
+    int entryIdx;
+    PhiOp *tileAcc = nullptr;
+  };
+  std::vector<AccCarry> accCarries;
+  for (auto op : header->getOps()) {
+    auto *phi = dyn_cast<PhiOp>(op);
+    if (!phi || phi == iv)
+      continue;
+    Op *entryVal = nullptr;
+    Op *latchVal = nullptr;
+    int entryIdx = -1;
+    const auto &phiOps = phi->getOperands();
+    const auto &phiAs = phi->getAttrs();
+    for (int i = 0; i < (int) phiAs.size(); i++) {
+      auto from = dyn_cast<FromAttr>(phiAs[i]);
+      if (!from)
+        continue;
+      if (from->bb == latch) {
+        latchVal = phiOps[i].defining;
+      } else {
+        entryVal = phiOps[i].defining;
+        entryIdx = i;
+      }
+    }
+    if (entryIdx < 0 || !entryVal || !latchVal)
+      continue;
+    if (ltIsUnitIvStepOnLatch(phi, loop))
+      continue;
+    accCarries.push_back({ phi, entryVal, latchVal, entryIdx });
+  }
+
   // Create tile loop blocks
   auto tileHeader = region->insertAfter(preheader);
   auto innerSetup = region->insertAfter(tileHeader);
@@ -330,6 +416,10 @@ bool ltApplyStripMine(LoopInfo *loop, int tileSize) {
   // 2. Build tileHeader: tile_iv phi, comparison, branch
   builder.setToBlockEnd(tileHeader);
   auto tileIV = builder.create<PhiOp>({ start }, { new FromAttr(preheader) });
+  for (auto &ac : accCarries) {
+    ac.tileAcc = builder.create<PhiOp>(
+        { ac.entryVal }, { new FromAttr(preheader) });
+  }
   auto tileCond = builder.create<LtOp>(std::vector<Value>{ tileIV, stop });
   builder.create<BranchOp>(std::vector<Value>{ tileCond },
     { new TargetAttr(innerSetup), new ElseAttr(exit) });
@@ -340,6 +430,17 @@ bool ltApplyStripMine(LoopInfo *loop, int tileSize) {
   auto tileEnd = builder.create<AddIOp>(std::vector<Value>{ tileIV, tileSizeOp });
   auto cmpEnd = builder.create<LtOp>(std::vector<Value>{ tileEnd, stop });
   auto innerStop = builder.create<SelectOp>(std::vector<Value>{ cmpEnd, tileEnd, stop });
+
+  auto isFirstTile = builder.create<EqOp>(std::vector<Value>{ tileIV, start });
+  std::set<PhiOp *> accPhiSet;
+  for (auto &ac : accCarries) {
+    accPhiSet.insert(ac.acc);
+    auto incoming = builder.create<SelectOp>(
+        std::vector<Value>{ isFirstTile, ac.entryVal, ac.tileAcc });
+    ac.acc->setOperand(ac.entryIdx, Value(incoming));
+    cast<FromAttr>(ac.acc->getAttrs()[ac.entryIdx])->bb = innerSetup;
+  }
+
   builder.create<GotoOp>({ new TargetAttr(header) });
 
   // 4. Update IV phi: start now comes from innerSetup (= tileIV)
@@ -359,11 +460,31 @@ bool ltApplyStripMine(LoopInfo *loop, int tileSize) {
   // 7. Build tileLatch: tile_iv += T, goto tileHeader
   builder.setToBlockEnd(tileLatch);
   auto nextTileIV = builder.create<AddIOp>(std::vector<Value>{ tileIV, tileSizeOp });
+  for (auto &ac : accCarries) {
+    ac.tileAcc->pushOperand(ac.acc);
+    ac.tileAcc->add<FromAttr>(tileLatch);
+  }
   builder.create<GotoOp>({ new TargetAttr(tileHeader) });
 
   // 8. Add latch edge to tileIV phi
   tileIV->pushOperand(nextTileIV);
   tileIV->add<FromAttr>(tileLatch);
+
+  region->updatePreds();
+  for (auto op : header->getOps()) {
+    auto *phi = dyn_cast<PhiOp>(op);
+    if (!phi)
+      continue;
+    const auto &phiAs = phi->getAttrs();
+    for (int i = 0; i < (int) phiAs.size(); i++) {
+      auto from = dyn_cast<FromAttr>(phiAs[i]);
+      if (!from || from->bb == latch || from->bb == innerSetup)
+        continue;
+      if (phi == iv || accPhiSet.count(phi))
+        continue;
+      cast<FromAttr>(phi->getAttrs()[i])->bb = innerSetup;
+    }
+  }
 
   return true;
 }
@@ -434,35 +555,54 @@ void LoopTiling::run() {
             continue;
           }
 
-          // Don't tile if outer has extra phis (state-carrying across iterations)
-          // Strip-mining is only safe when non-IV phis are absent or loop-invariant.
-          {
-            auto outerIV = ltLoopInductionVar(cur);
-            auto innerIV = ltLoopInductionVar(inner);
-            if (!outerIV || !innerIV)
-              continue;
-            // Both must have only the IV phi — any extra phi means
-            // state is carried that strip-mining could disrupt.
-            auto outerPhis = cur->header->getPhis();
-            int outerPhiCount = 0;
-            for (auto phi : outerPhis) { (void)phi; outerPhiCount++; }
-            if (outerPhiCount > 1) continue;
-            auto innerPhis = inner->header->getPhis();
-            int innerPhiCount = 0;
-            for (auto phi : innerPhis) { (void)phi; innerPhiCount++; }
-            if (innerPhiCount > 1) continue;
-            if (outerIV->getOperandCount() != 2) continue;
-          }
+          auto outerIV = ltLoopInductionVar(cur);
+          auto innerIV = ltLoopInductionVar(inner);
+          if (!outerIV || !innerIV)
+            continue;
+          if (outerIV->getOperandCount() != 2)
+            continue;
 
-          candidates++;
+          bool nestedPair = cur->parent != nullptr;
+          bool nestedEnabled =
+              ltEnvEnabled("SYSY_CC_ENABLE_NESTED_LOOP_TILING", false);
+          // Default: only top-level pairs. Nested mode: tile inner loops that
+          // contain mul (matmul k); skip transpose-style outers (no mul in inner).
+          bool tileInnerLoop = nestedEnabled && ltInnerHasMul(inner);
 
-          // Nested strip-mine is unsafe when the same scalar is reused across
-          // multiple loop nests in one function (sl1). Allow only top-level pairs
-          // unless explicitly enabled after improved live-out analysis.
-          if (cur->parent && !ltEnvEnabled("SYSY_CC_ENABLE_NESTED_LOOP_TILING", false)) {
+          if (!nestedEnabled && nestedPair) {
             rejectedShape++;
             continue;
           }
+          if (nestedEnabled && !tileInnerLoop) {
+            rejectedProfit++;
+            continue;
+          }
+
+          if (tileInnerLoop) {
+            if (!ltOuterPhisOkForStripMine(cur, outerIV))
+              continue;
+            if (!ltInnerPhisOkForStripMine(inner, innerIV))
+              continue;
+          } else {
+            auto outerPhis = cur->header->getPhis();
+            int outerPhiCount = 0;
+            for (auto phi : outerPhis) {
+              (void)phi;
+              outerPhiCount++;
+            }
+            if (outerPhiCount > 1)
+              continue;
+            auto innerPhis = inner->header->getPhis();
+            int innerPhiCount = 0;
+            for (auto phi : innerPhis) {
+              (void)phi;
+              innerPhiCount++;
+            }
+            if (innerPhiCount > 1)
+              continue;
+          }
+
+          candidates++;
 
           if (!ltIsTilingSafe(cur, inner)) {
             rejectedShape++;
@@ -474,7 +614,7 @@ void LoopTiling::run() {
             continue;
           }
 
-          int trip = ltEstimateTrip(cur);
+          int trip = ltEstimateTrip(tileInnerLoop ? inner : cur);
           if (trip > 0 && trip < kMinTripForTiling) {
             rejectedProfit++;
             continue;
@@ -484,7 +624,8 @@ void LoopTiling::run() {
             continue;
           }
 
-          if (ltApplyStripMine(cur, tileSize)) {
+          LoopInfo *tileTarget = tileInnerLoop ? inner : cur;
+          if (ltApplyStripMine(tileTarget, tileSize)) {
             tiled++;
             changed = true;
             break; // Re-run analysis after modifying
