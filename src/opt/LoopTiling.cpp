@@ -207,6 +207,20 @@ bool ltInnerHasMul(LoopInfo *inner) {
   return false;
 }
 
+// For NESTED mode, only tile inner loops that are "simple reductions":
+// no Rem, Branch, or Select inside (avoids matmul2-style conditional accum).
+bool ltInnerIsSimpleReduction(LoopInfo *inner) {
+  if (!inner)
+    return false;
+  for (auto bb : inner->getBlocks()) {
+    for (auto op : bb->getOps()) {
+      if (isa<ModIOp>(op) || isa<BranchOp>(op) || isa<SelectOp>(op))
+        return false;
+    }
+  }
+  return true;
+}
+
 bool ltIsUnitIvStepOnLatch(PhiOp *phi, LoopInfo *loop) {
   if (!phi || !loop || loop->latches.size() != 1)
     return false;
@@ -629,6 +643,13 @@ void LoopTiling::run() {
             continue;
           }
           if (nestedEnabled && !tileInnerLoop) {
+            rejectedProfit++;
+            continue;
+          }
+
+          // NESTED mode only tiles "simple reductions" (no Rem/Branch/Select).
+          // This skips matmul2-style conditional accum while keeping many_mat_cal.
+          if (tileInnerLoop && !ltInnerIsSimpleReduction(inner)) {
             rejectedProfit++;
             continue;
           }
