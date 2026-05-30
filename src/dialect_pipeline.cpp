@@ -2,10 +2,7 @@
 
 #include "rv_mlir_pipeline.h"
 
-#include "cfg/CFGToLegacy.h"
-#include "cfg/HIRToCFG.h"
 #include "codegen/CodeGen.h"
-#include "dialect_hir/DhirBuilder.h"
 #include "dialect_parse/KnapsackDp.h"
 #include "dialect_parse/Parser.h"
 #include "dialect_parse/Sema.h"
@@ -52,8 +49,6 @@ bool dpipeDialectPassEnabled(const char *disableVar, bool defaultOn = true) {
 }
 
 bool dpipeUseStructuredCodegen() {
-  if (envFlagTruthy("SYSY_CC_USE_CFG_IR"))
-    return false;
   return true;
 }
 
@@ -256,21 +251,6 @@ std::unique_ptr<sys::ModuleOp> dpipeBuildFromStructuredAst(sys::ASTNode *node) {
   return std::unique_ptr<sys::ModuleOp>(cg.getModule());
 }
 
-std::unique_ptr<sys::ModuleOp> dpipeBuildFromCfgLowering(
-    sys::ASTNode *node, std::vector<std::string> &errors) {
-  static bool warned = false;
-  if (!warned) {
-    warned = true;
-    std::cerr << "warning: SYSY_CC_USE_CFG_IR=1 uses deprecated HIR/CFG lowering; "
-                 "prefer default CodeGen structured IR\n";
-  }
-  sys::dhir::Module hir = sys::dhir::Builder().build(node);
-  sys::cfg::Module cfgMod = sys::cfg::lowerFromHIR(hir, errors);
-  if (!errors.empty())
-    return nullptr;
-  return sys::cfg::lowerToLegacyIR(cfgMod, errors);
-}
-
 }  // namespace
 
 namespace sys {
@@ -298,11 +278,7 @@ std::unique_ptr<ModuleOp> buildDialectModuleFromSource(
     return nullptr;
   }
 
-  std::unique_ptr<ModuleOp> module;
-  if (dpipeUseStructuredCodegen())
-    module = dpipeBuildFromStructuredAst(node);
-  else
-    module = dpipeBuildFromCfgLowering(node, errors);
+  std::unique_ptr<ModuleOp> module = dpipeBuildFromStructuredAst(node);
 
   delete node;
   return module;

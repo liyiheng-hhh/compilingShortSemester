@@ -63,24 +63,6 @@ public:
   void run() override;
 };
 
-// Loop unswitch.
-// Unswitch branches related to induction variable.
-class Unswitch : public Pass {
-  int unswitched = 0;
-
-  bool runImpl(Op *loop);
-  bool cmpmod(Op *loop, Op *cond);
-  bool ltconst(Op *loop, Op *cond);
-  bool gtconst(Op *loop, Op *cond);
-  bool invariant(Op *loop, Op *cond);
-public:
-  Unswitch(ModuleOp *module): Pass(module) {}
-
-  std::string name() override { return "unswitch"; }
-  std::map<std::string, int> stats() override;
-  void run() override;
-};
-
 // For 2D arrays, if their access pattern suggests so,
 // then reorder them into column major format.
 class ColumnMajor : public Pass {
@@ -104,25 +86,6 @@ public:
 
   std::string name() override { return "column-major"; }
   std::map<std::string, int> stats() override { return {}; }
-  void run() override;
-};
-
-class Parallelize : public Pass {
-public:
-  Parallelize(ModuleOp *module): Pass(module) {}
-
-  std::string name() override { return "parallelize"; }
-  std::map<std::string, int> stats() override { return {}; }
-  void run() override;
-};
-
-class Unroll : public Pass {
-  int unrolled = 0;
-public:
-  Unroll(ModuleOp *module): Pass(module) {}
-
-  std::string name() override { return "unroll"; }
-  std::map<std::string, int> stats() override;
   void run() override;
 };
 

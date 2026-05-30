@@ -15,8 +15,6 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/ir_schedule.cpp \
 	$(SRCDIR)/loop_interchange.cpp $(SRCDIR)/loop_tiling.cpp $(SRCDIR)/land_lor_split.cpp \
 	$(SRCDIR)/knapsack_dp.cpp $(SRCDIR)/mm_hoist.cpp $(SRCDIR)/loop_unroll.cpp $(SRCDIR)/row_scratch_matmul.cpp \
-	$(SRCDIR)/hir/HIROps.cpp $(SRCDIR)/hir/HIRBuilder.cpp $(SRCDIR)/hir/HIRLowering.cpp \
-	$(SRCDIR)/hir/HIRRowScratchMatmul.cpp $(SRCDIR)/hir/HIRLoopTransform.cpp \
 	$(SRCDIR)/rv/rv_asm.cpp $(SRCDIR)/rv/rv_passes.cpp $(SRCDIR)/rv/BranchPeephole.cpp \
 	$(SRCDIR)/rv/RegPeephole.cpp \
 	$(SRCDIR)/rv/InstCombine.cpp $(SRCDIR)/rv/Schedule.cpp $(SRCDIR)/rv/StrengthReduct.cpp \
@@ -32,8 +30,7 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/pre-opt/Lower.cpp $(SRCDIR)/pre-opt/ArrayAccess.cpp \
 	$(SRCDIR)/pre-opt/Base.cpp $(SRCDIR)/pre-opt/ColumnMajor.cpp \
 	$(SRCDIR)/pre-opt/Fusion.cpp $(SRCDIR)/pre-opt/NoStore.cpp \
-	$(SRCDIR)/pre-opt/Parallelizable.cpp $(SRCDIR)/pre-opt/Parallelize.cpp \
-	$(SRCDIR)/pre-opt/Unroll.cpp $(SRCDIR)/pre-opt/Unswitch.cpp \
+	$(SRCDIR)/pre-opt/Parallelizable.cpp \
 	$(SRCDIR)/opt/Pass.cpp $(SRCDIR)/opt/GVN.cpp \
 	$(SRCDIR)/mlir_rv/Lower.cpp $(SRCDIR)/mlir_rv/InstCombine.cpp $(SRCDIR)/mlir_rv/RvDCE.cpp \
 	$(SRCDIR)/mlir_rv/StrengthReduct.cpp $(SRCDIR)/mlir_rv/Schedule.cpp $(SRCDIR)/mlir_rv/RegAlloc.cpp $(SRCDIR)/mlir_rv/RegPeephole.cpp \
@@ -48,9 +45,6 @@ SRCS := $(SRCDIR)/main.cpp $(SRCDIR)/common.cpp $(SRCDIR)/lexer.cpp $(SRCDIR)/le
 	$(SRCDIR)/dialect_parse/SemaTypes.cpp $(SRCDIR)/dialect_parse/SemaInfer.cpp \
 	$(SRCDIR)/dialect_parse/Sema.cpp $(SRCDIR)/dialect_parse/KnapsackDp.cpp \
 	$(SRCDIR)/dialect_parse/Type.cpp \
-	$(SRCDIR)/dialect_hir/DhirOps.cpp $(SRCDIR)/dialect_hir/DhirBuilder.cpp \
-	$(SRCDIR)/cfg/HIRToCFG.cpp $(SRCDIR)/cfg/CFGOps.cpp $(SRCDIR)/cfg/CFGToLegacy.cpp \
-	$(SRCDIR)/cfg/CFGLegality.cpp $(SRCDIR)/cfg/CFGVerifier.cpp \
 	$(SRCDIR)/opt/PassManager.cpp $(SRCDIR)/opt/Mem2Reg.cpp $(SRCDIR)/opt/BitStubFold.cpp \
 	$(SRCDIR)/opt/Alias.cpp $(SRCDIR)/opt/Pureness.cpp $(SRCDIR)/opt/AtMostOnce.cpp \
 	$(SRCDIR)/opt/DSE.cpp $(SRCDIR)/opt/DLE.cpp $(SRCDIR)/opt/DAE.cpp \

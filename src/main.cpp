@@ -11,10 +11,6 @@
 #include "parser.h"
 #include "semantic.h"
 
-#include "hir/HIRBuilder.h"
-#include "hir/HIRLowering.h"
-#include "hir/HIRRowScratchMatmul.h"
-#include "hir/HIRLoopTransform.h"
 #include "rv/rv_passes.h"
 #include "dialect_pipeline.h"
 #include "dialect_fallback.h"
@@ -86,34 +82,6 @@ static int mainCompileFile(const string &input, const string &output, bool optO1
   semantic.run();
 
   CodeGen codegen(program, semantic, o1Prof);
-
-  // === HIR stage (double-layer IR) ===
-  // Default ON for -O1 (official eval runs ./compiler -O1 without env vars).
-  // Disable for bisect: SYSY_CC_NO_HIR=1
-  if (optO1 && !envFlagTruthy("SYSY_CC_NO_HIR")) {
-    auto hirModule = sys::hir::buildHIR(program);
-
-    // Run HIR-level optimizations (e.g. RowScratchMatmul on structured While/For)
-    if (optO1) {
-      sys::hir::applyRowScratchMatmulOnHIR(*hirModule);
-      // HIR-level loop transformations (Stage 2)
-      sys::hir::tryLoopInterchangeOnHIR(*hirModule);
-      sys::hir::tryLoopTilingOnHIR(*hirModule);
-      sys::hir::tryLoopUnrollOnHIR(*hirModule);
-    }
-
-    // Real lowering to legacy IRInst (expression + control flow)
-    // We perform lowering for future use / debugging, but currently do NOT
-    // replace the IRFunctions used by CodeGen, because the produced IR is
-    // still not robust enough for the full -O1 pipeline (Mem2Reg, regalloc, etc.).
-    // This prevents crashes while we continue to improve lowering.
-    std::vector<IRFunction> hirIRFunctions;
-    sys::hir::lowerToLegacyIR(*hirModule, hirIRFunctions);
-
-    // NOTE: We intentionally do NOT call
-    //   codegen.setHirLoweredIRFunctions(hirIRFunctions)
-    // until lowering is verified to be stable on many cases.
-  }
   std::string asmText = codegen.run();
 
   // === Stage 3: RISC-V asm passes (default ON for O1, safe baseline) ===

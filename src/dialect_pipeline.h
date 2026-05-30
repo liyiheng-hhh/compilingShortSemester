@@ -9,8 +9,7 @@
 
 namespace sys {
 
-// Parse SysY source with dialect frontend (CodeGen structured IR by default;
-// SYSY_CC_USE_CFG_IR=1 falls back to legacy HIR→CFG), run mid-end passes, emit RV asm.
+// Parse SysY source with dialect frontend (CodeGen structured IR), run mid-end passes, emit RV asm.
 // Returns nullptr on failure; errors are human-readable strings.
 std::unique_ptr<ModuleOp> buildDialectModuleFromSource(const std::string &source,
                                                        std::vector<std::string> &errors);

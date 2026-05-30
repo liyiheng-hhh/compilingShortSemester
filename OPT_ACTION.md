@@ -206,7 +206,7 @@ Phase 4 gate 仍 fail；单靠关任一 pass 无法回到 baseline，需按 case
 | 2026-05-30 | fix | GuardedAccum 拒 `matmul-step`（then 含 MulIOp），避免 matmul 误 lift |
 | 2026-05-30 | 2.2 | LoopTiling：live-out 仅查 outer/inner；`ltInnerHasMul` 跳过无乘 inner；默认 1 轮；**matmul2 热点 k 环仍 asm SAME**（需 acc-aware 嵌套分块，见下） |
 | 2026-05-30 | 2.2+ | **acc-aware strip-mine**：`tileAcc` + `select(firstTile, entry, tileAcc)`；exit/j 层 merge phi 重定向；**新增** `ltPhiEntryIsConst` 限制 accumulator entry 必须是常数（temp=0），拒绝 sl1/sl2 的非 const entry phi；`NESTED=1` matmul2 **asm DIFF**（192 vs 189，k 热点 tiled）、A–D OK；sl1/sl2 NESTED 也 A–D OK（已修复） |
-| 2026-05-30 | 2.2+ | **默认开启 NESTED**：`ltEnvEnabled(..., true)`，平台 `compiler -O1` 自动启用 k 环分块；清理 `opt-passes-on.sh` export（平台不 source） |
+| 2026-05-30 | 2.2+ | **默认开启 NESTED**：`ltEnvEnabled(..., true)`；**新增** `ltInnerIsSimpleReduction` 过滤（跳过含 Mod/Branch/Select 的 inner），matmul2 k 环不 tile（恢复 169 行），many_mat_cal/sl1/sl2 仍受益 |
 
 **matmul2 Phase 2 阻塞（2026-05-30）**
 
