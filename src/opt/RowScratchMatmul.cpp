@@ -383,6 +383,27 @@ bool rsmLoopHasCallOrUnexpectedStore(LoopInfo *outer, StoreOp *allowedStore) {
   return false;
 }
 
+// Only inspect the j/k matmul nest; the outer i-loop may contain unrelated
+// post-processing loops (max scan, row fill, etc.) in the same function.
+bool rsmMatmulNestHasSideEffects(LoopInfo *jLoop, LoopInfo *kLoop, StoreOp *allowedStore) {
+  if (!jLoop || !kLoop)
+    return true;
+  for (auto bb : jLoop->getBlocks()) {
+    for (auto op : bb->getOps()) {
+      if (isa<CallOp>(op) || isa<CloneOp>(op) || isa<JoinOp>(op) ||
+          isa<WakeOp>(op) || isa<ReturnOp>(op))
+        return true;
+      if (auto store = dyn_cast<StoreOp>(op)) {
+        if (kLoop->contains(bb))
+          return true;
+        if (store != allowedStore)
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
 struct RsmMatmulShape {
   LoopInfo *iLoop = nullptr;
   LoopInfo *jLoop = nullptr;
@@ -644,10 +665,8 @@ bool rsmTryMatchMatmulFromK(LoopInfo *kLoop, const std::map<std::string, GlobalO
     return reject("loads");
 
   RsmSumReduction redForm;
-  if (rsmFindKLoopSumReduction(kLoop, redForm) && isa<PhiOp>(redForm.step)) {
-    if (!rsmKLoopHasInteriorMark(kLoop))
-      return reject("guarded-k");
-  }
+  if (rsmFindKLoopSumReduction(kLoop, redForm) && isa<PhiOp>(redForm.step))
+    return reject("guarded-k");
 
   auto jLoop = kLoop->parent;
   if (!jLoop)
@@ -701,7 +720,7 @@ bool rsmTryMatchMatmulFromK(LoopInfo *kLoop, const std::map<std::string, GlobalO
   if (aRows <= 0 || aCols <= 0 || cRows <= 0 || cCols <= 0)
     return reject("positive-dims");
 
-  if (rsmLoopHasCallOrUnexpectedStore(iLoop, store))
+  if (rsmMatmulNestHasSideEffects(jLoop, kLoop, store))
     return reject("side-effect");
   if (!rsmValidateReduction(store, kLoop, loads))
     return reject("reduction");
@@ -782,7 +801,7 @@ bool rsmTryMatchMatmul(LoopInfo *iLoop, const std::map<std::string, GlobalOp*> &
   if (aRows <= 0 || aCols <= 0 || cRows <= 0 || cCols <= 0)
     return reject("positive-dims");
 
-  if (rsmLoopHasCallOrUnexpectedStore(iLoop, store))
+  if (rsmMatmulNestHasSideEffects(jLoop, kLoop, store))
     return reject("side-effect");
   if (!rsmValidateReduction(store, kLoop, loads))
     return reject("reduction");
