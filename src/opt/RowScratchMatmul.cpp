@@ -426,6 +426,25 @@ struct RsmSumReduction {
 };
 
 // Latch update may be add(phi, mul) or merge phi(phi, add(phi, mul)) from guarded accum.
+// Branchless guarded accum: add(phi, mul(mul(load,load), mask)).
+MulIOp *rsmInnerProductMul(MulIOp *mul) {
+  if (!mul)
+    return nullptr;
+  LoadOp *l0 = rsmFindLoadDef(mul->DEF(0));
+  LoadOp *l1 = rsmFindLoadDef(mul->DEF(1));
+  if (l0 && l1 && l0 != l1)
+    return mul;
+  for (int i = 0; i < 2; i++) {
+    if (auto inner = dyn_cast<MulIOp>(mul->DEF(i))) {
+      LoadOp *a = rsmFindLoadDef(inner->DEF(0));
+      LoadOp *b = rsmFindLoadDef(inner->DEF(1));
+      if (a && b && a != b)
+        return inner;
+    }
+  }
+  return nullptr;
+}
+
 MulIOp *rsmReductionMulFromStep(PhiOp *phi, Op *step) {
   if (!phi || !step)
     return nullptr;
@@ -490,7 +509,8 @@ bool rsmFindKLoopSumReduction(LoopInfo *kLoop, RsmSumReduction &red) {
       if (!rawStart || !isa<IntOp>(rawStart) || V(rawStart) != 0)
         continue;
 
-      MulIOp *mul = rsmReductionMulFromStep(phi, step);
+      MulIOp *rawMul = rsmReductionMulFromStep(phi, step);
+      MulIOp *mul = rsmInnerProductMul(rawMul);
       if (!mul)
         continue;
 

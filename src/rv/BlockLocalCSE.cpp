@@ -91,7 +91,7 @@ bool BlockLocalCSE::isCSEable(const std::string &mnemonic) {
       "add", "addi", "addw", "addiw", "sub", "subw",
       "and", "andi", "or", "ori", "xor", "xori",
       "sll", "slli", "sllw", "slliw", "srl", "srli", "srlw", "srliw",
-      "sra", "srai", "sraw", "sraiw", "mv"
+      "sra", "srai", "sraw", "sraiw",
   };
   for (auto *m : arith) {
     if (mnemonic == m) return true;
@@ -221,6 +221,27 @@ bool BlockLocalCSE::isAvailEntryLive(const std::vector<std::string> &lines,
       return false;
   }
   return true;
+}
+
+bool BlockLocalCSE::hasUsesOutsideBlock(const std::vector<std::string> &lines,
+                                        size_t blockStart, size_t blockEnd,
+                                        size_t afterIdx, const std::string &reg) {
+  if (reg.empty())
+    return false;
+  for (size_t j = afterIdx + 1; j < lines.size(); ++j) {
+    if (j >= blockStart && j < blockEnd)
+      continue;
+    if (lines[j] == kElidedMarker)
+      continue;
+    AsmInst user;
+    if (!parseAsmLine(lines[j], user))
+      continue;
+    for (const auto &u : user.uses) {
+      if (u == reg)
+        return true;
+    }
+  }
+  return false;
 }
 
 bool BlockLocalCSE::allUsesReplaceable(const std::vector<std::string> &lines,
@@ -444,6 +465,7 @@ bool BlockLocalCSE::optimizeBlock(std::vector<std::string> &lines, size_t start,
           AsmInst canonInst;
           parseAsmLine(lines[it->second.defIdx], canonInst);
           if (isAvailEntryLive(lines, start, end, idx, it->second, canonInst) &&
+              !hasUsesOutsideBlock(lines, start, end, idx, dupRd) &&
               allUsesReplaceable(lines, start, end, idx, it->second.defIdx,
                                  dupRd, it->second.defReg)) {
             replaceUsesWithCanon(lines, start, end, idx, it->second.defIdx,
@@ -480,6 +502,7 @@ bool BlockLocalCSE::optimizeBlock(std::vector<std::string> &lines, size_t start,
       parseAsmLine(lines[it->second.defIdx], canonInst);
       if (isAvailEntryLive(lines, start, end, idx, it->second, canonInst) &&
           (!keyOpt->usesSp || it->second.spVersion == spVersion) &&
+          !hasUsesOutsideBlock(lines, start, end, idx, dupRd) &&
           allUsesReplaceable(lines, start, end, idx, it->second.defIdx,
                              dupRd, it->second.defReg)) {
         replaceUsesWithCanon(lines, start, end, idx, it->second.defIdx,

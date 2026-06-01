@@ -407,6 +407,80 @@ void mkoHoistThenCompute(BasicBlock *dst, BasicBlock *thenBB, AddIOp *addInst) {
     op->moveBefore(br);
 }
 
+// Branchless scale: acc += (cond ? addend : 0) or the addInElse variant.
+// Avoid SelectOp — mlir_rv/Lower rewrites select into branches (defeats this pass).
+Op *mkoBuildScaledAddend(Builder &builder, Op *cond, Op *addend, bool addInElse) {
+  if (!addInElse)
+    return builder.create<MulIOp>(std::vector<Value>{ cond, addend });
+
+  if (auto *mod = dyn_cast<ModIOp>(cond)) {
+    if (mod->getOperandCount() == 2 && isa<IntOp>(mod->DEF(1)) && V(mod->DEF(1)) == 2) {
+      // Parity mask without signed remw: even => 1, odd => 0 via (1 - (x & 1)).
+      auto one = builder.create<IntOp>({ new IntAttr(1) });
+      auto bit = builder.create<AndIOp>(std::vector<Value>{ mod->DEF(0), one });
+      auto even = builder.create<SubIOp>(std::vector<Value>{ one, bit });
+      return builder.create<MulIOp>(std::vector<Value>{ addend, even });
+    }
+  }
+
+  auto zero = builder.create<IntOp>({ new IntAttr(0) });
+  auto active = builder.create<EqOp>(std::vector<Value>{ cond, zero });
+  return builder.create<MulIOp>(std::vector<Value>{ addend, active });
+}
+
+// x % 2 == 0  →  (x & 1) == 0;  1 - (x % 2)  →  1 - (x & 1)  for parity masks.
+void mkoFoldParityMod2(FuncOp *func, int &folded) {
+  Builder builder;
+  std::vector<ModIOp *> deadMods;
+
+  for (auto *bb : func->getRegion()->getBlocks()) {
+    for (auto *op : bb->getOps()) {
+      auto *mod = dyn_cast<ModIOp>(op);
+      if (!mod || mod->getOperandCount() != 2 || !isa<IntOp>(mod->DEF(1)) ||
+          V(mod->DEF(1)) != 2)
+        continue;
+
+      Op *x = mod->DEF(0);
+      builder.setBeforeOp(mod);
+      auto one = builder.create<IntOp>({ new IntAttr(1) });
+      auto bit = builder.create<AndIOp>(std::vector<Value>{ x, one });
+
+      bool allParity = true;
+      std::vector<Op *> users(mod->getUses().begin(), mod->getUses().end());
+      for (auto *use : users) {
+        if (auto *eq = dyn_cast<EqOp>(use)) {
+          if (eq->DEF(0) != mod || !isa<IntOp>(eq->DEF(1)) || V(eq->DEF(1)) != 0)
+            allParity = false;
+        } else if (auto *sub = dyn_cast<SubIOp>(use)) {
+          if (!isa<IntOp>(sub->DEF(0)) || V(sub->DEF(0)) != 1 || sub->DEF(1) != mod)
+            allParity = false;
+        } else {
+          allParity = false;
+        }
+      }
+      if (!allParity)
+        continue;
+
+      for (auto *use : users) {
+        if (auto *eq = dyn_cast<EqOp>(use)) {
+          auto zero = builder.create<IntOp>({ new IntAttr(0) });
+          builder.replace<EqOp>(eq, std::vector<Value>{ bit, zero });
+          folded++;
+        } else if (auto *sub = dyn_cast<SubIOp>(use)) {
+          builder.replace<SubIOp>(sub, std::vector<Value>{ one, bit });
+          folded++;
+        }
+      }
+      deadMods.push_back(mod);
+    }
+  }
+
+  for (auto *mod : deadMods) {
+    if (mod->getUses().empty())
+      mod->erase();
+  }
+}
+
 void mkoFinalizeGuardedAccumCompact(FuncOp *func, BasicBlock *bb, BasicBlock *thenBB,
                                     BasicBlock *mergeBB, BranchOp *br, Op *cond, Op *acc,
                                     Op *addend, AddIOp *addInst, PhiOp *accPhi,
@@ -416,10 +490,7 @@ void mkoFinalizeGuardedAccumCompact(FuncOp *func, BasicBlock *bb, BasicBlock *th
 
   mkoHoistThenCompute(bb, thenBB, addInst);
 
-  auto zero = builder.create<IntOp>({ new IntAttr(0) });
-  Op *scaled = addInElse
-                   ? static_cast<Op*>(builder.create<SelectOp>({ cond, zero, addend }))
-                   : static_cast<Op*>(builder.create<SelectOp>({ cond, addend, zero }));
+  Op *scaled = mkoBuildScaledAddend(builder, cond, addend, addInElse);
   auto newAcc = builder.create<AddIOp>(std::vector<Value>{ acc, scaled });
 
   builder.replace<GotoOp>(br, { new TargetAttr(mergeBB) });
@@ -449,9 +520,8 @@ void mkoFinalizeGuardedAccum(FuncOp *func, BasicBlock *bb, BasicBlock *thenBB,
 
   mkoHoistThenCompute(bb, thenBB, addInst);
 
-  auto zero = builder.create<IntOp>({ new IntAttr(0) });
-  auto scaled = builder.create<SelectOp>({ cond, addend, zero });
-  auto newAcc = builder.create<AddIOp>({ acc, scaled });
+  Op *scaled = mkoBuildScaledAddend(builder, cond, addend, /*addInElse=*/false);
+  auto newAcc = builder.create<AddIOp>(std::vector<Value>{ acc, scaled });
 
   std::vector<Op*> toMove;
   for (auto *op : mergeBB->getOps()) {
@@ -731,6 +801,10 @@ void GuardedAccum::run() {
   for (auto *func : collectFuncs())
     func->getRegion()->updatePreds();
 
+  int modFolded = 0;
+  for (auto *func : collectFuncs())
+    mkoFoldParityMod2(func, modFolded);
+
   for (auto *func : collectFuncs()) {
     bool local = true;
     while (local) {
@@ -742,7 +816,9 @@ void GuardedAccum::run() {
         }
       }
     }
+    mkoFoldParityMod2(func, modFolded);
   }
+  lifted += modFolded;
 }
 
 // --- MatTransposePair pass --------------------------------------------------

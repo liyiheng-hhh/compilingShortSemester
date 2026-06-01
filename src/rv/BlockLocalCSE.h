@@ -79,6 +79,11 @@ private:
                                  size_t blockStart, size_t blockEnd,
                                  size_t dupIdx, size_t canonDefIdx,
                                  const std::string &dupRd, const std::string &canonRd);
+  // dupRd must not be used outside [blockStart, blockEnd) after dupIdx — we only
+  // rewrite uses inside the current block.
+  static bool hasUsesOutsideBlock(const std::vector<std::string> &lines,
+                                  size_t blockStart, size_t blockEnd,
+                                  size_t afterIdx, const std::string &reg);
   static void replaceUsesWithCanon(std::vector<std::string> &lines,
                                    size_t blockStart, size_t blockEnd,
                                    size_t dupIdx, size_t canonDefIdx,
