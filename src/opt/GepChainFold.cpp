@@ -2,7 +2,9 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <unordered_set>
+#include <vector>
 
 using namespace sys;
 
@@ -15,17 +17,24 @@ bool envFlag(const char *name) {
   return std::strcmp(v, "0") != 0 && std::strcmp(v, "false") != 0;
 }
 
+struct GcfMulKey {
+  Op *iv = nullptr;
+  int coeff = 0;
 
-// Extract the base GetGlobalOp from an address chain (if any).
-// Phase 2.3 improvement: also walk through Phi (for matmul2 hotspot patterns).
-static GetGlobalOp *getBaseGlobal(Op *addr) {
+  bool operator<(const GcfMulKey &o) const {
+    if (iv != o.iv)
+      return iv < o.iv;
+    return coeff < o.coeff;
+  }
+};
+
+GetGlobalOp *getBaseGlobal(Op *addr) {
   std::unordered_set<Op*> visited;
   while (addr && visited.find(addr) == visited.end()) {
     visited.insert(addr);
     if (auto *g = dyn_cast<GetGlobalOp>(addr))
       return g;
     if (auto *add = dyn_cast<AddLOp>(addr)) {
-      // Prefer the operand that is a global or has alias attr.
       for (int i = 0; i < add->getOperandCount(); i++) {
         if (auto *g = dyn_cast<GetGlobalOp>(add->DEF(i)))
           return g;
@@ -38,8 +47,6 @@ static GetGlobalOp *getBaseGlobal(Op *addr) {
       continue;
     }
     if (auto *phi = dyn_cast<PhiOp>(addr)) {
-      // Walk through phi (common in loop-carried address updates).
-      // Prefer the operand that leads to a global.
       for (int i = 0; i < phi->getOperandCount(); i++) {
         if (auto *g = getBaseGlobal(phi->DEF(i)))
           return g;
@@ -52,10 +59,27 @@ static GetGlobalOp *getBaseGlobal(Op *addr) {
   return nullptr;
 }
 
-}  // namespace
+bool gcfIsAddressMul(MulIOp *mul) {
+  if (!mul || mul->getOperandCount() != 2)
+    return false;
+  if (!isa<IntOp>(mul->DEF(0)) && !isa<IntOp>(mul->DEF(1)))
+    return false;
+  if (mul->getUses().empty())
+    return false;
+  for (Op *user : mul->getUses()) {
+    if (!isa<AddLOp>(user))
+      return false;
+  }
+  return true;
+}
 
-// Normalize operand order of a single address op (AddL/MulI) for canonical form.
-static bool normalizeAddrOp(Op *op, bool debug) {
+GcfMulKey gcfMulKey(MulIOp *mul) {
+  if (isa<IntOp>(mul->DEF(0)))
+    return { mul->DEF(1), V(mul->DEF(0)) };
+  return { mul->DEF(0), V(mul->DEF(1)) };
+}
+
+bool normalizeAddrOp(Op *op, bool debug) {
   if (auto *add = dyn_cast<AddLOp>(op)) {
     auto *lhs = add->DEF(0);
     auto *rhs = add->DEF(1);
@@ -81,58 +105,21 @@ static bool normalizeAddrOp(Op *op, bool debug) {
   return false;
 }
 
-// Attempt a more aggressive rewrite: for static chains (no Phi), try to
-// reorganize nested AddL to expose common prefixes for GVN.
-// Example: addl(addl(base, x), y) -> addl(base, addl(x, y))
-// This does not reduce instruction count but may help GVN see redundancy.
-static bool tryReorganizeStaticChain(const std::vector<Op*> &chain, bool debug) {
-  if (chain.size() < 3)
-    return false;
-  // Skip if any Phi in chain
-  for (auto *op : chain) {
-    if (isa<PhiOp>(op))
-      return false;
-  }
-  Op *outer = chain[0];
-  auto *add1 = dyn_cast<AddLOp>(outer);
-  if (!add1)
-    return false;
-  Op *inner = add1->DEF(0);
-  auto *add2 = dyn_cast<AddLOp>(inner);
-  if (!add2)
-    return false;
-  // addl( addl(base, x), y ) -> addl( base, addl(x, y) )
-  Op *base = add2->DEF(0);
-  // Only reorganize if base is GetGlobal or looks like a base address
-  if (!isa<GetGlobalOp>(base))
-    return false;
-  if (debug)
-    std::cerr << "[gep-chain-fold] detected nested addl pattern\n";
-  return false; // placeholder: real rewrite needs Builder
-}
-
-// Try to rewrite a detected address chain into a more canonical form.
-// Handles both static chains and Phi-carrying chains (matmul2 k-loop).
-// For Phi chains, we normalize each incoming edge's address computation.
-static bool tryNormalizeAddressChain(const std::vector<Op*> &chain, bool debug) {
+bool tryNormalizeAddressChain(const std::vector<Op*> &chain, bool debug) {
   if (chain.size() < 3)
     return false;
 
   bool changed = false;
-
-  // First, normalize the outermost op (what Load/Store directly uses).
-  if (!chain.empty()) {
+  if (!chain.empty())
     changed |= normalizeAddrOp(chain[0], debug);
-  }
 
-  // If chain contains Phi, also normalize address ops on Phi incoming edges.
   for (auto *op : chain) {
     if (auto *phi = dyn_cast<PhiOp>(op)) {
       if (debug)
-        std::cerr << "[gep-chain-fold] processing Phi with " << phi->getOperandCount() << " incoming\n";
+        std::cerr << "[gep-chain-fold] processing Phi with " << phi->getOperandCount()
+                  << " incoming\n";
       for (int i = 0; i < phi->getOperandCount(); i++) {
         Op *inc = phi->DEF(i);
-        // Walk a few steps up the incoming address chain and normalize.
         int steps = 0;
         while (inc && steps < 4) {
           if (normalizeAddrOp(inc, debug))
@@ -148,31 +135,140 @@ static bool tryNormalizeAddressChain(const std::vector<Op*> &chain, bool debug) 
       }
     }
   }
-
   return changed;
 }
 
-GepChainFold::GepChainFold(ModuleOp *module) : Pass(module) {
+int gcfCseAddressMulsInBlock(BasicBlock *bb, bool debug) {
+  std::map<GcfMulKey, std::vector<MulIOp*>> groups;
+  for (auto *op : bb->getOps()) {
+    auto *mul = dyn_cast<MulIOp>(op);
+    if (!mul || !gcfIsAddressMul(mul))
+      continue;
+    groups[gcfMulKey(mul)].push_back(mul);
+  }
+
+  int removed = 0;
+  for (auto &[key, muls] : groups) {
+    if (muls.size() < 2)
+      continue;
+    MulIOp *keep = muls.front();
+    for (size_t i = 1; i < muls.size(); i++) {
+      MulIOp *dup = muls[i];
+      if (dup == keep)
+        continue;
+      dup->replaceAllUsesWith(keep);
+      dup->erase();
+      removed++;
+      if (debug) {
+        std::cerr << "[gep-chain-fold] cse mul(iv," << key.coeff << ") in "
+                  << bbmap[bb] << "\n";
+      }
+    }
+  }
+  return removed;
+}
+
+struct GcfRowKey {
+  Op *base = nullptr;
+  GcfMulKey mul;
+
+  bool operator<(const GcfRowKey &o) const {
+    if (base != o.base)
+      return base < o.base;
+    return mul < o.mul;
+  }
+};
+
+bool gcfRowBaseKey(AddLOp *add, GcfRowKey &key) {
+  auto *mul = dyn_cast<MulIOp>(add->DEF(0));
+  if (!mul || !gcfIsAddressMul(mul))
+    return false;
+  Op *base = add->DEF(1);
+  if (!getBaseGlobal(base))
+    return false;
+  key = { base, gcfMulKey(mul) };
+  return true;
+}
+
+bool gcfAddOnlyUsedByAddL(AddLOp *add) {
+  for (Op *user : add->getUses()) {
+    if (user == add)
+      continue;
+    if (!isa<AddLOp>(user))
+      return false;
+  }
+  return !add->getUses().empty();
+}
+
+int gcfCseRowBaseAddsInBlock(BasicBlock *bb, bool debug) {
+  std::map<GcfRowKey, std::vector<AddLOp*>> groups;
+  for (auto *op : bb->getOps()) {
+    auto *add = dyn_cast<AddLOp>(op);
+    if (!add)
+      continue;
+    GcfRowKey key;
+    if (!gcfRowBaseKey(add, key))
+      continue;
+    if (!gcfAddOnlyUsedByAddL(add))
+      continue;
+    groups[key].push_back(add);
+  }
+
+  int removed = 0;
+  for (auto &[key, adds] : groups) {
+    if (adds.size() < 2)
+      continue;
+    AddLOp *keep = adds.front();
+    for (size_t i = 1; i < adds.size(); i++) {
+      AddLOp *dup = adds[i];
+      if (dup == keep)
+        continue;
+      dup->replaceAllUsesWith(keep);
+      dup->erase();
+      removed++;
+      if (debug) {
+        std::cerr << "[gep-chain-fold] cse row base addl in " << bbmap[bb]
+                  << " mul(iv," << key.mul.coeff << ")\n";
+      }
+    }
+  }
+  return removed;
+}
+
+}  // namespace
+
+GepChainFold::GepChainFold(ModuleOp *module, GcfMode modeIn) : Pass(module), mode(modeIn) {
   debug = envFlag("SYSY_CC_GEP_CHAIN_DEBUG");
 }
 
 std::map<std::string, int> GepChainFold::stats() {
   return {
-    { "folded", folded }
+    { "folded", folded },
+    { "cse", cse },
   };
 }
 
 void GepChainFold::runOnRegion(Region *region) {
   if (!region)
     return;
+
+  for (auto *bb : region->getBlocks()) {
+    int removed = gcfCseAddressMulsInBlock(bb, debug);
+    removed += gcfCseRowBaseAddsInBlock(bb, debug);
+    cse += removed;
+    folded += removed;
+  }
+
+  if (mode == GcfMode::CseOnly)
+    return;
+
   for (auto *bb : region->getBlocks()) {
     for (auto *op : bb->getOps()) {
       Op *addr = nullptr;
-      if (auto *load = dyn_cast<LoadOp>(op)) {
+      if (auto *load = dyn_cast<LoadOp>(op))
         addr = load->DEF(0);
-      } else if (auto *store = dyn_cast<StoreOp>(op)) {
+      else if (auto *store = dyn_cast<StoreOp>(op))
         addr = store->DEF(1);
-      }
       if (!addr)
         continue;
 
@@ -181,13 +277,10 @@ void GepChainFold::runOnRegion(Region *region) {
         folded++;
         if (debug) {
           std::cerr << "[gep-chain-fold] found chain of size " << chain.size();
-          for (auto *op : chain) {
-            std::cerr << " " << (op ? op->getName() : "null");
-          }
+          for (auto *chainOp : chain)
+            std::cerr << " " << (chainOp ? chainOp->getName() : "null");
           std::cerr << "\n";
         }
-        // Phase 2.4: attempt rewrite for chains without Phi (static address calc).
-        // For Phi-carrying chains (matmul2 k-loop), we only count for now.
         tryRewriteChain(op, chain);
       }
     }
@@ -195,10 +288,6 @@ void GepChainFold::runOnRegion(Region *region) {
 }
 
 bool GepChainFold::tryFoldChain(Op *addr, std::vector<Op*> &chain) {
-  // Phase 2.3 improved detection:
-  // 1. Must have a GetGlobalOp base (via getBaseGlobal)
-  // 2. The address is computed via a chain of AddL / MulI / MulL / Phi
-  // 3. Require at least 3 address ops (base + at least two AddL/Mul) for a "chain"
   if (!addr)
     return false;
 
@@ -214,14 +303,13 @@ bool GepChainFold::tryFoldChain(Op *addr, std::vector<Op*> &chain) {
     visited.insert(cur);
     chain.push_back(cur);
     opCount++;
-    if (auto *add = dyn_cast<AddLOp>(cur)) {
+    if (auto *add = dyn_cast<AddLOp>(cur))
       cur = add->DEF(0);
-    } else if (auto *mul = dyn_cast<MulIOp>(cur)) {
+    else if (auto *mul = dyn_cast<MulIOp>(cur))
       cur = mul->DEF(0);
-    } else if (auto *mul = dyn_cast<MulLOp>(cur)) {
+    else if (auto *mul = dyn_cast<MulLOp>(cur))
       cur = mul->DEF(0);
-    } else if (auto *phi = dyn_cast<PhiOp>(cur)) {
-      // For phi-carried addresses, take the first non-phi operand to continue.
+    else if (auto *phi = dyn_cast<PhiOp>(cur)) {
       cur = nullptr;
       for (int i = 0; i < phi->getOperandCount(); i++) {
         if (!isa<PhiOp>(phi->DEF(i))) {
@@ -235,7 +323,6 @@ bool GepChainFold::tryFoldChain(Op *addr, std::vector<Op*> &chain) {
     depth++;
   }
 
-  // Require a meaningful chain: base + at least two address ops.
   if (opCount >= 3)
     return true;
 
@@ -246,27 +333,14 @@ bool GepChainFold::tryFoldChain(Op *addr, std::vector<Op*> &chain) {
 void GepChainFold::tryRewriteChain(Op *memOp, const std::vector<Op*> &chain) {
   if (!memOp || chain.empty())
     return;
-  // Rewrite: normalize operand order for both static and Phi-carrying chains.
-  // For Phi chains (matmul2 k-loop), we normalize incoming edge address ops.
-  // This helps GVN see common subexpressions without changing loop structure.
-  bool changed = tryNormalizeAddressChain(chain, debug);
-  if (changed) {
+  if (tryNormalizeAddressChain(chain, debug)) {
     folded++;
     if (debug)
       std::cerr << "[gep-chain-fold] rewrite changed, folded now " << folded << "\n";
   }
-  // Placeholder for more aggressive rewrite using Builder (common subexpr extraction).
-  // Real implementation would:
-  //   1. Identify repeated sub-chains (e.g., mul(i, N) used by multiple loads)
-  //   2. Use Builder to create a single definition
-  //   3. replaceAllUsesWith for duplicate sub-chains
-  // This requires per-region analysis (collect all chains first) and is left
-  // as future work after validating the current normalization.
 }
 
 void GepChainFold::run() {
-  auto funcs = collectFuncs();
-  for (auto *func : funcs) {
+  for (auto *func : collectFuncs())
     runOnRegion(func->getRegion());
-  }
 }

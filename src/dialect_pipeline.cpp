@@ -203,6 +203,12 @@ void dpipeAppendLoopOptPasses(sys::PassManager &pm) {
 void dpipeAppendMiscOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::RegularFold>();
   pm.addPass<sys::DCE>(/*elimBlocks=*/true);
+  if (!envFlagTruthy("SYSY_CC_NO_REASSOCIATE"))
+    pm.addPass<sys::Reassociate>();
+  if (!envFlagTruthy("SYSY_CC_NO_ARRAY_STRIDE"))
+    pm.addPass<sys::ArrayStrideAnalysis>();
+  if (!envFlagTruthy("SYSY_CC_NO_GEP_CHAIN"))
+    pm.addPass<sys::GepChainFold>(sys::GcfMode::CseOnly);
   pm.addPass<sys::GVN>();
   pm.addPass<sys::SimplifyCFG>();
   pm.addPass<sys::Alias>();
