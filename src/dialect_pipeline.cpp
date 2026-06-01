@@ -172,11 +172,13 @@ void dpipeAppendLoopOptPasses(sys::PassManager &pm) {
   if (!envFlagTruthy("SYSY_CC_NO_LOOP_INTERCHANGE"))
     pm.addPass<sys::LoopInterchange>();
   if (!envFlagTruthy("SYSY_CC_NO_NEST_SPLIT"))
-    pm.addPass<sys::LoopNestSplit>();
+    pm.addPass<sys::LoopNestSplit>(sys::LnsPhase::Mark);
   if (!envFlagTruthy("SYSY_CC_NO_SCALAR_PROMOTION"))
     pm.addPass<sys::ScalarPromotion>();
   if (!envFlagTruthy("SYSY_CC_NO_ROW_SCRATCH_MATMUL"))
     pm.addPass<sys::RowScratchMatmul>();
+  if (!envFlagTruthy("SYSY_CC_NO_NEST_SPLIT"))
+    pm.addPass<sys::LoopNestSplit>(sys::LnsPhase::CfgSplit);
   if (!envFlagTruthy("SYSY_CC_NO_LOOP_TILING"))
     pm.addPass<sys::LoopTiling>();
   pm.addPass<sys::LICM>();

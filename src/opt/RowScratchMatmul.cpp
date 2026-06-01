@@ -185,18 +185,24 @@ bool rsmIsSimpleIncrement(Op *op, Op *phi) {
          (b == phi && isa<IntOp>(a) && V(a) == 1);
 }
 
+std::vector<FromAttr*> rsmCollectFromAttrs(const std::vector<Attr*> &attrs) {
+  std::vector<FromAttr*> froms;
+  froms.reserve(attrs.size());
+  for (auto *attr : attrs)
+    if (auto *from = dyn_cast<FromAttr>(attr))
+      froms.push_back(from);
+  return froms;
+}
+
 std::pair<Op*, Op*> rsmPhiIncomingByLatch(Op *phi, BasicBlock *latch) {
   Op *fromLatch = nullptr;
   Op *fromOther = nullptr;
   const auto &ops = phi->getOperands();
-  const auto &rsmAttrs = phi->getAttrs();
-  if (ops.size() != rsmAttrs.size())
+  auto froms = rsmCollectFromAttrs(phi->getAttrs());
+  if (ops.size() != froms.size())
     return { nullptr, nullptr };
-  for (int i = 0; i < ops.size(); i++) {
-    auto from = dyn_cast<FromAttr>(rsmAttrs[i]);
-    if (!from)
-      continue;
-    if (from->bb == latch)
+  for (int i = 0; i < (int)ops.size(); i++) {
+    if (froms[i]->bb == latch)
       fromLatch = ops[i].defining;
     else
       fromOther = ops[i].defining;
@@ -483,8 +489,9 @@ MulIOp *rsmReductionMulFromStep(PhiOp *phi, Op *step) {
 
 bool rsmFindKLoopSumReduction(LoopInfo *kLoop, RsmSumReduction &red) {
   red = {};
-  if (!kLoop)
+  if (!kLoop || kLoop->latches.size() != 1)
     return false;
+  auto *latch = kLoop->getLatch();
 
   for (auto bb : kLoop->getBlocks()) {
     for (auto op : bb->getOps()) {
@@ -492,33 +499,17 @@ bool rsmFindKLoopSumReduction(LoopInfo *kLoop, RsmSumReduction &red) {
       if (!phi)
         continue;
 
-      Op *start = nullptr;
-      Op *step = nullptr;
-      const auto &attrs = phi->getAttrs();
-      for (int i = 0; i < phi->getOperandCount(); i++) {
-        auto from = dyn_cast<FromAttr>(attrs[i]);
-        if (!from || !from->bb)
-          continue;
-        bool fromLatch = kLoop->latches.count(from->bb);
-        if (!fromLatch && kLoop->contains(from->bb)) {
-          for (auto succ : from->bb->succs) {
-            if (succ == phi->getParent()) {
-              fromLatch = true;
-              break;
-            }
-          }
-        }
-        if (fromLatch)
-          step = phi->DEF(i);
-        else
-          start = phi->DEF(i);
-      }
+      auto [start, step] = rsmPhiIncomingByLatch(phi, latch);
       if (!start || !step)
         continue;
 
       auto rawStart = rsmStripSinglePhi(start);
-      if (!rawStart || !isa<IntOp>(rawStart) || V(rawStart) != 0)
+      if (!rawStart)
         continue;
+      if (!rsmKLoopHasInteriorMark(kLoop)) {
+        if (!isa<IntOp>(rawStart) || V(rawStart) != 0)
+          continue;
+      }
 
       MulIOp *rawMul = rsmReductionMulFromStep(phi, step);
       MulIOp *mul = rsmInnerProductMul(rawMul);
