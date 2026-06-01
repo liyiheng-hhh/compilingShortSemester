@@ -16,6 +16,7 @@ enum class LnsPhase {
 /// Experimental pass (Phase 3): split guarded matmul-like nests into
 /// interior (no guard, eligible for aggressive RowScratch) and border.
 /// On by default in O1; disable with SYSY_CC_NO_NEST_SPLIT=1.
+/// CFG peel (border/interior split) is opt-in: SYSY_CC_ENABLE_NEST_CFG_SPLIT=1.
 /// Lightweight version: reuses LoopAnalysis + ParallelizableAttr.
 class LoopNestSplit : public Pass {
   int candidates = 0;

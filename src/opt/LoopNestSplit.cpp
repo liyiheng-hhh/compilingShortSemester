@@ -32,7 +32,9 @@ int envInt(const char *name, int fallback) {
 }
 
 bool cfgSplitEnabled() {
-  return !envFlag("SYSY_CC_NO_NEST_CFG_SPLIT");
+  // Opt-in: k-border peel doubles matmul kernel size on platform (~185→360 asm lines)
+  // without RowScratch win on guarded matmul2. Keep interior marking only by default.
+  return envFlag("SYSY_CC_ENABLE_NEST_CFG_SPLIT");
 }
 
 bool lnsKLoopHasInnerGuard(LoopInfo *kLoop) {
