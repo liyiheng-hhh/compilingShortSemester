@@ -234,6 +234,21 @@ public:
   void run() override;
 };
 
+// Detect (and eventually rewrite) i-j-k dot-product nests for cache-friendly order.
+class LoopInterchange : public Pass {
+  int candidates = 0;
+  int interchanged = 0;
+  int rejectedGuard = 0;
+
+  void runImpl(LoopForest &forest, FuncOp *func);
+public:
+  LoopInterchange(ModuleOp *module): Pass(module) {}
+
+  std::string name() override { return "loop-interchange"; }
+  std::map<std::string, int> stats() override;
+  void run() override;
+};
+
 class Vectorize : public Pass {
   std::unordered_map<Op*, Op*> base;
   

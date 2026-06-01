@@ -16,6 +16,7 @@
 #include "opt/Passes.h"
 #include "opt/GepChainFold.h"
 #include "opt/LoopNestSplit.h"
+#include "opt/MemoryOpt.h"
 #include "opt/ScalarPromotion.h"
 #include "opt/SMTPasses.h"
 #include "opt/LoopPasses.h"
@@ -130,6 +131,11 @@ void dpipeAppendPostFlattenPasses(sys::PassManager &pm) {
     pm.addPass<sys::Inline>(dpipeInlineThreshold());
   pm.addPass<sys::DCE>(/*elimBlocks=*/true);
   pm.addPass<sys::Localize>(/*beforeFlattenCFG=*/false);
+  if (!envFlagTruthy("SYSY_CC_NO_ALLOCA_COALESCE"))
+    pm.addPass<sys::AllocaCoalesce>();
+  pm.addPass<sys::Alias>();
+  if (!envFlagTruthy("SYSY_CC_NO_REMOVE_ONLY_WRITE_ARRAY"))
+    pm.addPass<sys::RemoveOnlyWriteArray>();
   if (!envFlagTruthy("SYSY_CC_NO_GLOBALIZE"))
     pm.addPass<sys::Globalize>();
 }
@@ -148,6 +154,10 @@ void dpipeAppendMemoryOptPasses(sys::PassManager &pm) {
     pm.addPass<sys::Reassociate>();
   if (!envFlagTruthy("SYSY_CC_NO_GEP_CHAIN"))
     pm.addPass<sys::GepChainFold>();
+  if (!envFlagTruthy("SYSY_CC_NO_REMOVE_REDUNDANT_STORE"))
+    pm.addPass<sys::RemoveRedundantStore>();
+  if (!envFlagTruthy("SYSY_CC_NO_ARRAY_STORE_LOAD_FWD"))
+    pm.addPass<sys::ArrayStoreLoadForward>();
   if (!envFlagTruthy("SYSY_CC_NO_DSE_DLE")) {
     pm.addPass<sys::DSE>();
     pm.addPass<sys::DLE>();
@@ -159,6 +169,8 @@ void dpipeAppendLoopOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::CanonicalizeLoop>(/*lcssa=*/true);
   pm.addPass<sys::LoopRotate>();
   pm.addPass<sys::CanonicalizeLoop>(/*lcssa=*/false);
+  if (!envFlagTruthy("SYSY_CC_NO_LOOP_INTERCHANGE"))
+    pm.addPass<sys::LoopInterchange>();
   if (!envFlagTruthy("SYSY_CC_NO_NEST_SPLIT"))
     pm.addPass<sys::LoopNestSplit>();
   if (!envFlagTruthy("SYSY_CC_NO_SCALAR_PROMOTION"))
