@@ -171,13 +171,13 @@ void dpipeAppendLoopOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::CanonicalizeLoop>(/*lcssa=*/false);
   if (!envFlagTruthy("SYSY_CC_NO_LOOP_INTERCHANGE"))
     pm.addPass<sys::LoopInterchange>();
-  if (!envFlagTruthy("SYSY_CC_NO_NEST_SPLIT"))
+  if (envFlagTruthy("SYSY_CC_ENABLE_NEST_SPLIT"))
     pm.addPass<sys::LoopNestSplit>(sys::LnsPhase::Mark);
   if (!envFlagTruthy("SYSY_CC_NO_SCALAR_PROMOTION"))
     pm.addPass<sys::ScalarPromotion>();
   if (!envFlagTruthy("SYSY_CC_NO_ROW_SCRATCH_MATMUL"))
     pm.addPass<sys::RowScratchMatmul>();
-  if (!envFlagTruthy("SYSY_CC_NO_NEST_SPLIT") &&
+  if (envFlagTruthy("SYSY_CC_ENABLE_NEST_SPLIT") &&
       envFlagTruthy("SYSY_CC_ENABLE_NEST_CFG_SPLIT"))
     pm.addPass<sys::LoopNestSplit>(sys::LnsPhase::CfgSplit);
   if (!envFlagTruthy("SYSY_CC_NO_LOOP_TILING"))
@@ -204,12 +204,15 @@ void dpipeAppendLoopOptPasses(sys::PassManager &pm) {
 void dpipeAppendMiscOptPasses(sys::PassManager &pm) {
   pm.addPass<sys::RegularFold>();
   pm.addPass<sys::DCE>(/*elimBlocks=*/true);
-  if (!envFlagTruthy("SYSY_CC_NO_REASSOCIATE"))
-    pm.addPass<sys::Reassociate>();
-  if (!envFlagTruthy("SYSY_CC_NO_ARRAY_STRIDE"))
-    pm.addPass<sys::ArrayStrideAnalysis>();
-  if (!envFlagTruthy("SYSY_CC_NO_GEP_CHAIN"))
-    pm.addPass<sys::GepChainFold>(sys::GcfMode::CseOnly);
+  // Late addr rewrites (E.1) opt-in: unproven on platform kernel time for matmul.
+  if (dpipeDialectPassEnabled("SYSY_CC_ENABLE_LATE_ADDR_OPT", false)) {
+    if (!envFlagTruthy("SYSY_CC_NO_REASSOCIATE"))
+      pm.addPass<sys::Reassociate>();
+    if (!envFlagTruthy("SYSY_CC_NO_ARRAY_STRIDE"))
+      pm.addPass<sys::ArrayStrideAnalysis>();
+    if (!envFlagTruthy("SYSY_CC_NO_GEP_CHAIN"))
+      pm.addPass<sys::GepChainFold>(sys::GcfMode::CseOnly);
+  }
   pm.addPass<sys::GVN>();
   pm.addPass<sys::SimplifyCFG>();
   pm.addPass<sys::Alias>();
