@@ -89,7 +89,22 @@ void GCM::scheduleLate(Op *op) {
     op->moveBefore(term);
   }
 
-  // If `op` is used in its current block, make sure it goes before its uses.
+  // Keep operands defined in this block before the op, and the op before uses.
+  // Keep same-block operands before this op (parallel-assignment safety).
+  parent = op->getParent();
+  Op *lastSameBlockDef = nullptr;
+  for (auto *scan : parent->getOps()) {
+    if (scan == op)
+      break;
+    for (auto operand : op->getOperands()) {
+      Op *def = operand.defining;
+      if (def == scan && !isa<PhiOp>(def))
+        lastSameBlockDef = scan;
+    }
+  }
+  if (lastSameBlockDef)
+    op->moveAfter(lastSameBlockDef);
+
   parent = op->getParent();
   for (auto x : parent->getOps()) {
     if (x != op && !isa<PhiOp>(x) && op->getUses().count(x)) {

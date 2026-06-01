@@ -86,6 +86,12 @@ size_t BlockLocalCSE::MaterialKeyHash::operator()(const MaterialKey &k) const {
   return h;
 }
 
+bool isArgReg(const std::string &r) {
+  if (r.size() != 2 || r[0] != 'a')
+    return false;
+  return r[1] >= '0' && r[1] <= '7';
+}
+
 bool BlockLocalCSE::isCSEable(const std::string &mnemonic) {
   static const char *arith[] = {
       "add", "addi", "addw", "addiw", "sub", "subw",
@@ -464,7 +470,10 @@ bool BlockLocalCSE::optimizeBlock(std::vector<std::string> &lines, size_t start,
         if (it != matAvail.end()) {
           AsmInst canonInst;
           parseAsmLine(lines[it->second.defIdx], canonInst);
-          if (isAvailEntryLive(lines, start, end, idx, it->second, canonInst) &&
+          const bool crossReg = it->second.defReg != dupRd;
+          if (crossReg && (isArgReg(dupRd) || isArgReg(it->second.defReg))) {
+            matAvail.erase(it);
+          } else if (isAvailEntryLive(lines, start, end, idx, it->second, canonInst) &&
               !hasUsesOutsideBlock(lines, start, end, idx, dupRd) &&
               allUsesReplaceable(lines, start, end, idx, it->second.defIdx,
                                  dupRd, it->second.defReg)) {
