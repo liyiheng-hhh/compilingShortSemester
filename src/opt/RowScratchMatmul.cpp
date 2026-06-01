@@ -23,6 +23,17 @@ bool rsmEnvEnabled(const char *name, bool fallback) {
   return std::strcmp(raw, "0") != 0 && std::strcmp(raw, "false") != 0;
 }
 
+bool rsmKLoopHasInteriorMark(LoopInfo *kLoop) {
+  if (!kLoop || !kLoop->header)
+    return false;
+  for (auto *op : kLoop->header->getOps()) {
+    if (op->has<RsmInteriorAttr>())
+      return true;
+  }
+  auto *term = kLoop->header->getLastOp();
+  return term && term->has<RsmInteriorAttr>();
+}
+
 std::vector<Value> rsmVals(std::initializer_list<Op*> ops) {
   std::vector<Value> result;
   result.reserve(ops.size());
@@ -643,9 +654,7 @@ bool rsmTryMatchMatmulFromK(LoopInfo *kLoop, const std::map<std::string, GlobalO
 
   RsmSumReduction redForm;
   if (rsmFindKLoopSumReduction(kLoop, redForm) && isa<PhiOp>(redForm.step)) {
-    // LoopNestSplit runs before RowScratch in O1 by default; allow guarded k-loops
-    // unless explicitly disabled (SYSY_CC_NO_NEST_SPLIT=1).
-    if (rsmEnvEnabled("SYSY_CC_NO_NEST_SPLIT", false))
+    if (!rsmKLoopHasInteriorMark(kLoop))
       return reject("guarded-k");
   }
 

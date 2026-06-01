@@ -12,7 +12,8 @@ namespace sys {
 /// On by default in O1; disable with SYSY_CC_NO_NEST_SPLIT=1.
 /// Lightweight version: reuses LoopAnalysis + ParallelizableAttr.
 class LoopNestSplit : public Pass {
-  int split = 0;
+  int candidates = 0;
+  int marked = 0;
   bool debug = false;
 
   void runOnFunc(FuncOp *func);

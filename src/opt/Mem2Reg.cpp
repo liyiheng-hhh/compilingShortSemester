@@ -42,6 +42,12 @@ bool mrPrepareRegionForPromo(Region *region) {
     // Unreachable phis are irrelevant to promotion and can corrupt DF walk.
     auto phis = bb->getPhis();
     for (auto *phi : phis) {
+      if (!phi->getUses().empty()) {
+        // Loop transforms can leave phis in blocks that look unreachable to the
+        // dom tree while still feeding live loop headers (e.g. after interchange).
+        ok = false;
+        continue;
+      }
       phi->erase();
       changed = true;
     }

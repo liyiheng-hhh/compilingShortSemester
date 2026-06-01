@@ -17,6 +17,49 @@ bool envFlag(const char *name) {
   return std::strcmp(v, "0") != 0 && std::strcmp(v, "false") != 0;
 }
 
+bool lnsKLoopHasInnerGuard(LoopInfo *kLoop) {
+  if (!kLoop)
+    return false;
+  auto header = kLoop->header;
+  BasicBlock *latch = kLoop->latches.size() == 1 ? kLoop->getLatch() : nullptr;
+  for (auto *bb : kLoop->getBlocks()) {
+    if (bb == header || bb == latch)
+      continue;
+    for (auto *op : bb->getOps()) {
+      if (isa<ModIOp>(op) || isa<SelectOp>(op))
+        return true;
+      if (isa<BranchOp>(op) && cast<BranchOp>(op)->has<ElseAttr>())
+        return true;
+    }
+  }
+  return false;
+}
+
+bool lnsIsMatmulLikeNest(LoopInfo *kLoop) {
+  if (!kLoop || !kLoop->subloops.empty())
+    return false;
+  LoopInfo *jLoop = kLoop->parent;
+  if (!jLoop)
+    return false;
+  LoopInfo *iLoop = jLoop->parent;
+  return iLoop != nullptr;
+}
+
+void lnsMarkKLoopInterior(LoopInfo *kLoop) {
+  if (!kLoop || !kLoop->header)
+    return;
+  for (auto *op : kLoop->header->getOps()) {
+    if (!op->has<RsmInteriorAttr>())
+      op->add<RsmInteriorAttr>();
+  }
+  if (auto *term = kLoop->header->getLastOp()) {
+    if (!term->has<RsmInteriorAttr>())
+      term->add<RsmInteriorAttr>();
+  }
+  if (kLoop->induction && !kLoop->induction->has<RsmInteriorAttr>())
+    kLoop->induction->add<RsmInteriorAttr>();
+}
+
 }  // namespace
 
 LoopNestSplit::LoopNestSplit(ModuleOp *module) : Pass(module) {
@@ -25,33 +68,38 @@ LoopNestSplit::LoopNestSplit(ModuleOp *module) : Pass(module) {
 
 std::map<std::string, int> LoopNestSplit::stats() {
   return {
-    { "split", split }
+    { "candidates", candidates },
+    { "marked", marked },
+    { "split", marked },
   };
 }
 
 void LoopNestSplit::runOnFunc(FuncOp *func) {
   if (!func)
     return;
-  // Phase 3.3: detect 3+ level nests (matmul-like) and mark the innermost k-loop
-  // with RsmInteriorAttr so RowScratchMatmul can skip guarded-k reject.
+
   LoopAnalysis analysis(module);
-  auto region = func->getRegion();
-  auto forest = analysis.runImpl(region);
-  for (auto *loop : forest.getLoops()) {
-    if (loop->subloops.size() >= 2) {
-      // 3+ level nest detected (matmul-like). Phase 3 uses env flag to tell
-      // RowScratchMatmul to skip guarded-k. No attr marking in this stable version.
-      split++;
-      if (debug) {
-        std::cerr << "[loop-nest-split] candidate nest with " << loop->subloops.size() << " subloops\n";
-      }
+  auto forest = analysis.runImpl(func->getRegion());
+  for (auto *kLoop : forest.getLoops()) {
+    if (!lnsIsMatmulLikeNest(kLoop))
+      continue;
+    candidates++;
+    if (!lnsKLoopHasInnerGuard(kLoop)) {
+      if (debug)
+        std::cerr << "[loop-nest-split] skip unguarded k header="
+                  << bbmap[kLoop->header] << "\n";
+      continue;
+    }
+    lnsMarkKLoopInterior(kLoop);
+    marked++;
+    if (debug) {
+      std::cerr << "[loop-nest-split] marked interior k header="
+                << bbmap[kLoop->header] << "\n";
     }
   }
 }
 
 void LoopNestSplit::run() {
-  auto funcs = collectFuncs();
-  for (auto *func : funcs) {
+  for (auto *func : collectFuncs())
     runOnFunc(func);
-  }
 }
