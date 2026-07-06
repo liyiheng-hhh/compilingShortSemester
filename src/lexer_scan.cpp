@@ -41,68 +41,34 @@ Token Lexer::scanNumber(){
     Token tok;
     tok.line = line_;
     tok.col = col_;
-    bool isFloat = false;
-    bool isHex = peek() == '0' && (peek(1) == 'x' || peek(1) == 'X');
-
-    if (isHex) {
+    bool negative = false;
+    if (peek() == '-') {
+      negative = true;
+      get();
+    }
+    if (peek() == '0') {
+      if (negative) {
+        tok.text.push_back('-');
+      }
       tok.text.push_back(get());
-      tok.text.push_back(get());
-      while (isxdigit(static_cast<unsigned char>(peek()))) {
-        tok.text.push_back(get());
+      if (isdigit(static_cast<unsigned char>(peek()))) {
+        throw CompileError("line " + to_string(tok.line) + ":" +
+                           to_string(tok.col) + ": invalid integer literal");
       }
-      if (peek() == '.') {
-        isFloat = true;
-        tok.text.push_back(get());
-        while (isxdigit(static_cast<unsigned char>(peek()))) {
-          tok.text.push_back(get());
-        }
+    } else if (peek() >= '1' && peek() <= '9') {
+      if (negative) {
+        tok.text.push_back('-');
       }
-      if (peek() == 'p' || peek() == 'P') {
-        isFloat = true;
-        tok.text.push_back(get());
-        if (peek() == '+' || peek() == '-') {
-          tok.text.push_back(get());
-        }
-        while (isdigit(static_cast<unsigned char>(peek()))) {
-          tok.text.push_back(get());
-        }
-      }
-    } else {
       while (isdigit(static_cast<unsigned char>(peek()))) {
         tok.text.push_back(get());
       }
-      if (peek() == '.') {
-        isFloat = true;
-        tok.text.push_back(get());
-        while (isdigit(static_cast<unsigned char>(peek()))) {
-          tok.text.push_back(get());
-        }
-      }
-      if (peek() == 'e' || peek() == 'E') {
-        isFloat = true;
-        tok.text.push_back(get());
-        if (peek() == '+' || peek() == '-') {
-          tok.text.push_back(get());
-        }
-        while (isdigit(static_cast<unsigned char>(peek()))) {
-          tok.text.push_back(get());
-        }
-      }
-    }
-
-    if (peek() == 'f' || peek() == 'F' || peek() == 'l' || peek() == 'L') {
-      isFloat = true;
-      get();
-    }
-
-    if (isFloat) {
-      tok.kind = TokenKind::FloatConst;
-      tok.floatVal = strtof(tok.text.c_str(), nullptr);
     } else {
-      tok.kind = TokenKind::IntConst;
-      long long v = strtoll(tok.text.c_str(), nullptr, 0);
-      tok.intVal = static_cast<int32_t>(v);
+      throw CompileError("line " + to_string(tok.line) + ":" +
+                         to_string(tok.col) + ": invalid integer literal");
     }
+    tok.kind = TokenKind::IntConst;
+    long long v = strtoll(tok.text.c_str(), nullptr, 10);
+    tok.intVal = static_cast<int32_t>(v);
     return tok;
   }
 
@@ -199,17 +165,17 @@ Token Lexer::scanPunct(){
         return one(TokenKind::AndAnd);
       }
       throw CompileError("line " + to_string(tok.line) + ":" + to_string(tok.col) +
-                         ": bitwise '&' is not in SysY 2022 (use '&&' for logical and)");
+                         ": bitwise '&' is not in ToyC (use '&&' for logical and)");
     case '|':
       if (peek() == '|') {
         tok.text.push_back(get());
         return one(TokenKind::OrOr);
       }
       throw CompileError("line " + to_string(tok.line) + ":" + to_string(tok.col) +
-                         ": bitwise '|' is not in SysY 2022 (use '||' for logical or)");
+                         ": bitwise '|' is not in ToyC (use '||' for logical or)");
     case '^':
       throw CompileError("line " + to_string(tok.line) + ":" + to_string(tok.col) +
-                         ": '^' is not in SysY 2022");
+                         ": '^' is not in ToyC");
     case '=':
       if (peek() == '=') {
         tok.text.push_back(get());
@@ -219,7 +185,7 @@ Token Lexer::scanPunct(){
     case '<':
       if (peek() == '<') {
         throw CompileError("line " + to_string(tok.line) + ":" + to_string(tok.col) +
-                             ": '<<' is not in SysY 2022");
+                             ": '<<' is not in ToyC");
       }
       if (peek() == '=') {
         tok.text.push_back(get());
@@ -229,7 +195,7 @@ Token Lexer::scanPunct(){
     case '>':
       if (peek() == '>') {
         throw CompileError("line " + to_string(tok.line) + ":" + to_string(tok.col) +
-                             ": '>>' is not in SysY 2022");
+                             ": '>>' is not in ToyC");
       }
       if (peek() == '=') {
         tok.text.push_back(get());

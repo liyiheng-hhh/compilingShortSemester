@@ -54,29 +54,7 @@ void Semantic::addRuntime(const string &name, BaseType ret, vector<ParamType> pa
   }
 
 void Semantic::addRuntimeFunctions() {
-    addRuntime("getint", BaseType::Int, {});
-    addRuntime("getch", BaseType::Int, {});
-    addRuntime("getfloat", BaseType::Float, {});
-    addRuntime("getarray", BaseType::Int,
-               {ParamType{BaseType::Int, true, {}}});
-    addRuntime("getfarray", BaseType::Int,
-               {ParamType{BaseType::Float, true, {}}});
-    addRuntime("putint", BaseType::Void, {ParamType{BaseType::Int, false, {}}});
-    addRuntime("putch", BaseType::Void, {ParamType{BaseType::Int, false, {}}});
-    addRuntime("putfloat", BaseType::Void,
-               {ParamType{BaseType::Float, false, {}}});
-    addRuntime("putarray", BaseType::Void,
-               {ParamType{BaseType::Int, false, {}},
-                ParamType{BaseType::Int, true, {}}});
-    addRuntime("putfarray", BaseType::Void,
-               {ParamType{BaseType::Int, false, {}},
-                ParamType{BaseType::Float, true, {}}});
-    addRuntime("starttime", BaseType::Void, {ParamType{BaseType::Int, false, {}}},
-               "_sysy_starttime", true);
-    addRuntime("stoptime", BaseType::Void, {ParamType{BaseType::Int, false, {}}},
-               "_sysy_stoptime", true);
-    addRuntime("putf", BaseType::Void, {ParamType{BaseType::Int, true, {}}},
-               "putf", false, true);
+    // ToyC 无 I/O 运行时库
   }
 
 void Semantic::predeclareUserFunctions() {
@@ -199,34 +177,22 @@ vector<int> Semantic::evalDims(vector<ExprPtr> &dims) {
 
 void Semantic::visitGlobalDecl(DeclStmt &decl) {
     for (VarDef &def : decl.defs) {
-      vector<int> dims = evalDims(def.dims);
-      bool isArray = !dims.empty();
+      if (!def.init || def.init->isList || !def.init->expr) {
+        fail(def.line, "declaration requires initializer");
+      }
       Symbol *sym = declareSymbol(def.name, decl.base, decl.isConst, true,
-                                  isArray, false, false, dims, def.line);
+                                  false, false, false, {}, def.line);
       def.symbol = sym;
-      if (isArray) {
-        if (def.init) {
-          sym->initValues = flattenConstInit(def.init.get(), dims, decl.base);
-        } else {
-          sym->initValues.assign(product(dims), zeroConst(decl.base));
-        }
-      } else {
-        ConstValue value = zeroConst(decl.base);
-        if (def.init) {
-          if (def.init->isList || !def.init->expr) {
-            fail(def.line, "scalar initializer must be an expression");
-          }
-          visitExpr(def.init->expr.get());
-          if (!def.init->expr->isConst) {
-            fail(def.line, "global initializer must be constant");
-          }
-          value = castConst(def.init->expr->constVal, decl.base);
-        }
-        sym->hasConstValue = decl.isConst;
-        sym->constValue = value;
-        if (sym->needsStorage) {
-          sym->initValues = {value};
-        }
+      ConstValue value = zeroConst(decl.base);
+      visitExpr(def.init->expr.get());
+      if (!def.init->expr->isConst) {
+        fail(def.line, "global initializer must be constant");
+      }
+      value = castConst(def.init->expr->constVal, decl.base);
+      sym->hasConstValue = decl.isConst;
+      sym->constValue = value;
+      if (sym->needsStorage) {
+        sym->initValues = {value};
       }
     }
   }

@@ -58,10 +58,10 @@ private:
 
   StmtPtr parseStmt();
 
-  // SysY 2022: Exp → AddExp（单目仅 + −，无 !）
+  // ToyC: Exp → LOrExpr（含 !）
   ExprPtr parseExp();
 
-  // SysY 2022: Cond → LOrExp（单目可含 !）
+  // 保留 parseCond 供内部使用，与 parseExp 等价
   ExprPtr parseCond();
 
   unique_ptr<LValExpr> parseLVal();

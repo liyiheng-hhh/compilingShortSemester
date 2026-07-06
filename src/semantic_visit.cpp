@@ -89,27 +89,19 @@ void Semantic::visitStmt(Stmt *stmt) {
 
 void Semantic::visitLocalDecl(DeclStmt &decl) {
     for (VarDef &def : decl.defs) {
-      vector<int> dims = evalDims(def.dims);
-      bool isArray = !dims.empty();
-      Symbol *sym = declareSymbol(def.name, decl.base, decl.isConst, false,
-                                  isArray, false, false, dims, def.line);
-      def.symbol = sym;
-      if (def.init) {
-        visitInit(def.init.get());
+      if (!def.init || def.init->isList || !def.init->expr) {
+        fail(def.line, "declaration requires initializer");
       }
-      if (decl.isConst && !isArray) {
-        if (!def.init || def.init->isList || !def.init->expr ||
-            !def.init->expr->isConst) {
-          fail(def.line, "const scalar requires constant initializer");
+      Symbol *sym = declareSymbol(def.name, decl.base, decl.isConst, false,
+                                  false, false, false, {}, def.line);
+      def.symbol = sym;
+      visitInit(def.init.get());
+      if (decl.isConst) {
+        if (!def.init->expr->isConst) {
+          fail(def.line, "const requires constant initializer");
         }
         sym->hasConstValue = true;
         sym->constValue = castConst(def.init->expr->constVal, decl.base);
-      }
-      if (decl.isConst && isArray) {
-        if (!def.init) {
-          fail(def.line, "const array requires initializer");
-        }
-        sym->initValues = flattenConstInit(def.init.get(), dims, decl.base);
       }
     }
   }

@@ -15,8 +15,8 @@ bool parIsUnaryOpToken(TokenKind kind, bool allowBang) {
 }  // namespace
 
 ExprPtr Parser::parseExp() {
-  // SysY 2022: Exp → AddExp；语义：单目不出现 '!'
-  return parseAdd(false);
+  // ToyC: Expr → LOrExpr
+  return parseLOr();
 }
 
 ExprPtr Parser::parseCond() {
@@ -26,12 +26,7 @@ ExprPtr Parser::parseCond() {
 
 unique_ptr<LValExpr> Parser::parseLVal() {
     const Token &name = expect(TokenKind::Ident, "identifier");
-    auto expr = make_unique<LValExpr>(name.line, name.text);
-    while (match(TokenKind::LBracket)) {
-      expr->indices.push_back(parseExp());
-      expect(TokenKind::RBracket, "']'");
-    }
-    return expr;
+    return make_unique<LValExpr>(name.line, name.text);
   }
 
 ExprPtr Parser::parsePrimary() {
@@ -43,14 +38,6 @@ ExprPtr Parser::parsePrimary() {
     if (check(TokenKind::IntConst)) {
       const Token &t = tokens_[pos_++];
       return make_unique<NumberExpr>(t.line, t.intVal);
-    }
-    if (check(TokenKind::FloatConst)) {
-      const Token &t = tokens_[pos_++];
-      return make_unique<NumberExpr>(t.line, t.floatVal);
-    }
-    if (check(TokenKind::String)) {
-      const Token &t = tokens_[pos_++];
-      return make_unique<StringExpr>(t.line, t.text);
     }
     if (check(TokenKind::Ident)) {
       if (tok(1).kind == TokenKind::LParen) {

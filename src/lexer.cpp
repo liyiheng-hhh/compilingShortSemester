@@ -25,12 +25,9 @@ vector<Token> Lexer::run() {
   continue;
   }
   if (isdigit(static_cast<unsigned char>(c)) ||
-  (c == '.' && isdigit(static_cast<unsigned char>(peek(1))))) {
+      (c == '-' && (isdigit(static_cast<unsigned char>(peek(1))) ||
+                    peek(1) == '0'))) {
   tokens.push_back(scanNumber());
-  continue;
-  }
-  if (c == '"') {
-  tokens.push_back(scanString());
   continue;
   }
   tokens.push_back(scanPunct());

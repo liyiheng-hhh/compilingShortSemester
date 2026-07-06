@@ -12,8 +12,7 @@ Program Parser::parseProgram() {
       TopItem item;
       if (check(TokenKind::KwConst)) {
         item.decl = parseDecl();
-      } else if (check(TokenKind::KwVoid) || check(TokenKind::KwInt) ||
-                 check(TokenKind::KwFloat)) {
+      } else if (check(TokenKind::KwVoid) || check(TokenKind::KwInt)) {
         if (isFuncDefAhead()) {
           item.func = parseFuncDef();
         } else {
@@ -59,10 +58,7 @@ BaseType Parser::parseBType() {
     if (match(TokenKind::KwInt)) {
       return BaseType::Int;
     }
-    if (match(TokenKind::KwFloat)) {
-      return BaseType::Float;
-    }
-    throw error("expected int or float");
+    throw error("expected int");
   }
 
 BaseType Parser::parseFuncType() {
@@ -76,12 +72,7 @@ unique_ptr<DeclStmt> Parser::parseDecl() {
     bool isConst = match(TokenKind::KwConst);
     BaseType base = parseBType();
     auto decl = make_unique<DeclStmt>(tok().line, isConst, base);
-    while (true) {
-      decl->defs.push_back(parseVarDef(isConst));
-      if (!match(TokenKind::Comma)) {
-        break;
-      }
-    }
+    decl->defs.push_back(parseVarDef(true));
     expect(TokenKind::Semicolon, "';'");
     return decl;
   }
@@ -91,34 +82,19 @@ VarDef Parser::parseVarDef(bool requireInit) {
     const Token &name = expect(TokenKind::Ident, "identifier");
     def.name = name.text;
     def.line = name.line;
-    while (match(TokenKind::LBracket)) {
-      def.dims.push_back(parseExp());
-      expect(TokenKind::RBracket, "']'");
+    if (!match(TokenKind::Assign)) {
+      if (requireInit) {
+        throw error("declaration requires initializer");
+      }
+      return def;
     }
-    if (match(TokenKind::Assign)) {
-      def.init = parseInitVal();
-    } else if (requireInit) {
-      throw error("const definition requires initializer");
-    }
+    def.init = parseInitVal();
     return def;
   }
 
 unique_ptr<InitVal> Parser::parseInitVal() {
     auto init = make_unique<InitVal>();
-    if (match(TokenKind::LBrace)) {
-      init->isList = true;
-      if (!check(TokenKind::RBrace)) {
-        while (true) {
-          init->list.push_back(parseInitVal());
-          if (!match(TokenKind::Comma)) {
-            break;
-          }
-        }
-      }
-      expect(TokenKind::RBrace, "'}'");
-    } else {
-      init->expr = parseExp();
-    }
+    init->expr = parseExp();
     return init;
   }
 
@@ -148,14 +124,6 @@ Param Parser::parseParam() {
     param.base = parseBType();
     const Token &name = expect(TokenKind::Ident, "parameter name");
     param.name = name.text;
-    if (match(TokenKind::LBracket)) {
-      param.isArray = true;
-      expect(TokenKind::RBracket, "']'");
-      while (match(TokenKind::LBracket)) {
-        param.tailDims.push_back(parseExp());
-        expect(TokenKind::RBracket, "']'");
-      }
-    }
     return param;
   }
 
@@ -184,7 +152,7 @@ StmtPtr Parser::parseStmt() {
     }
     if (match(TokenKind::KwIf)) {
       expect(TokenKind::LParen, "'('");
-      auto cond = parseCond();
+      auto cond = parseExp();
       expect(TokenKind::RParen, "')'");
       auto thenStmt = parseStmt();
       StmtPtr elseStmt;
@@ -196,7 +164,7 @@ StmtPtr Parser::parseStmt() {
     }
     if (match(TokenKind::KwWhile)) {
       expect(TokenKind::LParen, "'('");
-      auto cond = parseCond();
+      auto cond = parseExp();
       expect(TokenKind::RParen, "')'");
       auto body = parseStmt();
       return make_unique<WhileStmt>(line, std::move(cond), std::move(body));

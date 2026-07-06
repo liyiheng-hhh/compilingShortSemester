@@ -7,7 +7,7 @@ using namespace std;
 namespace {
 
 bool parIsBTypeKind(TokenKind kind) {
-  return kind == TokenKind::KwInt || kind == TokenKind::KwFloat;
+  return kind == TokenKind::KwInt;
 }
 
 bool parIsFuncHeaderStart(TokenKind kind) {
