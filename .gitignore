@@ -6,6 +6,7 @@ out/
 *.exe
 *.s
 *.log
+tests/.tmp/
 .idea/
 .vscode/
 
