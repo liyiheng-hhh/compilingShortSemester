@@ -1430,8 +1430,8 @@ private:
                 return false;
             }
 
-            const std::string lhsReg = emitValueAsRegister(*expr.lhs, "t1");
-            const std::string rhsReg = emitValueAsRegister(*expr.rhs, "a0");
+            const std::string lhsReg = emitValueAsRegister(*expr.lhs, "t5");
+            const std::string rhsReg = emitValueAsRegister(*expr.rhs, "t0");
 
             if (expr.op == "+") {
                 body_ << "    add a0, " << lhsReg << ", " << rhsReg << '\n';
@@ -1618,12 +1618,12 @@ private:
         }
 
         std::string tempRegisterName(int index) const {
-            static const std::vector<std::string> regs = {"t1", "t2", "t3", "t4", "t5"};
+            static const std::vector<std::string> regs = {"t1", "t2", "t3", "t4"};
             return regs.at(static_cast<std::size_t>(index));
         }
 
         int tempRegisterCount() const {
-            return 5;
+            return 4;
         }
 
         void pushA0(bool forceStack = false) {
