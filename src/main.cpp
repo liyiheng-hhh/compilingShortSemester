@@ -1281,8 +1281,12 @@ private:
 
             const std::string elseLabel = newLabel("else");
             const std::string endLabel = newLabel("endif");
-            emitExpr(*stmt.expr);
-            body_ << "    beq a0, zero, " << elseLabel << '\n';
+            if (parent_.options_.optimize) {
+                emitBranchIfFalse(*stmt.expr, elseLabel);
+            } else {
+                emitExpr(*stmt.expr);
+                body_ << "    beq a0, zero, " << elseLabel << '\n';
+            }
             emitStmt(*stmt.thenBranch);
             if (stmt.elseBranch) {
                 body_ << "    jal zero, " << endLabel << '\n';
@@ -1305,8 +1309,12 @@ private:
             const std::string condLabel = newLabel("while_cond");
             const std::string endLabel = newLabel("while_end");
             body_ << condLabel << ":\n";
-            emitExpr(*stmt.expr);
-            body_ << "    beq a0, zero, " << endLabel << '\n';
+            if (parent_.options_.optimize) {
+                emitBranchIfFalse(*stmt.expr, endLabel);
+            } else {
+                emitExpr(*stmt.expr);
+                body_ << "    beq a0, zero, " << endLabel << '\n';
+            }
             loopStack_.push_back({condLabel, endLabel});
             emitStmt(*stmt.thenBranch);
             loopStack_.pop_back();
@@ -1371,6 +1379,82 @@ private:
                 return;
             }
             fail(expr.loc, "unknown unary operator");
+        }
+
+        void emitBranchIfFalse(const Expr& expr, const std::string& falseLabel) {
+            if (parent_.options_.optimize) {
+                const auto value = evalConst(expr);
+                if (value) {
+                    if (*value == 0) {
+                        body_ << "    jal zero, " << falseLabel << '\n';
+                    }
+                    return;
+                }
+            }
+
+            if (expr.kind == ExprKind::Unary && expr.op == "!") {
+                emitBranchIfTrue(*expr.lhs, falseLabel);
+                return;
+            }
+
+            if (expr.kind == ExprKind::Binary) {
+                if (expr.op == "&&") {
+                    emitBranchIfFalse(*expr.lhs, falseLabel);
+                    emitBranchIfFalse(*expr.rhs, falseLabel);
+                    return;
+                }
+                if (expr.op == "||") {
+                    const std::string trueLabel = newLabel("or_true");
+                    emitBranchIfTrue(*expr.lhs, trueLabel);
+                    emitBranchIfFalse(*expr.rhs, falseLabel);
+                    body_ << trueLabel << ":\n";
+                    return;
+                }
+                if (emitComparisonBranch(expr, false, falseLabel)) {
+                    return;
+                }
+            }
+
+            emitExpr(expr);
+            body_ << "    beq a0, zero, " << falseLabel << '\n';
+        }
+
+        void emitBranchIfTrue(const Expr& expr, const std::string& trueLabel) {
+            if (parent_.options_.optimize) {
+                const auto value = evalConst(expr);
+                if (value) {
+                    if (*value != 0) {
+                        body_ << "    jal zero, " << trueLabel << '\n';
+                    }
+                    return;
+                }
+            }
+
+            if (expr.kind == ExprKind::Unary && expr.op == "!") {
+                emitBranchIfFalse(*expr.lhs, trueLabel);
+                return;
+            }
+
+            if (expr.kind == ExprKind::Binary) {
+                if (expr.op == "&&") {
+                    const std::string falseLabel = newLabel("and_false");
+                    emitBranchIfFalse(*expr.lhs, falseLabel);
+                    emitBranchIfTrue(*expr.rhs, trueLabel);
+                    body_ << falseLabel << ":\n";
+                    return;
+                }
+                if (expr.op == "||") {
+                    emitBranchIfTrue(*expr.lhs, trueLabel);
+                    emitBranchIfTrue(*expr.rhs, trueLabel);
+                    return;
+                }
+                if (emitComparisonBranch(expr, true, trueLabel)) {
+                    return;
+                }
+            }
+
+            emitExpr(expr);
+            body_ << "    bne a0, zero, " << trueLabel << '\n';
         }
 
         void emitBinary(const Expr& expr) {
@@ -1462,6 +1546,65 @@ private:
                 return scratchReg;
             }
             throw std::runtime_error("internal error: unsupported direct value");
+        }
+
+        bool isComparisonOp(const std::string& op) const {
+            return op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=";
+        }
+
+        void emitComparisonJump(const std::string& op, const std::string& lhsReg,
+                                const std::string& rhsReg, bool branchIfTrue,
+                                const std::string& label) {
+            if (branchIfTrue) {
+                if (op == "<") {
+                    body_ << "    blt " << lhsReg << ", " << rhsReg << ", " << label << '\n';
+                } else if (op == ">") {
+                    body_ << "    blt " << rhsReg << ", " << lhsReg << ", " << label << '\n';
+                } else if (op == "<=") {
+                    body_ << "    bge " << rhsReg << ", " << lhsReg << ", " << label << '\n';
+                } else if (op == ">=") {
+                    body_ << "    bge " << lhsReg << ", " << rhsReg << ", " << label << '\n';
+                } else if (op == "==") {
+                    body_ << "    beq " << lhsReg << ", " << rhsReg << ", " << label << '\n';
+                } else if (op == "!=") {
+                    body_ << "    bne " << lhsReg << ", " << rhsReg << ", " << label << '\n';
+                }
+                return;
+            }
+
+            if (op == "<") {
+                body_ << "    bge " << lhsReg << ", " << rhsReg << ", " << label << '\n';
+            } else if (op == ">") {
+                body_ << "    bge " << rhsReg << ", " << lhsReg << ", " << label << '\n';
+            } else if (op == "<=") {
+                body_ << "    blt " << rhsReg << ", " << lhsReg << ", " << label << '\n';
+            } else if (op == ">=") {
+                body_ << "    blt " << lhsReg << ", " << rhsReg << ", " << label << '\n';
+            } else if (op == "==") {
+                body_ << "    bne " << lhsReg << ", " << rhsReg << ", " << label << '\n';
+            } else if (op == "!=") {
+                body_ << "    beq " << lhsReg << ", " << rhsReg << ", " << label << '\n';
+            }
+        }
+
+        bool emitComparisonBranch(const Expr& expr, bool branchIfTrue, const std::string& label) {
+            if (!isComparisonOp(expr.op)) {
+                return false;
+            }
+
+            if (isDirectValue(*expr.lhs) && isDirectValue(*expr.rhs)) {
+                const std::string lhsReg = emitValueAsRegister(*expr.lhs, "t5");
+                const std::string rhsReg = emitValueAsRegister(*expr.rhs, "t0");
+                emitComparisonJump(expr.op, lhsReg, rhsReg, branchIfTrue, label);
+                return true;
+            }
+
+            emitExpr(*expr.lhs);
+            pushA0(exprContainsCall(*expr.rhs));
+            emitExpr(*expr.rhs);
+            const std::string lhsReg = popValue("t0");
+            emitComparisonJump(expr.op, lhsReg, "a0", branchIfTrue, label);
+            return true;
         }
 
         bool emitDirectValueBinary(const Expr& expr) {
@@ -1596,10 +1739,15 @@ private:
         void emitLogicalAnd(const Expr& expr) {
             const std::string falseLabel = newLabel("and_false");
             const std::string endLabel = newLabel("and_end");
-            emitExpr(*expr.lhs);
-            body_ << "    beq a0, zero, " << falseLabel << '\n';
-            emitExpr(*expr.rhs);
-            body_ << "    beq a0, zero, " << falseLabel << '\n';
+            if (parent_.options_.optimize) {
+                emitBranchIfFalse(*expr.lhs, falseLabel);
+                emitBranchIfFalse(*expr.rhs, falseLabel);
+            } else {
+                emitExpr(*expr.lhs);
+                body_ << "    beq a0, zero, " << falseLabel << '\n';
+                emitExpr(*expr.rhs);
+                body_ << "    beq a0, zero, " << falseLabel << '\n';
+            }
             body_ << "    li a0, 1\n";
             body_ << "    jal zero, " << endLabel << '\n';
             body_ << falseLabel << ":\n";
@@ -1610,10 +1758,15 @@ private:
         void emitLogicalOr(const Expr& expr) {
             const std::string trueLabel = newLabel("or_true");
             const std::string endLabel = newLabel("or_end");
-            emitExpr(*expr.lhs);
-            body_ << "    bne a0, zero, " << trueLabel << '\n';
-            emitExpr(*expr.rhs);
-            body_ << "    bne a0, zero, " << trueLabel << '\n';
+            if (parent_.options_.optimize) {
+                emitBranchIfTrue(*expr.lhs, trueLabel);
+                emitBranchIfTrue(*expr.rhs, trueLabel);
+            } else {
+                emitExpr(*expr.lhs);
+                body_ << "    bne a0, zero, " << trueLabel << '\n';
+                emitExpr(*expr.rhs);
+                body_ << "    bne a0, zero, " << trueLabel << '\n';
+            }
             body_ << "    li a0, 0\n";
             body_ << "    jal zero, " << endLabel << '\n';
             body_ << trueLabel << ":\n";

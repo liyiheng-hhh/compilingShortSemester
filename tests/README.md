@@ -10,6 +10,7 @@ These samples are small regression inputs for the compiler. The expected result 
 | `expr/nested_binary.tc` | 45 | Nested binary expressions and temporary registers |
 | `expr/many_locals_nested.tc` | 124 | Many locals, spilled stack slots, nested expressions |
 | `stmt/control_flow.tc` | 12 | `while`, `if`, `break`, `continue` |
+| `stmt/branch_conditions.tc` | 17 | Direct conditional branches and logical negation |
 | `func/factorial.tc` | 120 | Function call and recursion |
 | `func/many_args.tc` | 55 | More than eight call arguments |
 | `func/void_side_effect.tc` | 9 | `void` function and global side effect |
