@@ -12,6 +12,8 @@ These samples are small regression inputs for the compiler. The expected result 
 | `stmt/control_flow.tc` | 12 | `while`, `if`, `break`, `continue` |
 | `stmt/branch_conditions.tc` | 17 | Direct conditional branches and logical negation |
 | `func/factorial.tc` | 120 | Function call and recursion |
+| `func/inline_args_once.tc` | 6 | Inline call arguments are evaluated once |
+| `func/inline_simple.tc` | 23 | Simple return-expression function inlining |
 | `func/many_args.tc` | 55 | More than eight call arguments |
 | `func/void_side_effect.tc` | 9 | `void` function and global side effect |
 | `global/globals.tc` | 18 | Global variables, global constants, assignment |

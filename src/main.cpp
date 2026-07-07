@@ -710,6 +710,8 @@ struct FunctionInfo {
     ValueType returnType = ValueType::Int;
     std::vector<std::string> params;
     std::string label;
+    const Function* function = nullptr;
+    const Expr* inlineReturn = nullptr;
 };
 
 std::int32_t toInt32(std::int64_t value) {
@@ -737,6 +739,18 @@ std::string functionLabel(const std::string& name) {
 
 std::string globalLabel(const std::string& name) {
     return "g_" + name;
+}
+
+const Expr* simpleInlineReturnExpr(const Function& function) {
+    if (function.returnType != ValueType::Int || !function.body ||
+        function.body->kind != StmtKind::Block || function.body->statements.size() != 1) {
+        return nullptr;
+    }
+    const Stmt& stmt = *function.body->statements.front();
+    if (stmt.kind != StmtKind::Return || !stmt.expr) {
+        return nullptr;
+    }
+    return stmt.expr.get();
 }
 
 void emitRegAdd(std::ostream& out, const std::string& dst, const std::string& base, int amount) {
@@ -857,6 +871,7 @@ private:
         int tempStackDepth_ = 0;
         std::vector<bool> tempLocationIsReg_;
         int labelCounter_ = 0;
+        int inlineDepth_ = 0;
         bool containsCall_ = false;
         std::string returnLabel_;
 
@@ -1780,6 +1795,10 @@ private:
                 fail(expr.loc, "unknown function: " + expr.name);
             }
 
+            if (parent_.options_.optimize && emitInlineCall(expr, function->second)) {
+                return;
+            }
+
             const int reserve = alignTo16(static_cast<int>(expr.args.size() * 4));
             if (reserve > 0) {
                 emitRegAdd(body_, "sp", "sp", -reserve);
@@ -1792,6 +1811,26 @@ private:
             if (reserve > 0) {
                 emitRegAdd(body_, "sp", "sp", reserve);
             }
+        }
+
+        bool emitInlineCall(const Expr& expr, const FunctionInfo& info) {
+            if (!info.inlineReturn || info.params.size() != expr.args.size() ||
+                info.function == &function_ || inlineDepth_ >= 8) {
+                return false;
+            }
+
+            ++inlineDepth_;
+            pushScope();
+            for (std::size_t i = 0; i < expr.args.size(); ++i) {
+                Symbol symbol = allocateLocal();
+                emitExpr(*expr.args[i]);
+                storeSymbol(symbol, "a0");
+                currentScope()[info.params[i]] = std::move(symbol);
+            }
+            emitExpr(*info.inlineReturn);
+            popScope();
+            --inlineDepth_;
+            return true;
         }
 
         bool declContainsCall(const Decl& decl) const {
@@ -1898,6 +1937,8 @@ private:
             info.returnType = function->returnType;
             info.params = function->params;
             info.label = functionLabel(function->name);
+            info.function = function.get();
+            info.inlineReturn = simpleInlineReturnExpr(*function);
             functions_[function->name] = std::move(info);
         }
     }
