@@ -1943,14 +1943,33 @@ private:
             ++inlineDepth_;
             pushScope();
             for (std::size_t i = 0; i < expr.args.size(); ++i) {
-                Symbol symbol = allocateLocal();
-                emitExpr(*expr.args[i]);
-                storeSymbol(symbol, "a0");
+                Symbol symbol;
+                if (!bindInlineArg(*expr.args[i], symbol)) {
+                    symbol = allocateLocal();
+                    emitExpr(*expr.args[i]);
+                    storeSymbol(symbol, "a0");
+                }
                 currentScope()[info.params[i]] = std::move(symbol);
             }
             emitExpr(*info.inlineReturn);
             popScope();
             --inlineDepth_;
+            return true;
+        }
+
+        bool bindInlineArg(const Expr& arg, Symbol& symbol) {
+            if (arg.kind == ExprKind::Number) {
+                symbol = Symbol{SymbolKind::Const, 0, "", toInt32(arg.number), ""};
+                return true;
+            }
+            if (arg.kind != ExprKind::Variable) {
+                return false;
+            }
+            const auto value = lookup(arg.name);
+            if (!value || value->kind == SymbolKind::GlobalVar) {
+                return false;
+            }
+            symbol = *value;
             return true;
         }
 
