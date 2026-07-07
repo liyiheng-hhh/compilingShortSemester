@@ -7,6 +7,7 @@ These samples are small regression inputs for the compiler. The expected result 
 | `smoke/return_zero.tc` | 0 | Minimal `main` |
 | `smoke/return_expr.tc` | 14 | Constant expression and precedence |
 | `expr/logic_short_circuit.tc` | 7 | Logical operators and short-circuit behavior |
+| `expr/algebra_strength.tc` | 49 | Algebraic simplification and multiply strength reduction |
 | `expr/nested_binary.tc` | 45 | Nested binary expressions and temporary registers |
 | `expr/many_locals_nested.tc` | 124 | Many locals, spilled stack slots, nested expressions |
 | `stmt/control_flow.tc` | 12 | `while`, `if`, `break`, `continue` |

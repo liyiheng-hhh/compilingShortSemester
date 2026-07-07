@@ -726,6 +726,23 @@ bool fitsI12(int value) {
     return value >= -2048 && value <= 2047;
 }
 
+std::optional<int> powerOfTwoShift(std::int64_t value) {
+    if (value == 0) {
+        return std::nullopt;
+    }
+    std::uint64_t magnitude = value < 0 ? static_cast<std::uint64_t>(-value)
+                                        : static_cast<std::uint64_t>(value);
+    if ((magnitude & (magnitude - 1)) != 0 || magnitude > (1ull << 31)) {
+        return std::nullopt;
+    }
+    int shift = 0;
+    while (magnitude > 1) {
+        magnitude >>= 1;
+        ++shift;
+    }
+    return shift;
+}
+
 int alignTo16(int value) {
     return (value + 15) / 16 * 16;
 }
@@ -1230,6 +1247,36 @@ private:
             }
 
             const auto rhsConst = evalConst(*expr.rhs);
+            if (rhsConst) {
+                if ((expr.op == "+" || expr.op == "-") && *rhsConst == 0) {
+                    return true;
+                }
+                if ((expr.op == "*" || expr.op == "/") && *rhsConst == 1) {
+                    return true;
+                }
+                if (expr.op == "*" && *rhsConst == 0) {
+                    body_ << "    li " << symbol.reg << ", 0\n";
+                    return true;
+                }
+                if (expr.op == "%" && (*rhsConst == 1 || *rhsConst == -1)) {
+                    body_ << "    li " << symbol.reg << ", 0\n";
+                    return true;
+                }
+                if (expr.op == "*") {
+                    const auto shift = powerOfTwoShift(*rhsConst);
+                    if (shift) {
+                        if (*rhsConst < 0 && *shift == 0) {
+                            body_ << "    sub " << symbol.reg << ", zero, " << symbol.reg << '\n';
+                        } else {
+                            body_ << "    slli " << symbol.reg << ", " << symbol.reg << ", " << *shift << '\n';
+                            if (*rhsConst < 0) {
+                                body_ << "    sub " << symbol.reg << ", zero, " << symbol.reg << '\n';
+                            }
+                        }
+                        return true;
+                    }
+                }
+            }
             if (rhsConst && (expr.op == "+" || expr.op == "-")) {
                 const int imm = expr.op == "+" ? *rhsConst : -*rhsConst;
                 if (fitsI12(imm)) {
@@ -1563,6 +1610,12 @@ private:
             throw std::runtime_error("internal error: unsupported direct value");
         }
 
+        void emitMoveToA0(const std::string& reg) {
+            if (reg != "a0") {
+                body_ << "    addi a0, " << reg << ", 0\n";
+            }
+        }
+
         bool isComparisonOp(const std::string& op) const {
             return op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=";
         }
@@ -1608,8 +1661,10 @@ private:
             }
 
             if (isDirectValue(*expr.lhs) && isDirectValue(*expr.rhs)) {
-                const std::string lhsReg = emitValueAsRegister(*expr.lhs, "t5");
-                const std::string rhsReg = emitValueAsRegister(*expr.rhs, "t0");
+                const bool lhsZero = expr.lhs->kind == ExprKind::Number && toInt32(expr.lhs->number) == 0;
+                const bool rhsZero = expr.rhs->kind == ExprKind::Number && toInt32(expr.rhs->number) == 0;
+                const std::string lhsReg = lhsZero ? "zero" : emitValueAsRegister(*expr.lhs, "t5");
+                const std::string rhsReg = rhsZero ? "zero" : emitValueAsRegister(*expr.rhs, "t0");
                 emitComparisonJump(expr.op, lhsReg, rhsReg, branchIfTrue, label);
                 return true;
             }
@@ -1673,6 +1728,37 @@ private:
                 lhsReg = emitValueAsRegister(*expr.lhs, "a0");
             } else {
                 emitExpr(*expr.lhs);
+            }
+
+            if ((expr.op == "+" || expr.op == "-") && imm == 0) {
+                emitMoveToA0(lhsReg);
+                return true;
+            }
+            if ((expr.op == "*" || expr.op == "/") && imm == 1) {
+                emitMoveToA0(lhsReg);
+                return true;
+            }
+            if (expr.op == "*" && imm == 0) {
+                body_ << "    li a0, 0\n";
+                return true;
+            }
+            if (expr.op == "%" && (imm == 1 || imm == -1)) {
+                body_ << "    li a0, 0\n";
+                return true;
+            }
+            if (expr.op == "*") {
+                const auto shift = powerOfTwoShift(imm);
+                if (shift) {
+                    if (imm < 0 && *shift == 0) {
+                        body_ << "    sub a0, zero, " << lhsReg << '\n';
+                    } else {
+                        body_ << "    slli a0, " << lhsReg << ", " << *shift << '\n';
+                        if (imm < 0) {
+                            body_ << "    sub a0, zero, a0\n";
+                        }
+                    }
+                    return true;
+                }
             }
 
             if (expr.op == "+" && fitsI12(imm)) {

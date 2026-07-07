@@ -1,0 +1,11 @@
+int id(int x) {
+    return x;
+}
+
+int main() {
+    int x = id(7);
+    int y = x * 8;
+    int z = y + 0;
+    z = z / 1;
+    return z + (x * -1) + (x % 1);
+}
