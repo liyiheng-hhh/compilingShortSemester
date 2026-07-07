@@ -702,6 +702,7 @@ struct Symbol {
     int offset = 0;
     std::string label;
     std::int32_t constValue = 0;
+    std::string reg;
 };
 
 struct FunctionInfo {
@@ -814,28 +815,30 @@ private:
             body_ << "    # parameters\n";
             pushScope();
             for (std::size_t i = 0; i < function_.params.size(); ++i) {
-                const int offset = allocateSlot();
-                currentScope()[function_.params[i]] = Symbol{SymbolKind::LocalVar, offset, "", 0};
+                Symbol symbol = allocateLocal();
+                currentScope()[function_.params[i]] = symbol;
                 emitLoadOffset(body_, "t0", static_cast<int>(i * 4), "s0");
-                emitStoreOffset(body_, "t0", offset, "s0");
+                storeSymbol(symbol, "t0");
             }
 
             emitStmt(*function_.body);
             body_ << "    li a0, 0\n";
             body_ << returnLabel_ << ":\n";
+            restoreSavedLocalRegisters();
             emitLoadOffset(body_, "ra", -4, "s0");
             emitLoadOffset(body_, "t0", -8, "s0");
             body_ << "    addi sp, s0, 0\n";
             body_ << "    addi s0, t0, 0\n";
             body_ << "    ret\n\n";
 
-            const int frameSize = alignTo16(8 + slotCount_ * 4);
+            const int frameSize = alignTo16(frameHeaderSize() + slotCount_ * 4);
             std::ostringstream out;
             out << functionLabel(function_.name) << ":\n";
             emitRegAdd(out, "sp", "sp", -frameSize);
             emitStoreOffset(out, "ra", frameSize - 4, "sp");
             emitStoreOffset(out, "s0", frameSize - 8, "sp");
             emitRegAdd(out, "s0", "sp", frameSize);
+            saveLocalRegisters(out);
             out << body_.str();
             return out.str();
         }
@@ -847,6 +850,10 @@ private:
         std::vector<std::unordered_map<std::string, Symbol>> scopes_;
         std::vector<std::pair<std::string, std::string>> loopStack_;
         int slotCount_ = 0;
+        int localRegCount_ = 0;
+        int tempRegDepth_ = 0;
+        int tempStackDepth_ = 0;
+        std::vector<bool> tempLocationIsReg_;
         int labelCounter_ = 0;
         std::string returnLabel_;
 
@@ -865,10 +872,58 @@ private:
             scopes_.pop_back();
         }
 
+        bool useRegisterLocals() const {
+            return parent_.options_.optimize;
+        }
+
+        int savedLocalRegisterCount() const {
+            return useRegisterLocals() ? 11 : 0;
+        }
+
+        int frameHeaderSize() const {
+            return 8 + savedLocalRegisterCount() * 4;
+        }
+
+        std::string localRegisterName(int index) const {
+            return "s" + std::to_string(index + 1);
+        }
+
+        Symbol allocateLocal() {
+            if (useRegisterLocals() && localRegCount_ < savedLocalRegisterCount()) {
+                Symbol symbol;
+                symbol.kind = SymbolKind::LocalVar;
+                symbol.reg = localRegisterName(localRegCount_++);
+                return symbol;
+            }
+
+            Symbol symbol;
+            symbol.kind = SymbolKind::LocalVar;
+            symbol.offset = allocateSlot();
+            return symbol;
+        }
+
         int allocateSlot() {
-            const int offset = -12 - slotCount_ * 4;
+            const int offset = -(frameHeaderSize() + 4 + slotCount_ * 4);
             ++slotCount_;
             return offset;
+        }
+
+        void saveLocalRegisters(std::ostream& out) const {
+            if (!useRegisterLocals()) {
+                return;
+            }
+            for (int i = 0; i < localRegCount_; ++i) {
+                emitStoreOffset(out, localRegisterName(i), -12 - i * 4, "s0");
+            }
+        }
+
+        void restoreSavedLocalRegisters() {
+            if (!useRegisterLocals()) {
+                return;
+            }
+            for (int i = 0; i < localRegCount_; ++i) {
+                emitLoadOffset(body_, localRegisterName(i), -12 - i * 4, "s0");
+            }
         }
 
         std::string newLabel(const std::string& hint) {
@@ -887,6 +942,36 @@ private:
                 return global->second;
             }
             return std::nullopt;
+        }
+
+        void loadSymbol(const Symbol& symbol, const std::string& dst) {
+            if (symbol.kind == SymbolKind::Const) {
+                body_ << "    li " << dst << ", " << printableI32(symbol.constValue) << '\n';
+            } else if (symbol.kind == SymbolKind::LocalVar) {
+                if (!symbol.reg.empty()) {
+                    body_ << "    addi " << dst << ", " << symbol.reg << ", 0\n";
+                } else {
+                    emitLoadOffset(body_, dst, symbol.offset, "s0");
+                }
+            } else {
+                body_ << "    la t0, " << symbol.label << '\n';
+                body_ << "    lw " << dst << ", 0(t0)\n";
+            }
+        }
+
+        void storeSymbol(const Symbol& symbol, const std::string& src) {
+            if (symbol.kind == SymbolKind::LocalVar) {
+                if (!symbol.reg.empty()) {
+                    if (symbol.reg != src) {
+                        body_ << "    addi " << symbol.reg << ", " << src << ", 0\n";
+                    }
+                } else {
+                    emitStoreOffset(body_, src, symbol.offset, "s0");
+                }
+            } else {
+                body_ << "    la t0, " << symbol.label << '\n';
+                body_ << "    sw " << src << ", 0(t0)\n";
+            }
         }
 
         std::optional<std::int32_t> evalConst(const Expr& expr) const {
@@ -1059,14 +1144,14 @@ private:
                 if (!value) {
                     fail(decl.loc, "const initializer is not a compile-time value");
                 }
-                currentScope()[decl.name] = Symbol{SymbolKind::Const, 0, "", *value};
+                currentScope()[decl.name] = Symbol{SymbolKind::Const, 0, "", *value, ""};
                 return;
             }
 
-            const int offset = allocateSlot();
+            Symbol symbol = allocateLocal();
             emitExpr(*decl.init);
-            emitStoreOffset(body_, "a0", offset, "s0");
-            currentScope()[decl.name] = Symbol{SymbolKind::LocalVar, offset, "", 0};
+            storeSymbol(symbol, "a0");
+            currentScope()[decl.name] = std::move(symbol);
         }
 
         void emitAssign(const Stmt& stmt) {
@@ -1078,13 +1163,87 @@ private:
                 fail(stmt.loc, "cannot assign to const: " + stmt.name);
             }
 
+            if (parent_.options_.optimize && emitOptimizedAssign(stmt, *symbol)) {
+                return;
+            }
+
             emitExpr(*stmt.expr);
             if (symbol->kind == SymbolKind::LocalVar) {
-                emitStoreOffset(body_, "a0", symbol->offset, "s0");
+                storeSymbol(*symbol, "a0");
             } else {
                 body_ << "    la t0, " << symbol->label << '\n';
                 body_ << "    sw a0, 0(t0)\n";
             }
+        }
+
+        bool emitOptimizedAssign(const Stmt& stmt, const Symbol& symbol) {
+            if (symbol.kind != SymbolKind::LocalVar || symbol.reg.empty() || !stmt.expr) {
+                return false;
+            }
+
+            const Expr& expr = *stmt.expr;
+            if (isDirectValue(expr)) {
+                emitValueTo(expr, symbol.reg);
+                return true;
+            }
+
+            if (expr.kind != ExprKind::Binary || expr.op == "&&" || expr.op == "||") {
+                return false;
+            }
+            if (expr.lhs->kind != ExprKind::Variable || expr.lhs->name != stmt.name) {
+                return false;
+            }
+
+            const auto rhsConst = evalConst(*expr.rhs);
+            if (rhsConst && (expr.op == "+" || expr.op == "-")) {
+                const int imm = expr.op == "+" ? *rhsConst : -*rhsConst;
+                if (fitsI12(imm)) {
+                    body_ << "    addi " << symbol.reg << ", " << symbol.reg << ", " << imm << '\n';
+                } else {
+                    body_ << "    li t0, " << printableI32(*rhsConst) << '\n';
+                    if (expr.op == "+") {
+                        body_ << "    add " << symbol.reg << ", " << symbol.reg << ", t0\n";
+                    } else {
+                        body_ << "    sub " << symbol.reg << ", " << symbol.reg << ", t0\n";
+                    }
+                }
+                return true;
+            }
+
+            if (!isDirectValue(*expr.rhs)) {
+                return false;
+            }
+            const std::string rhsReg = emitValueAsRegister(*expr.rhs, "t0");
+            if (expr.op == "+") {
+                body_ << "    add " << symbol.reg << ", " << symbol.reg << ", " << rhsReg << '\n';
+            } else if (expr.op == "-") {
+                body_ << "    sub " << symbol.reg << ", " << symbol.reg << ", " << rhsReg << '\n';
+            } else if (expr.op == "*") {
+                body_ << "    mul " << symbol.reg << ", " << symbol.reg << ", " << rhsReg << '\n';
+            } else if (expr.op == "/") {
+                body_ << "    div " << symbol.reg << ", " << symbol.reg << ", " << rhsReg << '\n';
+            } else if (expr.op == "%") {
+                body_ << "    rem " << symbol.reg << ", " << symbol.reg << ", " << rhsReg << '\n';
+            } else if (expr.op == "<") {
+                body_ << "    slt " << symbol.reg << ", " << symbol.reg << ", " << rhsReg << '\n';
+            } else if (expr.op == ">") {
+                body_ << "    slt " << symbol.reg << ", " << rhsReg << ", " << symbol.reg << '\n';
+            } else if (expr.op == "<=") {
+                body_ << "    slt " << symbol.reg << ", " << rhsReg << ", " << symbol.reg << '\n';
+                body_ << "    xori " << symbol.reg << ", " << symbol.reg << ", 1\n";
+            } else if (expr.op == ">=") {
+                body_ << "    slt " << symbol.reg << ", " << symbol.reg << ", " << rhsReg << '\n';
+                body_ << "    xori " << symbol.reg << ", " << symbol.reg << ", 1\n";
+            } else if (expr.op == "==") {
+                body_ << "    sub " << symbol.reg << ", " << symbol.reg << ", " << rhsReg << '\n';
+                body_ << "    sltiu " << symbol.reg << ", " << symbol.reg << ", 1\n";
+            } else if (expr.op == "!=") {
+                body_ << "    sub " << symbol.reg << ", " << symbol.reg << ", " << rhsReg << '\n';
+                body_ << "    sltu " << symbol.reg << ", zero, " << symbol.reg << '\n';
+            } else {
+                return false;
+            }
+            return true;
         }
 
         void emitIf(const Stmt& stmt) {
@@ -1093,12 +1252,14 @@ private:
             emitExpr(*stmt.expr);
             body_ << "    beq a0, zero, " << elseLabel << '\n';
             emitStmt(*stmt.thenBranch);
-            body_ << "    jal zero, " << endLabel << '\n';
-            body_ << elseLabel << ":\n";
             if (stmt.elseBranch) {
+                body_ << "    jal zero, " << endLabel << '\n';
+                body_ << elseLabel << ":\n";
                 emitStmt(*stmt.elseBranch);
+                body_ << endLabel << ":\n";
+            } else {
+                body_ << elseLabel << ":\n";
             }
-            body_ << endLabel << ":\n";
         }
 
         void emitWhile(const Stmt& stmt) {
@@ -1150,7 +1311,7 @@ private:
             if (symbol->kind == SymbolKind::Const) {
                 body_ << "    li a0, " << printableI32(symbol->constValue) << '\n';
             } else if (symbol->kind == SymbolKind::LocalVar) {
-                emitLoadOffset(body_, "a0", symbol->offset, "s0");
+                loadSymbol(*symbol, "a0");
             } else {
                 body_ << "    la t0, " << symbol->label << '\n';
                 body_ << "    lw a0, 0(t0)\n";
@@ -1182,41 +1343,215 @@ private:
                 emitLogicalOr(expr);
                 return;
             }
+            if (parent_.options_.optimize && emitImmediateBinary(expr)) {
+                return;
+            }
+            if (parent_.options_.optimize && emitDirectValueBinary(expr)) {
+                return;
+            }
 
             emitExpr(*expr.lhs);
-            pushA0();
+            pushA0(exprContainsCall(*expr.rhs));
             emitExpr(*expr.rhs);
-            popTo("t0");
+            const std::string lhsReg = popValue("t0");
 
             if (expr.op == "+") {
-                body_ << "    add a0, t0, a0\n";
+                body_ << "    add a0, " << lhsReg << ", a0\n";
             } else if (expr.op == "-") {
-                body_ << "    sub a0, t0, a0\n";
+                body_ << "    sub a0, " << lhsReg << ", a0\n";
             } else if (expr.op == "*") {
-                body_ << "    mul a0, t0, a0\n";
+                body_ << "    mul a0, " << lhsReg << ", a0\n";
             } else if (expr.op == "/") {
-                body_ << "    div a0, t0, a0\n";
+                body_ << "    div a0, " << lhsReg << ", a0\n";
             } else if (expr.op == "%") {
-                body_ << "    rem a0, t0, a0\n";
+                body_ << "    rem a0, " << lhsReg << ", a0\n";
             } else if (expr.op == "<") {
-                body_ << "    slt a0, t0, a0\n";
+                body_ << "    slt a0, " << lhsReg << ", a0\n";
             } else if (expr.op == ">") {
-                body_ << "    slt a0, a0, t0\n";
+                body_ << "    slt a0, a0, " << lhsReg << '\n';
             } else if (expr.op == "<=") {
-                body_ << "    slt a0, a0, t0\n";
+                body_ << "    slt a0, a0, " << lhsReg << '\n';
                 body_ << "    xori a0, a0, 1\n";
             } else if (expr.op == ">=") {
-                body_ << "    slt a0, t0, a0\n";
+                body_ << "    slt a0, " << lhsReg << ", a0\n";
                 body_ << "    xori a0, a0, 1\n";
             } else if (expr.op == "==") {
-                body_ << "    sub a0, t0, a0\n";
+                body_ << "    sub a0, " << lhsReg << ", a0\n";
                 body_ << "    sltiu a0, a0, 1\n";
             } else if (expr.op == "!=") {
-                body_ << "    sub a0, t0, a0\n";
+                body_ << "    sub a0, " << lhsReg << ", a0\n";
                 body_ << "    sltu a0, zero, a0\n";
             } else {
                 fail(expr.loc, "unknown binary operator");
             }
+        }
+
+        bool isDirectValue(const Expr& expr) const {
+            return expr.kind == ExprKind::Number || expr.kind == ExprKind::Variable;
+        }
+
+        void emitValueTo(const Expr& expr, const std::string& reg) {
+            if (expr.kind == ExprKind::Number) {
+                body_ << "    li " << reg << ", " << printableI32(toInt32(expr.number)) << '\n';
+                return;
+            }
+            if (expr.kind == ExprKind::Variable) {
+                const auto symbol = lookup(expr.name);
+                if (!symbol) {
+                    fail(expr.loc, "unknown variable: " + expr.name);
+                }
+                loadSymbol(*symbol, reg);
+                return;
+            }
+            throw std::runtime_error("internal error: unsupported direct value");
+        }
+
+        std::string emitValueAsRegister(const Expr& expr, const std::string& scratchReg) {
+            if (expr.kind == ExprKind::Number) {
+                body_ << "    li " << scratchReg << ", " << printableI32(toInt32(expr.number)) << '\n';
+                return scratchReg;
+            }
+            if (expr.kind == ExprKind::Variable) {
+                const auto symbol = lookup(expr.name);
+                if (!symbol) {
+                    fail(expr.loc, "unknown variable: " + expr.name);
+                }
+                if (symbol->kind == SymbolKind::LocalVar && !symbol->reg.empty()) {
+                    return symbol->reg;
+                }
+                loadSymbol(*symbol, scratchReg);
+                return scratchReg;
+            }
+            throw std::runtime_error("internal error: unsupported direct value");
+        }
+
+        bool emitDirectValueBinary(const Expr& expr) {
+            if (!isDirectValue(*expr.lhs) || !isDirectValue(*expr.rhs)) {
+                return false;
+            }
+
+            const std::string lhsReg = emitValueAsRegister(*expr.lhs, "t1");
+            const std::string rhsReg = emitValueAsRegister(*expr.rhs, "a0");
+
+            if (expr.op == "+") {
+                body_ << "    add a0, " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == "-") {
+                body_ << "    sub a0, " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == "*") {
+                body_ << "    mul a0, " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == "/") {
+                body_ << "    div a0, " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == "%") {
+                body_ << "    rem a0, " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == "<") {
+                body_ << "    slt a0, " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == ">") {
+                body_ << "    slt a0, " << rhsReg << ", " << lhsReg << '\n';
+            } else if (expr.op == "<=") {
+                body_ << "    slt a0, " << rhsReg << ", " << lhsReg << '\n';
+                body_ << "    xori a0, a0, 1\n";
+            } else if (expr.op == ">=") {
+                body_ << "    slt a0, " << lhsReg << ", " << rhsReg << '\n';
+                body_ << "    xori a0, a0, 1\n";
+            } else if (expr.op == "==") {
+                body_ << "    sub a0, " << lhsReg << ", " << rhsReg << '\n';
+                body_ << "    sltiu a0, a0, 1\n";
+            } else if (expr.op == "!=") {
+                body_ << "    sub a0, " << lhsReg << ", " << rhsReg << '\n';
+                body_ << "    sltu a0, zero, a0\n";
+            } else {
+                return false;
+            }
+            return true;
+        }
+
+        bool emitImmediateBinary(const Expr& expr) {
+            const auto rhs = evalConst(*expr.rhs);
+            if (!rhs) {
+                return false;
+            }
+            const int imm = *rhs;
+            std::string lhsReg = "a0";
+            if (isDirectValue(*expr.lhs)) {
+                lhsReg = emitValueAsRegister(*expr.lhs, "a0");
+            } else {
+                emitExpr(*expr.lhs);
+            }
+
+            if (expr.op == "+" && fitsI12(imm)) {
+                body_ << "    addi a0, " << lhsReg << ", " << imm << '\n';
+                return true;
+            }
+            if (expr.op == "+") {
+                body_ << "    li t0, " << printableI32(imm) << '\n';
+                body_ << "    add a0, " << lhsReg << ", t0\n";
+                return true;
+            }
+            if (expr.op == "-" && fitsI12(-imm)) {
+                body_ << "    addi a0, " << lhsReg << ", " << -imm << '\n';
+                return true;
+            }
+            if (expr.op == "-") {
+                body_ << "    li t0, " << printableI32(imm) << '\n';
+                body_ << "    sub a0, " << lhsReg << ", t0\n";
+                return true;
+            }
+            if (expr.op == "<" && fitsI12(imm)) {
+                body_ << "    slti a0, " << lhsReg << ", " << imm << '\n';
+                return true;
+            }
+            if (expr.op == "<") {
+                body_ << "    li t0, " << printableI32(imm) << '\n';
+                body_ << "    slt a0, " << lhsReg << ", t0\n";
+                return true;
+            }
+            if (expr.op == "==" && fitsI12(-imm)) {
+                body_ << "    addi a0, " << lhsReg << ", " << -imm << '\n';
+                body_ << "    sltiu a0, a0, 1\n";
+                return true;
+            }
+            if (expr.op == "==") {
+                body_ << "    li t0, " << printableI32(imm) << '\n';
+                body_ << "    sub a0, " << lhsReg << ", t0\n";
+                body_ << "    sltiu a0, a0, 1\n";
+                return true;
+            }
+            if (expr.op == "!=" && fitsI12(-imm)) {
+                body_ << "    addi a0, " << lhsReg << ", " << -imm << '\n';
+                body_ << "    sltu a0, zero, a0\n";
+                return true;
+            }
+            if (expr.op == "!=") {
+                body_ << "    li t0, " << printableI32(imm) << '\n';
+                body_ << "    sub a0, " << lhsReg << ", t0\n";
+                body_ << "    sltu a0, zero, a0\n";
+                return true;
+            }
+
+            if (expr.op == "*") {
+                body_ << "    li t0, " << printableI32(imm) << '\n';
+                body_ << "    mul a0, " << lhsReg << ", t0\n";
+                return true;
+            }
+            if (expr.op == "/" || expr.op == "%" || expr.op == "<=" || expr.op == ">" ||
+                expr.op == ">=") {
+                body_ << "    li t0, " << printableI32(imm) << '\n';
+                if (expr.op == "/") {
+                    body_ << "    div a0, " << lhsReg << ", t0\n";
+                } else if (expr.op == "%") {
+                    body_ << "    rem a0, " << lhsReg << ", t0\n";
+                } else if (expr.op == "<=") {
+                    body_ << "    slt a0, t0, " << lhsReg << '\n';
+                    body_ << "    xori a0, a0, 1\n";
+                } else if (expr.op == ">") {
+                    body_ << "    slt a0, t0, " << lhsReg << '\n';
+                } else {
+                    body_ << "    slt a0, " << lhsReg << ", t0\n";
+                    body_ << "    xori a0, a0, 1\n";
+                }
+                return true;
+            }
+            return false;
         }
 
         void emitLogicalAnd(const Expr& expr) {
@@ -1267,14 +1602,67 @@ private:
             }
         }
 
-        void pushA0() {
+        bool exprContainsCall(const Expr& expr) const {
+            switch (expr.kind) {
+                case ExprKind::Number:
+                case ExprKind::Variable:
+                    return false;
+                case ExprKind::Unary:
+                    return exprContainsCall(*expr.lhs);
+                case ExprKind::Binary:
+                    return exprContainsCall(*expr.lhs) || exprContainsCall(*expr.rhs);
+                case ExprKind::Call:
+                    return true;
+            }
+            return false;
+        }
+
+        std::string tempRegisterName(int index) const {
+            static const std::vector<std::string> regs = {"t1", "t2", "t3", "t4", "t5"};
+            return regs.at(static_cast<std::size_t>(index));
+        }
+
+        int tempRegisterCount() const {
+            return 5;
+        }
+
+        void pushA0(bool forceStack = false) {
+            if (parent_.options_.optimize && !forceStack && tempRegDepth_ < tempRegisterCount()) {
+                body_ << "    addi " << tempRegisterName(tempRegDepth_) << ", a0, 0\n";
+                ++tempRegDepth_;
+                tempLocationIsReg_.push_back(true);
+                return;
+            }
             body_ << "    addi sp, sp, -16\n";
             body_ << "    sw a0, 12(sp)\n";
+            ++tempStackDepth_;
+            tempLocationIsReg_.push_back(false);
         }
 
         void popTo(const std::string& reg) {
-            body_ << "    lw " << reg << ", 12(sp)\n";
+            const std::string valueReg = popValue(reg);
+            if (valueReg != reg) {
+                body_ << "    addi " << reg << ", " << valueReg << ", 0\n";
+            }
+        }
+
+        std::string popValue(const std::string& fallbackReg) {
+            if (tempLocationIsReg_.empty()) {
+                throw std::runtime_error("internal error: expression stack underflow");
+            }
+            const bool useReg = tempLocationIsReg_.back();
+            tempLocationIsReg_.pop_back();
+            if (useReg) {
+                --tempRegDepth_;
+                return tempRegisterName(tempRegDepth_);
+            }
+            if (tempStackDepth_ <= 0) {
+                throw std::runtime_error("internal error: expression stack underflow");
+            }
+            --tempStackDepth_;
+            body_ << "    lw " << fallbackReg << ", 12(sp)\n";
             body_ << "    addi sp, sp, 16\n";
+            return fallbackReg;
         }
     };
 
@@ -1418,10 +1806,10 @@ private:
             }
 
             if (decl->isConst) {
-                globals_[decl->name] = Symbol{SymbolKind::Const, 0, "", *value};
+                globals_[decl->name] = Symbol{SymbolKind::Const, 0, "", *value, ""};
             } else {
                 const std::string label = globalLabel(decl->name);
-                globals_[decl->name] = Symbol{SymbolKind::GlobalVar, 0, label, 0};
+                globals_[decl->name] = Symbol{SymbolKind::GlobalVar, 0, label, 0, ""};
                 std::ostringstream line;
                 line << label << ":\n";
                 line << "    .word " << printableI32(*value) << '\n';
@@ -1453,4 +1841,3 @@ int main(int argc, char** argv) {
         return 1;
     }
 }
-
