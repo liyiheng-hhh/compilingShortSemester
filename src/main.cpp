@@ -841,7 +841,10 @@ private:
     class FunctionEmitter {
     public:
         FunctionEmitter(CodeGenerator& parent, const Function& function)
-            : parent_(parent), function_(function), returnLabel_(".L_return_" + functionLabel(function.name)) {}
+            : parent_(parent),
+              function_(function),
+              bodyEntryLabel_(".L_entry_" + functionLabel(function.name)),
+              returnLabel_(".L_return_" + functionLabel(function.name)) {}
 
         std::string emit() {
             containsCall_ = stmtContainsCall(*function_.body);
@@ -849,11 +852,13 @@ private:
             pushScope();
             for (std::size_t i = 0; i < function_.params.size(); ++i) {
                 Symbol symbol = allocateLocal();
+                paramSymbols_.push_back(symbol);
                 currentScope()[function_.params[i]] = symbol;
                 emitLoadOffset(body_, "t0", static_cast<int>(i * 4), "s0");
                 storeSymbol(symbol, "t0");
             }
 
+            body_ << bodyEntryLabel_ << ":\n";
             emitStmt(*function_.body);
             body_ << "    li a0, 0\n";
             body_ << returnLabel_ << ":\n";
@@ -890,6 +895,8 @@ private:
         int labelCounter_ = 0;
         int inlineDepth_ = 0;
         bool containsCall_ = false;
+        std::vector<Symbol> paramSymbols_;
+        std::string bodyEntryLabel_;
         std::string returnLabel_;
 
         std::unordered_map<std::string, Symbol>& currentScope() {
@@ -1175,6 +1182,9 @@ private:
                     body_ << "    jal zero, " << loopStack_.back().first << '\n';
                     break;
                 case StmtKind::Return:
+                    if (stmt.expr && parent_.options_.optimize && emitTailRecursiveReturn(*stmt.expr)) {
+                        break;
+                    }
                     if (stmt.expr) {
                         emitExpr(*stmt.expr);
                     } else {
@@ -1183,6 +1193,31 @@ private:
                     body_ << "    jal zero, " << returnLabel_ << '\n';
                     break;
             }
+        }
+
+        bool emitTailRecursiveReturn(const Expr& expr) {
+            if (expr.kind != ExprKind::Call || expr.name != function_.name ||
+                expr.args.size() != paramSymbols_.size()) {
+                return false;
+            }
+
+            pushScope();
+            std::vector<Symbol> argSymbols;
+            argSymbols.reserve(expr.args.size());
+            for (const auto& arg : expr.args) {
+                Symbol symbol = allocateLocal();
+                emitExpr(*arg);
+                storeSymbol(symbol, "a0");
+                argSymbols.push_back(symbol);
+            }
+
+            for (std::size_t i = 0; i < argSymbols.size(); ++i) {
+                loadSymbol(argSymbols[i], "a0");
+                storeSymbol(paramSymbols_[i], "a0");
+            }
+            popScope();
+            body_ << "    jal zero, " << bodyEntryLabel_ << '\n';
+            return true;
         }
 
         void emitDecl(const Decl& decl) {
