@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <exception>
@@ -812,6 +813,7 @@ private:
             : parent_(parent), function_(function), returnLabel_(".L_return_" + functionLabel(function.name)) {}
 
         std::string emit() {
+            containsCall_ = stmtContainsCall(*function_.body);
             body_ << "    # parameters\n";
             pushScope();
             for (std::size_t i = 0; i < function_.params.size(); ++i) {
@@ -855,6 +857,7 @@ private:
         int tempStackDepth_ = 0;
         std::vector<bool> tempLocationIsReg_;
         int labelCounter_ = 0;
+        bool containsCall_ = false;
         std::string returnLabel_;
 
         std::unordered_map<std::string, Symbol>& currentScope() {
@@ -880,16 +883,26 @@ private:
             return useRegisterLocals() ? 11 : 0;
         }
 
+        int allocatableLocalRegisterCount() const {
+            if (!useRegisterLocals()) {
+                return 0;
+            }
+            return containsCall_ ? 11 : 18;
+        }
+
         int frameHeaderSize() const {
             return 8 + savedLocalRegisterCount() * 4;
         }
 
         std::string localRegisterName(int index) const {
+            if (index >= 11) {
+                return "a" + std::to_string(index - 10);
+            }
             return "s" + std::to_string(index + 1);
         }
 
         Symbol allocateLocal() {
-            if (useRegisterLocals() && localRegCount_ < savedLocalRegisterCount()) {
+            if (useRegisterLocals() && localRegCount_ < allocatableLocalRegisterCount()) {
                 Symbol symbol;
                 symbol.kind = SymbolKind::LocalVar;
                 symbol.reg = localRegisterName(localRegCount_++);
@@ -912,7 +925,8 @@ private:
             if (!useRegisterLocals()) {
                 return;
             }
-            for (int i = 0; i < localRegCount_; ++i) {
+            const int savedCount = std::min(localRegCount_, savedLocalRegisterCount());
+            for (int i = 0; i < savedCount; ++i) {
                 emitStoreOffset(out, localRegisterName(i), -12 - i * 4, "s0");
             }
         }
@@ -921,7 +935,8 @@ private:
             if (!useRegisterLocals()) {
                 return;
             }
-            for (int i = 0; i < localRegCount_; ++i) {
+            const int savedCount = std::min(localRegCount_, savedLocalRegisterCount());
+            for (int i = 0; i < savedCount; ++i) {
                 emitLoadOffset(body_, localRegisterName(i), -12 - i * 4, "s0");
             }
         }
@@ -1149,6 +1164,11 @@ private:
             }
 
             Symbol symbol = allocateLocal();
+            if (parent_.options_.optimize && !symbol.reg.empty() && isDirectValue(*decl.init)) {
+                emitValueTo(*decl.init, symbol.reg);
+                currentScope()[decl.name] = std::move(symbol);
+                return;
+            }
             emitExpr(*decl.init);
             storeSymbol(symbol, "a0");
             currentScope()[decl.name] = std::move(symbol);
@@ -1247,6 +1267,18 @@ private:
         }
 
         void emitIf(const Stmt& stmt) {
+            if (parent_.options_.optimize) {
+                const auto condition = evalConst(*stmt.expr);
+                if (condition) {
+                    if (*condition != 0) {
+                        emitStmt(*stmt.thenBranch);
+                    } else if (stmt.elseBranch) {
+                        emitStmt(*stmt.elseBranch);
+                    }
+                    return;
+                }
+            }
+
             const std::string elseLabel = newLabel("else");
             const std::string endLabel = newLabel("endif");
             emitExpr(*stmt.expr);
@@ -1263,6 +1295,13 @@ private:
         }
 
         void emitWhile(const Stmt& stmt) {
+            if (parent_.options_.optimize) {
+                const auto condition = evalConst(*stmt.expr);
+                if (condition && *condition == 0) {
+                    return;
+                }
+            }
+
             const std::string condLabel = newLabel("while_cond");
             const std::string endLabel = newLabel("while_end");
             body_ << condLabel << ":\n";
@@ -1600,6 +1639,40 @@ private:
             if (reserve > 0) {
                 emitRegAdd(body_, "sp", "sp", reserve);
             }
+        }
+
+        bool declContainsCall(const Decl& decl) const {
+            return decl.init && exprContainsCall(*decl.init);
+        }
+
+        bool stmtContainsCall(const Stmt& stmt) const {
+            switch (stmt.kind) {
+                case StmtKind::Block:
+                    for (const auto& child : stmt.statements) {
+                        if (stmtContainsCall(*child)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                case StmtKind::Empty:
+                case StmtKind::Break:
+                case StmtKind::Continue:
+                    return false;
+                case StmtKind::ExprStmt:
+                case StmtKind::Assign:
+                case StmtKind::Return:
+                    return stmt.expr && exprContainsCall(*stmt.expr);
+                case StmtKind::DeclStmt:
+                    return stmt.decl && declContainsCall(*stmt.decl);
+                case StmtKind::If:
+                    return (stmt.expr && exprContainsCall(*stmt.expr)) ||
+                           (stmt.thenBranch && stmtContainsCall(*stmt.thenBranch)) ||
+                           (stmt.elseBranch && stmtContainsCall(*stmt.elseBranch));
+                case StmtKind::While:
+                    return (stmt.expr && exprContainsCall(*stmt.expr)) ||
+                           (stmt.thenBranch && stmtContainsCall(*stmt.thenBranch));
+            }
+            return false;
         }
 
         bool exprContainsCall(const Expr& expr) const {
