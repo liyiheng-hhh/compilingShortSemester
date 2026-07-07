@@ -1,0 +1,14 @@
+const int base = 2 * 3;
+
+int main() {
+    int x = base + 1;
+    {
+        const int x = base + 4;
+        int y = x + 5;
+        if (y > 10) {
+            return y + base;
+        }
+    }
+    return x;
+}
+

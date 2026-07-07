@@ -1,7 +1,18 @@
+#include <cctype>
+#include <cstdint>
+#include <exception>
 #include <iostream>
 #include <iterator>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -24,23 +35,1422 @@ std::string readStdin() {
     return {std::istreambuf_iterator<char>(std::cin), std::istreambuf_iterator<char>()};
 }
 
-void emitInitialAssembly(std::ostream& out) {
-    out << "    .text\n";
-    out << "    .globl main\n";
-    out << "main:\n";
-    out << "    li a0, 0\n";
-    out << "    ret\n";
+struct SourceLocation {
+    int line = 1;
+    int column = 1;
+    std::size_t offset = 0;
+};
+
+[[noreturn]] void fail(const SourceLocation& loc, const std::string& message) {
+    std::ostringstream out;
+    out << loc.line << ':' << loc.column << ": " << message;
+    throw std::runtime_error(out.str());
 }
+
+enum class TokenKind {
+    End,
+    Identifier,
+    Number,
+    KwConst,
+    KwInt,
+    KwVoid,
+    KwIf,
+    KwElse,
+    KwWhile,
+    KwBreak,
+    KwContinue,
+    KwReturn,
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Bang,
+    AndAnd,
+    OrOr,
+    Less,
+    Greater,
+    LessEqual,
+    GreaterEqual,
+    EqualEqual,
+    BangEqual,
+    Assign,
+    Semicolon,
+    Comma,
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+};
+
+struct Token {
+    TokenKind kind = TokenKind::End;
+    std::string text;
+    std::int64_t number = 0;
+    SourceLocation loc;
+};
+
+class Lexer {
+public:
+    explicit Lexer(std::string source) : source_(std::move(source)) {}
+
+    std::vector<Token> lex() {
+        std::vector<Token> tokens;
+        while (true) {
+            skipWhitespaceAndComments();
+            const SourceLocation loc = location();
+            if (isAtEnd()) {
+                tokens.push_back(Token{TokenKind::End, "", 0, loc});
+                return tokens;
+            }
+
+            const char ch = peek();
+            if (isIdentifierStart(ch)) {
+                tokens.push_back(readIdentifier());
+            } else if (std::isdigit(static_cast<unsigned char>(ch)) != 0) {
+                tokens.push_back(readNumber());
+            } else {
+                tokens.push_back(readPunctuation());
+            }
+        }
+    }
+
+private:
+    std::string source_;
+    std::size_t pos_ = 0;
+    int line_ = 1;
+    int column_ = 1;
+
+    SourceLocation location() const {
+        return SourceLocation{line_, column_, pos_};
+    }
+
+    bool isAtEnd() const {
+        return pos_ >= source_.size();
+    }
+
+    char peek(std::size_t distance = 0) const {
+        const std::size_t index = pos_ + distance;
+        if (index >= source_.size()) {
+            return '\0';
+        }
+        return source_[index];
+    }
+
+    char advance() {
+        const char ch = source_[pos_++];
+        if (ch == '\n') {
+            ++line_;
+            column_ = 1;
+        } else {
+            ++column_;
+        }
+        return ch;
+    }
+
+    bool match(char expected) {
+        if (peek() != expected) {
+            return false;
+        }
+        advance();
+        return true;
+    }
+
+    static bool isIdentifierStart(char ch) {
+        return std::isalpha(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+    }
+
+    static bool isIdentifierPart(char ch) {
+        return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+    }
+
+    void skipWhitespaceAndComments() {
+        while (!isAtEnd()) {
+            const char ch = peek();
+            if (std::isspace(static_cast<unsigned char>(ch)) != 0) {
+                advance();
+                continue;
+            }
+            if (ch == '/' && peek(1) == '/') {
+                while (!isAtEnd() && peek() != '\n') {
+                    advance();
+                }
+                continue;
+            }
+            if (ch == '/' && peek(1) == '*') {
+                const SourceLocation loc = location();
+                advance();
+                advance();
+                while (!isAtEnd() && !(peek() == '*' && peek(1) == '/')) {
+                    advance();
+                }
+                if (isAtEnd()) {
+                    fail(loc, "unterminated block comment");
+                }
+                advance();
+                advance();
+                continue;
+            }
+            break;
+        }
+    }
+
+    Token readIdentifier() {
+        const SourceLocation loc = location();
+        std::string text;
+        while (isIdentifierPart(peek())) {
+            text.push_back(advance());
+        }
+
+        static const std::unordered_map<std::string, TokenKind> keywords = {
+            {"const", TokenKind::KwConst},       {"int", TokenKind::KwInt},
+            {"void", TokenKind::KwVoid},         {"if", TokenKind::KwIf},
+            {"else", TokenKind::KwElse},         {"while", TokenKind::KwWhile},
+            {"break", TokenKind::KwBreak},       {"continue", TokenKind::KwContinue},
+            {"return", TokenKind::KwReturn},
+        };
+
+        const auto it = keywords.find(text);
+        if (it != keywords.end()) {
+            return Token{it->second, text, 0, loc};
+        }
+        return Token{TokenKind::Identifier, text, 0, loc};
+    }
+
+    Token readNumber() {
+        const SourceLocation loc = location();
+        std::string text;
+        while (std::isdigit(static_cast<unsigned char>(peek())) != 0) {
+            text.push_back(advance());
+        }
+
+        std::int64_t value = 0;
+        try {
+            value = std::stoll(text);
+        } catch (const std::exception&) {
+            fail(loc, "integer literal is out of range");
+        }
+        return Token{TokenKind::Number, text, value, loc};
+    }
+
+    Token readPunctuation() {
+        const SourceLocation loc = location();
+        const char ch = advance();
+        switch (ch) {
+            case '+':
+                return Token{TokenKind::Plus, "+", 0, loc};
+            case '-':
+                return Token{TokenKind::Minus, "-", 0, loc};
+            case '*':
+                return Token{TokenKind::Star, "*", 0, loc};
+            case '/':
+                return Token{TokenKind::Slash, "/", 0, loc};
+            case '%':
+                return Token{TokenKind::Percent, "%", 0, loc};
+            case ';':
+                return Token{TokenKind::Semicolon, ";", 0, loc};
+            case ',':
+                return Token{TokenKind::Comma, ",", 0, loc};
+            case '(':
+                return Token{TokenKind::LParen, "(", 0, loc};
+            case ')':
+                return Token{TokenKind::RParen, ")", 0, loc};
+            case '{':
+                return Token{TokenKind::LBrace, "{", 0, loc};
+            case '}':
+                return Token{TokenKind::RBrace, "}", 0, loc};
+            case '!':
+                if (match('=')) {
+                    return Token{TokenKind::BangEqual, "!=", 0, loc};
+                }
+                return Token{TokenKind::Bang, "!", 0, loc};
+            case '&':
+                if (match('&')) {
+                    return Token{TokenKind::AndAnd, "&&", 0, loc};
+                }
+                break;
+            case '|':
+                if (match('|')) {
+                    return Token{TokenKind::OrOr, "||", 0, loc};
+                }
+                break;
+            case '<':
+                if (match('=')) {
+                    return Token{TokenKind::LessEqual, "<=", 0, loc};
+                }
+                return Token{TokenKind::Less, "<", 0, loc};
+            case '>':
+                if (match('=')) {
+                    return Token{TokenKind::GreaterEqual, ">=", 0, loc};
+                }
+                return Token{TokenKind::Greater, ">", 0, loc};
+            case '=':
+                if (match('=')) {
+                    return Token{TokenKind::EqualEqual, "==", 0, loc};
+                }
+                return Token{TokenKind::Assign, "=", 0, loc};
+            default:
+                break;
+        }
+        fail(loc, std::string("unexpected character '") + ch + "'");
+    }
+};
+
+enum class ValueType {
+    Int,
+    Void,
+};
+
+enum class ExprKind {
+    Number,
+    Variable,
+    Unary,
+    Binary,
+    Call,
+};
+
+struct Expr {
+    ExprKind kind = ExprKind::Number;
+    SourceLocation loc;
+    std::int64_t number = 0;
+    std::string name;
+    std::string op;
+    std::unique_ptr<Expr> lhs;
+    std::unique_ptr<Expr> rhs;
+    std::vector<std::unique_ptr<Expr>> args;
+};
+
+struct Decl {
+    bool isConst = false;
+    std::string name;
+    std::unique_ptr<Expr> init;
+    SourceLocation loc;
+};
+
+enum class StmtKind {
+    Block,
+    Empty,
+    ExprStmt,
+    Assign,
+    DeclStmt,
+    If,
+    While,
+    Break,
+    Continue,
+    Return,
+};
+
+struct Stmt {
+    StmtKind kind = StmtKind::Empty;
+    SourceLocation loc;
+    std::vector<std::unique_ptr<Stmt>> statements;
+    std::unique_ptr<Expr> expr;
+    std::string name;
+    std::unique_ptr<Decl> decl;
+    std::unique_ptr<Stmt> thenBranch;
+    std::unique_ptr<Stmt> elseBranch;
+};
+
+struct Function {
+    ValueType returnType = ValueType::Int;
+    std::string name;
+    std::vector<std::string> params;
+    std::unique_ptr<Stmt> body;
+    SourceLocation loc;
+};
+
+struct CompUnit {
+    std::vector<std::unique_ptr<Decl>> globals;
+    std::vector<std::unique_ptr<Function>> functions;
+};
+
+class Parser {
+public:
+    explicit Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
+
+    CompUnit parseCompUnit() {
+        CompUnit unit;
+        while (!check(TokenKind::End)) {
+            if (check(TokenKind::KwConst)) {
+                unit.globals.push_back(parseDecl());
+                continue;
+            }
+            if (check(TokenKind::KwInt) || check(TokenKind::KwVoid)) {
+                if (isFunctionDefinitionAhead()) {
+                    unit.functions.push_back(parseFunction());
+                } else {
+                    unit.globals.push_back(parseDecl());
+                }
+                continue;
+            }
+            fail(peek().loc, "expected declaration or function definition");
+        }
+        return unit;
+    }
+
+private:
+    std::vector<Token> tokens_;
+    std::size_t pos_ = 0;
+
+    const Token& peek(std::size_t distance = 0) const {
+        const std::size_t index = pos_ + distance;
+        if (index >= tokens_.size()) {
+            return tokens_.back();
+        }
+        return tokens_[index];
+    }
+
+    bool check(TokenKind kind, std::size_t distance = 0) const {
+        return peek(distance).kind == kind;
+    }
+
+    bool match(TokenKind kind) {
+        if (!check(kind)) {
+            return false;
+        }
+        ++pos_;
+        return true;
+    }
+
+    const Token& expect(TokenKind kind, const std::string& message) {
+        if (!check(kind)) {
+            fail(peek().loc, message);
+        }
+        return tokens_[pos_++];
+    }
+
+    bool isFunctionDefinitionAhead() const {
+        return (check(TokenKind::KwInt) || check(TokenKind::KwVoid)) &&
+               check(TokenKind::Identifier, 1) && check(TokenKind::LParen, 2);
+    }
+
+    ValueType parseType() {
+        if (match(TokenKind::KwInt)) {
+            return ValueType::Int;
+        }
+        if (match(TokenKind::KwVoid)) {
+            return ValueType::Void;
+        }
+        fail(peek().loc, "expected type");
+    }
+
+    std::unique_ptr<Function> parseFunction() {
+        auto function = std::make_unique<Function>();
+        function->loc = peek().loc;
+        function->returnType = parseType();
+        function->name = expect(TokenKind::Identifier, "expected function name").text;
+        expect(TokenKind::LParen, "expected '(' after function name");
+        if (!check(TokenKind::RParen)) {
+            do {
+                expect(TokenKind::KwInt, "expected int parameter");
+                function->params.push_back(expect(TokenKind::Identifier, "expected parameter name").text);
+            } while (match(TokenKind::Comma));
+        }
+        expect(TokenKind::RParen, "expected ')' after parameter list");
+        function->body = parseBlock();
+        return function;
+    }
+
+    std::unique_ptr<Decl> parseDecl() {
+        auto decl = std::make_unique<Decl>();
+        decl->loc = peek().loc;
+        if (match(TokenKind::KwConst)) {
+            decl->isConst = true;
+            expect(TokenKind::KwInt, "expected int after const");
+        } else {
+            expect(TokenKind::KwInt, "expected int declaration");
+        }
+        decl->name = expect(TokenKind::Identifier, "expected identifier in declaration").text;
+        expect(TokenKind::Assign, "expected initializer");
+        decl->init = parseExpr();
+        expect(TokenKind::Semicolon, "expected ';' after declaration");
+        return decl;
+    }
+
+    std::unique_ptr<Stmt> parseBlock() {
+        auto stmt = std::make_unique<Stmt>();
+        stmt->kind = StmtKind::Block;
+        stmt->loc = peek().loc;
+        expect(TokenKind::LBrace, "expected '{'");
+        while (!check(TokenKind::RBrace)) {
+            if (check(TokenKind::End)) {
+                fail(peek().loc, "unterminated block");
+            }
+            stmt->statements.push_back(parseStmt());
+        }
+        expect(TokenKind::RBrace, "expected '}'");
+        return stmt;
+    }
+
+    std::unique_ptr<Stmt> parseStmt() {
+        if (check(TokenKind::LBrace)) {
+            return parseBlock();
+        }
+
+        auto stmt = std::make_unique<Stmt>();
+        stmt->loc = peek().loc;
+
+        if (match(TokenKind::Semicolon)) {
+            stmt->kind = StmtKind::Empty;
+            return stmt;
+        }
+        if (check(TokenKind::KwConst) || check(TokenKind::KwInt)) {
+            stmt->kind = StmtKind::DeclStmt;
+            stmt->decl = parseDecl();
+            return stmt;
+        }
+        if (match(TokenKind::KwIf)) {
+            stmt->kind = StmtKind::If;
+            expect(TokenKind::LParen, "expected '(' after if");
+            stmt->expr = parseExpr();
+            expect(TokenKind::RParen, "expected ')' after condition");
+            stmt->thenBranch = parseStmt();
+            if (match(TokenKind::KwElse)) {
+                stmt->elseBranch = parseStmt();
+            }
+            return stmt;
+        }
+        if (match(TokenKind::KwWhile)) {
+            stmt->kind = StmtKind::While;
+            expect(TokenKind::LParen, "expected '(' after while");
+            stmt->expr = parseExpr();
+            expect(TokenKind::RParen, "expected ')' after condition");
+            stmt->thenBranch = parseStmt();
+            return stmt;
+        }
+        if (match(TokenKind::KwBreak)) {
+            stmt->kind = StmtKind::Break;
+            expect(TokenKind::Semicolon, "expected ';' after break");
+            return stmt;
+        }
+        if (match(TokenKind::KwContinue)) {
+            stmt->kind = StmtKind::Continue;
+            expect(TokenKind::Semicolon, "expected ';' after continue");
+            return stmt;
+        }
+        if (match(TokenKind::KwReturn)) {
+            stmt->kind = StmtKind::Return;
+            if (!check(TokenKind::Semicolon)) {
+                stmt->expr = parseExpr();
+            }
+            expect(TokenKind::Semicolon, "expected ';' after return");
+            return stmt;
+        }
+        if (check(TokenKind::Identifier) && check(TokenKind::Assign, 1)) {
+            stmt->kind = StmtKind::Assign;
+            stmt->name = expect(TokenKind::Identifier, "expected assignment target").text;
+            expect(TokenKind::Assign, "expected '='");
+            stmt->expr = parseExpr();
+            expect(TokenKind::Semicolon, "expected ';' after assignment");
+            return stmt;
+        }
+
+        stmt->kind = StmtKind::ExprStmt;
+        stmt->expr = parseExpr();
+        expect(TokenKind::Semicolon, "expected ';' after expression");
+        return stmt;
+    }
+
+    std::unique_ptr<Expr> parseExpr() {
+        return parseLOrExpr();
+    }
+
+    std::unique_ptr<Expr> parseLOrExpr() {
+        auto expr = parseLAndExpr();
+        while (match(TokenKind::OrOr)) {
+            expr = makeBinary("||", std::move(expr), parseLAndExpr());
+        }
+        return expr;
+    }
+
+    std::unique_ptr<Expr> parseLAndExpr() {
+        auto expr = parseRelExpr();
+        while (match(TokenKind::AndAnd)) {
+            expr = makeBinary("&&", std::move(expr), parseRelExpr());
+        }
+        return expr;
+    }
+
+    std::unique_ptr<Expr> parseRelExpr() {
+        auto expr = parseAddExpr();
+        while (true) {
+            if (match(TokenKind::Less)) {
+                expr = makeBinary("<", std::move(expr), parseAddExpr());
+            } else if (match(TokenKind::Greater)) {
+                expr = makeBinary(">", std::move(expr), parseAddExpr());
+            } else if (match(TokenKind::LessEqual)) {
+                expr = makeBinary("<=", std::move(expr), parseAddExpr());
+            } else if (match(TokenKind::GreaterEqual)) {
+                expr = makeBinary(">=", std::move(expr), parseAddExpr());
+            } else if (match(TokenKind::EqualEqual)) {
+                expr = makeBinary("==", std::move(expr), parseAddExpr());
+            } else if (match(TokenKind::BangEqual)) {
+                expr = makeBinary("!=", std::move(expr), parseAddExpr());
+            } else {
+                return expr;
+            }
+        }
+    }
+
+    std::unique_ptr<Expr> parseAddExpr() {
+        auto expr = parseMulExpr();
+        while (true) {
+            if (match(TokenKind::Plus)) {
+                expr = makeBinary("+", std::move(expr), parseMulExpr());
+            } else if (match(TokenKind::Minus)) {
+                expr = makeBinary("-", std::move(expr), parseMulExpr());
+            } else {
+                return expr;
+            }
+        }
+    }
+
+    std::unique_ptr<Expr> parseMulExpr() {
+        auto expr = parseUnaryExpr();
+        while (true) {
+            if (match(TokenKind::Star)) {
+                expr = makeBinary("*", std::move(expr), parseUnaryExpr());
+            } else if (match(TokenKind::Slash)) {
+                expr = makeBinary("/", std::move(expr), parseUnaryExpr());
+            } else if (match(TokenKind::Percent)) {
+                expr = makeBinary("%", std::move(expr), parseUnaryExpr());
+            } else {
+                return expr;
+            }
+        }
+    }
+
+    std::unique_ptr<Expr> parseUnaryExpr() {
+        if (match(TokenKind::Plus)) {
+            return makeUnary("+", parseUnaryExpr());
+        }
+        if (match(TokenKind::Minus)) {
+            return makeUnary("-", parseUnaryExpr());
+        }
+        if (match(TokenKind::Bang)) {
+            return makeUnary("!", parseUnaryExpr());
+        }
+        return parsePrimaryExpr();
+    }
+
+    std::unique_ptr<Expr> parsePrimaryExpr() {
+        const SourceLocation loc = peek().loc;
+        if (match(TokenKind::Number)) {
+            auto expr = std::make_unique<Expr>();
+            expr->kind = ExprKind::Number;
+            expr->loc = loc;
+            expr->number = tokens_[pos_ - 1].number;
+            return expr;
+        }
+        if (match(TokenKind::Identifier)) {
+            const std::string name = tokens_[pos_ - 1].text;
+            if (match(TokenKind::LParen)) {
+                auto expr = std::make_unique<Expr>();
+                expr->kind = ExprKind::Call;
+                expr->loc = loc;
+                expr->name = name;
+                if (!check(TokenKind::RParen)) {
+                    do {
+                        expr->args.push_back(parseExpr());
+                    } while (match(TokenKind::Comma));
+                }
+                expect(TokenKind::RParen, "expected ')' after argument list");
+                return expr;
+            }
+            auto expr = std::make_unique<Expr>();
+            expr->kind = ExprKind::Variable;
+            expr->loc = loc;
+            expr->name = name;
+            return expr;
+        }
+        if (match(TokenKind::LParen)) {
+            auto expr = parseExpr();
+            expect(TokenKind::RParen, "expected ')'");
+            return expr;
+        }
+        fail(peek().loc, "expected expression");
+    }
+
+    static std::unique_ptr<Expr> makeUnary(std::string op, std::unique_ptr<Expr> operand) {
+        auto expr = std::make_unique<Expr>();
+        expr->kind = ExprKind::Unary;
+        expr->loc = operand->loc;
+        expr->op = std::move(op);
+        expr->lhs = std::move(operand);
+        return expr;
+    }
+
+    static std::unique_ptr<Expr> makeBinary(std::string op, std::unique_ptr<Expr> lhs, std::unique_ptr<Expr> rhs) {
+        auto expr = std::make_unique<Expr>();
+        expr->kind = ExprKind::Binary;
+        expr->loc = lhs->loc;
+        expr->op = std::move(op);
+        expr->lhs = std::move(lhs);
+        expr->rhs = std::move(rhs);
+        return expr;
+    }
+};
+
+enum class SymbolKind {
+    LocalVar,
+    GlobalVar,
+    Const,
+};
+
+struct Symbol {
+    SymbolKind kind = SymbolKind::LocalVar;
+    int offset = 0;
+    std::string label;
+    std::int32_t constValue = 0;
+};
+
+struct FunctionInfo {
+    ValueType returnType = ValueType::Int;
+    std::vector<std::string> params;
+    std::string label;
+};
+
+std::int32_t toInt32(std::int64_t value) {
+    return static_cast<std::int32_t>(value);
+}
+
+std::int64_t printableI32(std::int32_t value) {
+    return static_cast<std::int64_t>(value);
+}
+
+bool fitsI12(int value) {
+    return value >= -2048 && value <= 2047;
+}
+
+int alignTo16(int value) {
+    return (value + 15) / 16 * 16;
+}
+
+std::string functionLabel(const std::string& name) {
+    if (name == "main") {
+        return "main";
+    }
+    return "fn_" + name;
+}
+
+std::string globalLabel(const std::string& name) {
+    return "g_" + name;
+}
+
+void emitRegAdd(std::ostream& out, const std::string& dst, const std::string& base, int amount) {
+    if (amount == 0) {
+        if (dst != base) {
+            out << "    addi " << dst << ", " << base << ", 0\n";
+        }
+        return;
+    }
+    if (fitsI12(amount)) {
+        out << "    addi " << dst << ", " << base << ", " << amount << '\n';
+    } else {
+        out << "    li t6, " << amount << '\n';
+        out << "    add " << dst << ", " << base << ", t6\n";
+    }
+}
+
+void emitLoadOffset(std::ostream& out, const std::string& dst, int offset, const std::string& base) {
+    if (fitsI12(offset)) {
+        out << "    lw " << dst << ", " << offset << '(' << base << ")\n";
+    } else {
+        out << "    li t6, " << offset << '\n';
+        out << "    add t6, " << base << ", t6\n";
+        out << "    lw " << dst << ", 0(t6)\n";
+    }
+}
+
+void emitStoreOffset(std::ostream& out, const std::string& src, int offset, const std::string& base) {
+    if (fitsI12(offset)) {
+        out << "    sw " << src << ", " << offset << '(' << base << ")\n";
+    } else {
+        out << "    li t6, " << offset << '\n';
+        out << "    add t6, " << base << ", t6\n";
+        out << "    sw " << src << ", 0(t6)\n";
+    }
+}
+
+class CodeGenerator {
+public:
+    CodeGenerator(const CompUnit& unit, Options options) : unit_(unit), options_(options) {}
+
+    std::string generate() {
+        collectFunctions();
+        collectGlobals();
+
+        std::ostringstream out;
+        if (!dataLines_.empty()) {
+            out << "    .data\n";
+            out << "    .align 2\n";
+            for (const std::string& line : dataLines_) {
+                out << line;
+            }
+            out << '\n';
+        }
+
+        out << "    .text\n";
+        out << "    .globl main\n";
+        for (const auto& function : unit_.functions) {
+            out << generateFunction(*function);
+        }
+        return out.str();
+    }
+
+private:
+    const CompUnit& unit_;
+    Options options_;
+    std::unordered_map<std::string, Symbol> globals_;
+    std::unordered_map<std::string, FunctionInfo> functions_;
+    std::vector<std::string> dataLines_;
+
+    class FunctionEmitter {
+    public:
+        FunctionEmitter(CodeGenerator& parent, const Function& function)
+            : parent_(parent), function_(function), returnLabel_(".L_return_" + functionLabel(function.name)) {}
+
+        std::string emit() {
+            body_ << "    # parameters\n";
+            pushScope();
+            for (std::size_t i = 0; i < function_.params.size(); ++i) {
+                const int offset = allocateSlot();
+                currentScope()[function_.params[i]] = Symbol{SymbolKind::LocalVar, offset, "", 0};
+                emitLoadOffset(body_, "t0", static_cast<int>(i * 4), "s0");
+                emitStoreOffset(body_, "t0", offset, "s0");
+            }
+
+            emitStmt(*function_.body);
+            body_ << "    li a0, 0\n";
+            body_ << returnLabel_ << ":\n";
+            emitLoadOffset(body_, "ra", -4, "s0");
+            emitLoadOffset(body_, "t0", -8, "s0");
+            body_ << "    addi sp, s0, 0\n";
+            body_ << "    addi s0, t0, 0\n";
+            body_ << "    ret\n\n";
+
+            const int frameSize = alignTo16(8 + slotCount_ * 4);
+            std::ostringstream out;
+            out << functionLabel(function_.name) << ":\n";
+            emitRegAdd(out, "sp", "sp", -frameSize);
+            emitStoreOffset(out, "ra", frameSize - 4, "sp");
+            emitStoreOffset(out, "s0", frameSize - 8, "sp");
+            emitRegAdd(out, "s0", "sp", frameSize);
+            out << body_.str();
+            return out.str();
+        }
+
+    private:
+        CodeGenerator& parent_;
+        const Function& function_;
+        std::ostringstream body_;
+        std::vector<std::unordered_map<std::string, Symbol>> scopes_;
+        std::vector<std::pair<std::string, std::string>> loopStack_;
+        int slotCount_ = 0;
+        int labelCounter_ = 0;
+        std::string returnLabel_;
+
+        std::unordered_map<std::string, Symbol>& currentScope() {
+            if (scopes_.empty()) {
+                throw std::runtime_error("internal error: missing local scope");
+            }
+            return scopes_.back();
+        }
+
+        void pushScope() {
+            scopes_.push_back({});
+        }
+
+        void popScope() {
+            scopes_.pop_back();
+        }
+
+        int allocateSlot() {
+            const int offset = -12 - slotCount_ * 4;
+            ++slotCount_;
+            return offset;
+        }
+
+        std::string newLabel(const std::string& hint) {
+            return ".L_" + functionLabel(function_.name) + "_" + hint + "_" + std::to_string(labelCounter_++);
+        }
+
+        std::optional<Symbol> lookup(const std::string& name) const {
+            for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
+                const auto found = it->find(name);
+                if (found != it->end()) {
+                    return found->second;
+                }
+            }
+            const auto global = parent_.globals_.find(name);
+            if (global != parent_.globals_.end()) {
+                return global->second;
+            }
+            return std::nullopt;
+        }
+
+        std::optional<std::int32_t> evalConst(const Expr& expr) const {
+            switch (expr.kind) {
+                case ExprKind::Number:
+                    return toInt32(expr.number);
+                case ExprKind::Variable: {
+                    const auto symbol = lookup(expr.name);
+                    if (symbol && symbol->kind == SymbolKind::Const) {
+                        return symbol->constValue;
+                    }
+                    return std::nullopt;
+                }
+                case ExprKind::Unary: {
+                    const auto value = evalConst(*expr.lhs);
+                    if (!value) {
+                        return std::nullopt;
+                    }
+                    if (expr.op == "+") {
+                        return *value;
+                    }
+                    if (expr.op == "-") {
+                        return toInt32(-static_cast<std::int64_t>(*value));
+                    }
+                    if (expr.op == "!") {
+                        return static_cast<std::int32_t>(*value == 0 ? 1 : 0);
+                    }
+                    return std::nullopt;
+                }
+                case ExprKind::Binary:
+                    return evalConstBinary(expr);
+                case ExprKind::Call:
+                    return std::nullopt;
+            }
+            return std::nullopt;
+        }
+
+        std::optional<std::int32_t> evalConstBinary(const Expr& expr) const {
+            if (expr.op == "&&") {
+                const auto lhs = evalConst(*expr.lhs);
+                if (!lhs) {
+                    return std::nullopt;
+                }
+                if (*lhs == 0) {
+                    return 0;
+                }
+                const auto rhs = evalConst(*expr.rhs);
+                if (!rhs) {
+                    return std::nullopt;
+                }
+                return static_cast<std::int32_t>(*rhs != 0 ? 1 : 0);
+            }
+            if (expr.op == "||") {
+                const auto lhs = evalConst(*expr.lhs);
+                if (!lhs) {
+                    return std::nullopt;
+                }
+                if (*lhs != 0) {
+                    return 1;
+                }
+                const auto rhs = evalConst(*expr.rhs);
+                if (!rhs) {
+                    return std::nullopt;
+                }
+                return static_cast<std::int32_t>(*rhs != 0 ? 1 : 0);
+            }
+
+            const auto lhs = evalConst(*expr.lhs);
+            const auto rhs = evalConst(*expr.rhs);
+            if (!lhs || !rhs) {
+                return std::nullopt;
+            }
+
+            const std::int64_t left = *lhs;
+            const std::int64_t right = *rhs;
+            if (expr.op == "+") {
+                return toInt32(left + right);
+            }
+            if (expr.op == "-") {
+                return toInt32(left - right);
+            }
+            if (expr.op == "*") {
+                return toInt32(left * right);
+            }
+            if (expr.op == "/") {
+                if (right == 0) {
+                    return std::nullopt;
+                }
+                return toInt32(left / right);
+            }
+            if (expr.op == "%") {
+                if (right == 0) {
+                    return std::nullopt;
+                }
+                return toInt32(left % right);
+            }
+            if (expr.op == "<") {
+                return static_cast<std::int32_t>(left < right ? 1 : 0);
+            }
+            if (expr.op == ">") {
+                return static_cast<std::int32_t>(left > right ? 1 : 0);
+            }
+            if (expr.op == "<=") {
+                return static_cast<std::int32_t>(left <= right ? 1 : 0);
+            }
+            if (expr.op == ">=") {
+                return static_cast<std::int32_t>(left >= right ? 1 : 0);
+            }
+            if (expr.op == "==") {
+                return static_cast<std::int32_t>(left == right ? 1 : 0);
+            }
+            if (expr.op == "!=") {
+                return static_cast<std::int32_t>(left != right ? 1 : 0);
+            }
+            return std::nullopt;
+        }
+
+        void emitStmt(const Stmt& stmt) {
+            switch (stmt.kind) {
+                case StmtKind::Block:
+                    pushScope();
+                    for (const auto& child : stmt.statements) {
+                        emitStmt(*child);
+                    }
+                    popScope();
+                    break;
+                case StmtKind::Empty:
+                    break;
+                case StmtKind::ExprStmt:
+                    emitExpr(*stmt.expr);
+                    break;
+                case StmtKind::Assign:
+                    emitAssign(stmt);
+                    break;
+                case StmtKind::DeclStmt:
+                    emitDecl(*stmt.decl);
+                    break;
+                case StmtKind::If:
+                    emitIf(stmt);
+                    break;
+                case StmtKind::While:
+                    emitWhile(stmt);
+                    break;
+                case StmtKind::Break:
+                    if (loopStack_.empty()) {
+                        fail(stmt.loc, "break outside loop");
+                    }
+                    body_ << "    jal zero, " << loopStack_.back().second << '\n';
+                    break;
+                case StmtKind::Continue:
+                    if (loopStack_.empty()) {
+                        fail(stmt.loc, "continue outside loop");
+                    }
+                    body_ << "    jal zero, " << loopStack_.back().first << '\n';
+                    break;
+                case StmtKind::Return:
+                    if (stmt.expr) {
+                        emitExpr(*stmt.expr);
+                    } else {
+                        body_ << "    li a0, 0\n";
+                    }
+                    body_ << "    jal zero, " << returnLabel_ << '\n';
+                    break;
+            }
+        }
+
+        void emitDecl(const Decl& decl) {
+            if (decl.isConst) {
+                const auto value = evalConst(*decl.init);
+                if (!value) {
+                    fail(decl.loc, "const initializer is not a compile-time value");
+                }
+                currentScope()[decl.name] = Symbol{SymbolKind::Const, 0, "", *value};
+                return;
+            }
+
+            const int offset = allocateSlot();
+            emitExpr(*decl.init);
+            emitStoreOffset(body_, "a0", offset, "s0");
+            currentScope()[decl.name] = Symbol{SymbolKind::LocalVar, offset, "", 0};
+        }
+
+        void emitAssign(const Stmt& stmt) {
+            const auto symbol = lookup(stmt.name);
+            if (!symbol) {
+                fail(stmt.loc, "unknown assignment target: " + stmt.name);
+            }
+            if (symbol->kind == SymbolKind::Const) {
+                fail(stmt.loc, "cannot assign to const: " + stmt.name);
+            }
+
+            emitExpr(*stmt.expr);
+            if (symbol->kind == SymbolKind::LocalVar) {
+                emitStoreOffset(body_, "a0", symbol->offset, "s0");
+            } else {
+                body_ << "    la t0, " << symbol->label << '\n';
+                body_ << "    sw a0, 0(t0)\n";
+            }
+        }
+
+        void emitIf(const Stmt& stmt) {
+            const std::string elseLabel = newLabel("else");
+            const std::string endLabel = newLabel("endif");
+            emitExpr(*stmt.expr);
+            body_ << "    beq a0, zero, " << elseLabel << '\n';
+            emitStmt(*stmt.thenBranch);
+            body_ << "    jal zero, " << endLabel << '\n';
+            body_ << elseLabel << ":\n";
+            if (stmt.elseBranch) {
+                emitStmt(*stmt.elseBranch);
+            }
+            body_ << endLabel << ":\n";
+        }
+
+        void emitWhile(const Stmt& stmt) {
+            const std::string condLabel = newLabel("while_cond");
+            const std::string endLabel = newLabel("while_end");
+            body_ << condLabel << ":\n";
+            emitExpr(*stmt.expr);
+            body_ << "    beq a0, zero, " << endLabel << '\n';
+            loopStack_.push_back({condLabel, endLabel});
+            emitStmt(*stmt.thenBranch);
+            loopStack_.pop_back();
+            body_ << "    jal zero, " << condLabel << '\n';
+            body_ << endLabel << ":\n";
+        }
+
+        void emitExpr(const Expr& expr) {
+            if (parent_.options_.optimize) {
+                const auto value = evalConst(expr);
+                if (value) {
+                    body_ << "    li a0, " << printableI32(*value) << '\n';
+                    return;
+                }
+            }
+
+            switch (expr.kind) {
+                case ExprKind::Number:
+                    body_ << "    li a0, " << printableI32(toInt32(expr.number)) << '\n';
+                    break;
+                case ExprKind::Variable:
+                    emitVariable(expr);
+                    break;
+                case ExprKind::Unary:
+                    emitUnary(expr);
+                    break;
+                case ExprKind::Binary:
+                    emitBinary(expr);
+                    break;
+                case ExprKind::Call:
+                    emitCall(expr);
+                    break;
+            }
+        }
+
+        void emitVariable(const Expr& expr) {
+            const auto symbol = lookup(expr.name);
+            if (!symbol) {
+                fail(expr.loc, "unknown variable: " + expr.name);
+            }
+            if (symbol->kind == SymbolKind::Const) {
+                body_ << "    li a0, " << printableI32(symbol->constValue) << '\n';
+            } else if (symbol->kind == SymbolKind::LocalVar) {
+                emitLoadOffset(body_, "a0", symbol->offset, "s0");
+            } else {
+                body_ << "    la t0, " << symbol->label << '\n';
+                body_ << "    lw a0, 0(t0)\n";
+            }
+        }
+
+        void emitUnary(const Expr& expr) {
+            emitExpr(*expr.lhs);
+            if (expr.op == "+") {
+                return;
+            }
+            if (expr.op == "-") {
+                body_ << "    sub a0, zero, a0\n";
+                return;
+            }
+            if (expr.op == "!") {
+                body_ << "    sltiu a0, a0, 1\n";
+                return;
+            }
+            fail(expr.loc, "unknown unary operator");
+        }
+
+        void emitBinary(const Expr& expr) {
+            if (expr.op == "&&") {
+                emitLogicalAnd(expr);
+                return;
+            }
+            if (expr.op == "||") {
+                emitLogicalOr(expr);
+                return;
+            }
+
+            emitExpr(*expr.lhs);
+            pushA0();
+            emitExpr(*expr.rhs);
+            popTo("t0");
+
+            if (expr.op == "+") {
+                body_ << "    add a0, t0, a0\n";
+            } else if (expr.op == "-") {
+                body_ << "    sub a0, t0, a0\n";
+            } else if (expr.op == "*") {
+                body_ << "    mul a0, t0, a0\n";
+            } else if (expr.op == "/") {
+                body_ << "    div a0, t0, a0\n";
+            } else if (expr.op == "%") {
+                body_ << "    rem a0, t0, a0\n";
+            } else if (expr.op == "<") {
+                body_ << "    slt a0, t0, a0\n";
+            } else if (expr.op == ">") {
+                body_ << "    slt a0, a0, t0\n";
+            } else if (expr.op == "<=") {
+                body_ << "    slt a0, a0, t0\n";
+                body_ << "    xori a0, a0, 1\n";
+            } else if (expr.op == ">=") {
+                body_ << "    slt a0, t0, a0\n";
+                body_ << "    xori a0, a0, 1\n";
+            } else if (expr.op == "==") {
+                body_ << "    sub a0, t0, a0\n";
+                body_ << "    sltiu a0, a0, 1\n";
+            } else if (expr.op == "!=") {
+                body_ << "    sub a0, t0, a0\n";
+                body_ << "    sltu a0, zero, a0\n";
+            } else {
+                fail(expr.loc, "unknown binary operator");
+            }
+        }
+
+        void emitLogicalAnd(const Expr& expr) {
+            const std::string falseLabel = newLabel("and_false");
+            const std::string endLabel = newLabel("and_end");
+            emitExpr(*expr.lhs);
+            body_ << "    beq a0, zero, " << falseLabel << '\n';
+            emitExpr(*expr.rhs);
+            body_ << "    beq a0, zero, " << falseLabel << '\n';
+            body_ << "    li a0, 1\n";
+            body_ << "    jal zero, " << endLabel << '\n';
+            body_ << falseLabel << ":\n";
+            body_ << "    li a0, 0\n";
+            body_ << endLabel << ":\n";
+        }
+
+        void emitLogicalOr(const Expr& expr) {
+            const std::string trueLabel = newLabel("or_true");
+            const std::string endLabel = newLabel("or_end");
+            emitExpr(*expr.lhs);
+            body_ << "    bne a0, zero, " << trueLabel << '\n';
+            emitExpr(*expr.rhs);
+            body_ << "    bne a0, zero, " << trueLabel << '\n';
+            body_ << "    li a0, 0\n";
+            body_ << "    jal zero, " << endLabel << '\n';
+            body_ << trueLabel << ":\n";
+            body_ << "    li a0, 1\n";
+            body_ << endLabel << ":\n";
+        }
+
+        void emitCall(const Expr& expr) {
+            const auto function = parent_.functions_.find(expr.name);
+            if (function == parent_.functions_.end()) {
+                fail(expr.loc, "unknown function: " + expr.name);
+            }
+
+            const int reserve = alignTo16(static_cast<int>(expr.args.size() * 4));
+            if (reserve > 0) {
+                emitRegAdd(body_, "sp", "sp", -reserve);
+            }
+            for (std::size_t i = 0; i < expr.args.size(); ++i) {
+                emitExpr(*expr.args[i]);
+                emitStoreOffset(body_, "a0", static_cast<int>(i * 4), "sp");
+            }
+            body_ << "    call " << function->second.label << '\n';
+            if (reserve > 0) {
+                emitRegAdd(body_, "sp", "sp", reserve);
+            }
+        }
+
+        void pushA0() {
+            body_ << "    addi sp, sp, -16\n";
+            body_ << "    sw a0, 12(sp)\n";
+        }
+
+        void popTo(const std::string& reg) {
+            body_ << "    lw " << reg << ", 12(sp)\n";
+            body_ << "    addi sp, sp, 16\n";
+        }
+    };
+
+    void collectFunctions() {
+        for (const auto& function : unit_.functions) {
+            FunctionInfo info;
+            info.returnType = function->returnType;
+            info.params = function->params;
+            info.label = functionLabel(function->name);
+            functions_[function->name] = std::move(info);
+        }
+    }
+
+    std::optional<Symbol> lookupGlobal(const std::string& name) const {
+        const auto it = globals_.find(name);
+        if (it == globals_.end()) {
+            return std::nullopt;
+        }
+        return it->second;
+    }
+
+    std::optional<std::int32_t> evalGlobalConst(const Expr& expr) const {
+        switch (expr.kind) {
+            case ExprKind::Number:
+                return toInt32(expr.number);
+            case ExprKind::Variable: {
+                const auto symbol = lookupGlobal(expr.name);
+                if (symbol && symbol->kind == SymbolKind::Const) {
+                    return symbol->constValue;
+                }
+                return std::nullopt;
+            }
+            case ExprKind::Unary: {
+                const auto value = evalGlobalConst(*expr.lhs);
+                if (!value) {
+                    return std::nullopt;
+                }
+                if (expr.op == "+") {
+                    return *value;
+                }
+                if (expr.op == "-") {
+                    return toInt32(-static_cast<std::int64_t>(*value));
+                }
+                if (expr.op == "!") {
+                    return static_cast<std::int32_t>(*value == 0 ? 1 : 0);
+                }
+                return std::nullopt;
+            }
+            case ExprKind::Binary:
+                return evalGlobalBinary(expr);
+            case ExprKind::Call:
+                return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    std::optional<std::int32_t> evalGlobalBinary(const Expr& expr) const {
+        if (expr.op == "&&") {
+            const auto lhs = evalGlobalConst(*expr.lhs);
+            if (!lhs) {
+                return std::nullopt;
+            }
+            if (*lhs == 0) {
+                return 0;
+            }
+            const auto rhs = evalGlobalConst(*expr.rhs);
+            if (!rhs) {
+                return std::nullopt;
+            }
+            return static_cast<std::int32_t>(*rhs != 0 ? 1 : 0);
+        }
+        if (expr.op == "||") {
+            const auto lhs = evalGlobalConst(*expr.lhs);
+            if (!lhs) {
+                return std::nullopt;
+            }
+            if (*lhs != 0) {
+                return 1;
+            }
+            const auto rhs = evalGlobalConst(*expr.rhs);
+            if (!rhs) {
+                return std::nullopt;
+            }
+            return static_cast<std::int32_t>(*rhs != 0 ? 1 : 0);
+        }
+
+        const auto lhs = evalGlobalConst(*expr.lhs);
+        const auto rhs = evalGlobalConst(*expr.rhs);
+        if (!lhs || !rhs) {
+            return std::nullopt;
+        }
+        const std::int64_t left = *lhs;
+        const std::int64_t right = *rhs;
+        if (expr.op == "+") {
+            return toInt32(left + right);
+        }
+        if (expr.op == "-") {
+            return toInt32(left - right);
+        }
+        if (expr.op == "*") {
+            return toInt32(left * right);
+        }
+        if (expr.op == "/") {
+            if (right == 0) {
+                return std::nullopt;
+            }
+            return toInt32(left / right);
+        }
+        if (expr.op == "%") {
+            if (right == 0) {
+                return std::nullopt;
+            }
+            return toInt32(left % right);
+        }
+        if (expr.op == "<") {
+            return static_cast<std::int32_t>(left < right ? 1 : 0);
+        }
+        if (expr.op == ">") {
+            return static_cast<std::int32_t>(left > right ? 1 : 0);
+        }
+        if (expr.op == "<=") {
+            return static_cast<std::int32_t>(left <= right ? 1 : 0);
+        }
+        if (expr.op == ">=") {
+            return static_cast<std::int32_t>(left >= right ? 1 : 0);
+        }
+        if (expr.op == "==") {
+            return static_cast<std::int32_t>(left == right ? 1 : 0);
+        }
+        if (expr.op == "!=") {
+            return static_cast<std::int32_t>(left != right ? 1 : 0);
+        }
+        return std::nullopt;
+    }
+
+    void collectGlobals() {
+        for (const auto& decl : unit_.globals) {
+            const auto value = evalGlobalConst(*decl->init);
+            if (!value) {
+                fail(decl->loc, "global initializer is not a compile-time value");
+            }
+
+            if (decl->isConst) {
+                globals_[decl->name] = Symbol{SymbolKind::Const, 0, "", *value};
+            } else {
+                const std::string label = globalLabel(decl->name);
+                globals_[decl->name] = Symbol{SymbolKind::GlobalVar, 0, label, 0};
+                std::ostringstream line;
+                line << label << ":\n";
+                line << "    .word " << printableI32(*value) << '\n';
+                dataLines_.push_back(line.str());
+            }
+        }
+    }
+
+    std::string generateFunction(const Function& function) {
+        FunctionEmitter emitter(*this, function);
+        return emitter.emit();
+    }
+};
 
 } // namespace
 
 int main(int argc, char** argv) {
-    const Options options = parseOptions(argc, argv);
-    const std::string source = readStdin();
-
-    (void)options;
-    (void)source;
-
-    emitInitialAssembly(std::cout);
-    return 0;
+    try {
+        const Options options = parseOptions(argc, argv);
+        const std::string source = readStdin();
+        Lexer lexer(source);
+        Parser parser(lexer.lex());
+        CompUnit unit = parser.parseCompUnit();
+        CodeGenerator generator(unit, options);
+        std::cout << generator.generate();
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << "toyc: " << error.what() << '\n';
+        return 1;
+    }
 }
+

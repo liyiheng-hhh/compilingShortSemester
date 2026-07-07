@@ -1,0 +1,13 @@
+int g = 1;
+
+void add_to_g(int x) {
+    g = g + x;
+    return;
+}
+
+int main() {
+    add_to_g(3);
+    add_to_g(5);
+    return g;
+}
+

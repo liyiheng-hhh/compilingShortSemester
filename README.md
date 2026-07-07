@@ -19,7 +19,7 @@ cmake --build build
 ## 运行
 
 ```powershell
-.\build\Debug\toyc.exe < tests\smoke\return_zero.tc > out.s
+.\build\toyc.exe < tests\smoke\return_zero.tc > out.s
 ```
 
 在 Linux 或评测环境中，可执行文件路径可能为：
@@ -30,7 +30,16 @@ cmake --build build
 
 ## 当前状态
 
-当前提交是项目初始化骨架：已建立 C++20/CMake 工程、评测接口入口、冒烟测试样例和项目分工计划。后续需要按计划接入词法分析、语法分析、语义分析、IR、RISC-V32 代码生成、优化和实践报告。
+`lyh` 分支已实现一个完整的 ToyC 到 RISC-V32 汇编编译器，覆盖：
+
+- 手写词法分析和递归下降语法分析。
+- AST、作用域、局部/全局变量、局部/全局常量和常量表达式求值。
+- 表达式、赋值、声明、`if/else`、`while`、`break`、`continue`、`return`。
+- int/void 函数、递归、多参数调用和全局变量读写。
+- RISC-V32 汇编输出，包含 `.data`、`.text`、函数栈帧、短路逻辑和分支标签。
+- `-opt` 下的常量表达式折叠。
+
+本地已通过 CMake 构建，并对 `tests/` 下样例完成普通模式和 `-opt` 模式的汇编生成验证。
 
 ## 开发文档
 
@@ -44,10 +53,16 @@ cmake --build build
 ├── CMakeLists.txt
 ├── README.md
 ├── docs/
-│   └── 项目初始化与分工计划.md
+│   ├── 项目初始化与分工计划.md
+│   └── 完整实现方案.md
 ├── src/
 │   └── main.cpp
 └── tests/
-    └── smoke/
-        └── return_zero.tc
+    ├── README.md
+    ├── decl/
+    ├── expr/
+    ├── func/
+    ├── global/
+    ├── smoke/
+    └── stmt/
 ```
