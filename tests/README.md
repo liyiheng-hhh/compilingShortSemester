@@ -10,6 +10,7 @@ These samples are small regression inputs for the compiler. The expected result 
 | `expr/algebra_strength.tc` | 49 | Algebraic simplification and multiply strength reduction |
 | `expr/nested_binary.tc` | 45 | Nested binary expressions and temporary registers |
 | `expr/many_locals_nested.tc` | 124 | Many locals, spilled stack slots, nested expressions |
+| `expr/repeated_subexpr.tc` | 81 | Repeated operand expression reuse |
 | `stmt/control_flow.tc` | 12 | `while`, `if`, `break`, `continue` |
 | `stmt/branch_conditions.tc` | 17 | Direct conditional branches and logical negation |
 | `func/factorial.tc` | 120 | Function call and recursion |

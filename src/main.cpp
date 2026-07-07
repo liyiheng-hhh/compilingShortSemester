@@ -1563,6 +1563,9 @@ private:
                 emitLogicalOr(expr);
                 return;
             }
+            if (parent_.options_.optimize && emitRepeatedOperandBinary(expr)) {
+                return;
+            }
             if (parent_.options_.optimize && emitImmediateBinary(expr)) {
                 return;
             }
@@ -1643,6 +1646,67 @@ private:
                 return scratchReg;
             }
             throw std::runtime_error("internal error: unsupported direct value");
+        }
+
+        bool sameExpr(const Expr& lhs, const Expr& rhs) const {
+            if (lhs.kind != rhs.kind) {
+                return false;
+            }
+            switch (lhs.kind) {
+                case ExprKind::Number:
+                    return toInt32(lhs.number) == toInt32(rhs.number);
+                case ExprKind::Variable:
+                    return lhs.name == rhs.name;
+                case ExprKind::Unary:
+                    return lhs.op == rhs.op && sameExpr(*lhs.lhs, *rhs.lhs);
+                case ExprKind::Binary:
+                    return lhs.op == rhs.op && sameExpr(*lhs.lhs, *rhs.lhs) &&
+                           sameExpr(*lhs.rhs, *rhs.rhs);
+                case ExprKind::Call:
+                    if (lhs.name != rhs.name || lhs.args.size() != rhs.args.size()) {
+                        return false;
+                    }
+                    for (std::size_t i = 0; i < lhs.args.size(); ++i) {
+                        if (!sameExpr(*lhs.args[i], *rhs.args[i])) {
+                            return false;
+                        }
+                    }
+                    return true;
+            }
+            return false;
+        }
+
+        bool emitRepeatedOperandBinary(const Expr& expr) {
+            if (!sameExpr(*expr.lhs, *expr.rhs) || exprContainsCall(*expr.lhs)) {
+                return false;
+            }
+
+            if (expr.op == "+") {
+                emitExpr(*expr.lhs);
+                body_ << "    slli a0, a0, 1\n";
+                return true;
+            }
+            if (expr.op == "-") {
+                emitExpr(*expr.lhs);
+                body_ << "    li a0, 0\n";
+                return true;
+            }
+            if (expr.op == "*") {
+                emitExpr(*expr.lhs);
+                body_ << "    mul a0, a0, a0\n";
+                return true;
+            }
+            if (expr.op == "<" || expr.op == ">" || expr.op == "!=") {
+                emitExpr(*expr.lhs);
+                body_ << "    li a0, 0\n";
+                return true;
+            }
+            if (expr.op == "<=" || expr.op == ">=" || expr.op == "==") {
+                emitExpr(*expr.lhs);
+                body_ << "    li a0, 1\n";
+                return true;
+            }
+            return false;
         }
 
         void emitMoveToA0(const std::string& reg) {
