@@ -712,6 +712,7 @@ struct FunctionInfo {
     std::vector<std::string> params;
     std::string label;
     const Function* function = nullptr;
+    const Stmt* inlineBlock = nullptr;
     const Expr* inlineReturn = nullptr;
 };
 
@@ -761,10 +762,16 @@ std::string globalLabel(const std::string& name) {
 
 const Expr* simpleInlineReturnExpr(const Function& function) {
     if (function.returnType != ValueType::Int || !function.body ||
-        function.body->kind != StmtKind::Block || function.body->statements.size() != 1) {
+        function.body->kind != StmtKind::Block || function.body->statements.empty() ||
+        function.body->statements.size() > 8) {
         return nullptr;
     }
-    const Stmt& stmt = *function.body->statements.front();
+    for (std::size_t i = 0; i + 1 < function.body->statements.size(); ++i) {
+        if (function.body->statements[i]->kind != StmtKind::DeclStmt) {
+            return nullptr;
+        }
+    }
+    const Stmt& stmt = *function.body->statements.back();
     if (stmt.kind != StmtKind::Return || !stmt.expr) {
         return nullptr;
     }
@@ -2276,6 +2283,11 @@ private:
                 }
                 currentScope()[info.params[i]] = std::move(symbol);
             }
+            if (info.inlineBlock) {
+                for (std::size_t i = 0; i + 1 < info.inlineBlock->statements.size(); ++i) {
+                    emitDecl(*info.inlineBlock->statements[i]->decl);
+                }
+            }
             emitExpr(*info.inlineReturn);
             popScope();
             --inlineDepth_;
@@ -2404,6 +2416,9 @@ private:
             info.label = functionLabel(function->name);
             info.function = function.get();
             info.inlineReturn = simpleInlineReturnExpr(*function);
+            if (info.inlineReturn) {
+                info.inlineBlock = function->body.get();
+            }
             functions_[function->name] = std::move(info);
         }
     }
