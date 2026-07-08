@@ -862,6 +862,10 @@ private:
                 Symbol symbol = allocateLocal();
                 paramSymbols_.push_back(symbol);
                 currentScope()[function_.params[i]] = symbol;
+            }
+            for (std::size_t index = function_.params.size(); index > 0; --index) {
+                const std::size_t i = index - 1;
+                const Symbol& symbol = paramSymbols_[i];
                 if (i < 8) {
                     storeSymbol(symbol, argRegisterName(i));
                 } else {
@@ -930,8 +934,21 @@ private:
             return parent_.options_.optimize;
         }
 
-        int savedLocalRegisterCount() const {
+        int maxSavedLocalRegisterCount() const {
             return useRegisterLocals() ? 11 : 0;
+        }
+
+        int savedLocalRegisterCount() const {
+            if (!useRegisterLocals()) {
+                return 0;
+            }
+            if (containsCall_) {
+                return std::min(localRegCount_, 11);
+            }
+            if (localRegCount_ <= 7) {
+                return 0;
+            }
+            return std::min(localRegCount_ - 7, 11);
         }
 
         int allocatableLocalRegisterCount() const {
@@ -942,13 +959,20 @@ private:
         }
 
         int frameHeaderSize() const {
-            return 8 + savedLocalRegisterCount() * 4;
+            return 8 + maxSavedLocalRegisterCount() * 4;
         }
 
         std::string localRegisterName(int index) const {
-            if (index >= 11) {
-                return "a" + std::to_string(index - 10);
+            if (!containsCall_) {
+                if (index < 7) {
+                    return "a" + std::to_string(index + 1);
+                }
+                return "s" + std::to_string(index - 6);
             }
+            return "s" + std::to_string(index + 1);
+        }
+
+        std::string savedLocalRegisterName(int index) const {
             return "s" + std::to_string(index + 1);
         }
 
@@ -982,7 +1006,7 @@ private:
             }
             const int savedCount = std::min(localRegCount_, savedLocalRegisterCount());
             for (int i = 0; i < savedCount; ++i) {
-                emitStoreOffset(out, localRegisterName(i), -12 - i * 4, "s0");
+                emitStoreOffset(out, savedLocalRegisterName(i), -12 - i * 4, "s0");
             }
         }
 
@@ -992,7 +1016,7 @@ private:
             }
             const int savedCount = std::min(localRegCount_, savedLocalRegisterCount());
             for (int i = 0; i < savedCount; ++i) {
-                emitLoadOffset(body_, localRegisterName(i), -12 - i * 4, "s0");
+                emitLoadOffset(body_, savedLocalRegisterName(i), -12 - i * 4, "s0");
             }
         }
 
