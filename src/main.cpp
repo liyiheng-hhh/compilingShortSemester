@@ -855,7 +855,8 @@ private:
               returnLabel_(".L_return_" + functionLabel(function.name)) {}
 
         std::string emit() {
-            containsCall_ = stmtContainsCall(*function_.body);
+            containsCall_ = parent_.options_.optimize ? stmtContainsRuntimeCall(*function_.body)
+                                                      : stmtContainsCall(*function_.body);
             body_ << "    # parameters\n";
             pushScope();
             for (std::size_t i = 0; i < function_.params.size(); ++i) {
@@ -876,23 +877,30 @@ private:
 
             body_ << bodyEntryLabel_ << ":\n";
             emitStmt(*function_.body);
+            const bool omitFrame = canOmitFrame();
             body_ << "    li a0, 0\n";
             body_ << returnLabel_ << ":\n";
-            restoreSavedLocalRegisters();
-            emitLoadOffset(body_, "ra", -4, "s0");
-            emitLoadOffset(body_, "t0", -8, "s0");
-            body_ << "    addi sp, s0, 0\n";
-            body_ << "    addi s0, t0, 0\n";
-            body_ << "    ret\n\n";
+            if (omitFrame) {
+                body_ << "    ret\n\n";
+            } else {
+                restoreSavedLocalRegisters();
+                emitLoadOffset(body_, "ra", -4, "s0");
+                emitLoadOffset(body_, "t0", -8, "s0");
+                body_ << "    addi sp, s0, 0\n";
+                body_ << "    addi s0, t0, 0\n";
+                body_ << "    ret\n\n";
+            }
 
             const int frameSize = alignTo16(frameHeaderSize() + slotCount_ * 4);
             std::ostringstream out;
             out << functionLabel(function_.name) << ":\n";
-            emitRegAdd(out, "sp", "sp", -frameSize);
-            emitStoreOffset(out, "ra", frameSize - 4, "sp");
-            emitStoreOffset(out, "s0", frameSize - 8, "sp");
-            emitRegAdd(out, "s0", "sp", frameSize);
-            saveLocalRegisters(out);
+            if (!omitFrame) {
+                emitRegAdd(out, "sp", "sp", -frameSize);
+                emitStoreOffset(out, "ra", frameSize - 4, "sp");
+                emitStoreOffset(out, "s0", frameSize - 8, "sp");
+                emitRegAdd(out, "s0", "sp", frameSize);
+                saveLocalRegisters(out);
+            }
             out << body_.str();
             return out.str();
         }
@@ -928,6 +936,11 @@ private:
 
         void popScope() {
             scopes_.pop_back();
+        }
+
+        bool canOmitFrame() const {
+            return parent_.options_.optimize && !containsCall_ && function_.params.size() <= 8 &&
+                   slotCount_ == 0 && savedLocalRegisterCount() == 0;
         }
 
         bool useRegisterLocals() const {
@@ -2364,6 +2377,82 @@ private:
                 case StmtKind::While:
                     return (stmt.expr && exprContainsCall(*stmt.expr)) ||
                            (stmt.thenBranch && stmtContainsCall(*stmt.thenBranch));
+            }
+            return false;
+        }
+
+        bool callIsFullyInlineable(const Expr& expr) const {
+            const auto function = parent_.functions_.find(expr.name);
+            if (function == parent_.functions_.end() || !function->second.inlineReturn ||
+                function->second.function == &function_) {
+                return false;
+            }
+            return function->second.function && !stmtContainsCall(*function->second.function->body);
+        }
+
+        bool isTailRecursiveCallExpr(const Expr& expr) const {
+            return expr.kind == ExprKind::Call && expr.name == function_.name &&
+                   expr.args.size() == function_.params.size();
+        }
+
+        bool stmtContainsRuntimeCall(const Stmt& stmt) const {
+            switch (stmt.kind) {
+                case StmtKind::Block:
+                    for (const auto& child : stmt.statements) {
+                        if (stmtContainsRuntimeCall(*child)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                case StmtKind::Empty:
+                case StmtKind::Break:
+                case StmtKind::Continue:
+                    return false;
+                case StmtKind::ExprStmt:
+                case StmtKind::Assign:
+                    return stmt.expr && exprContainsRuntimeCall(*stmt.expr);
+                case StmtKind::Return:
+                    if (!stmt.expr) {
+                        return false;
+                    }
+                    if (isTailRecursiveCallExpr(*stmt.expr)) {
+                        for (const auto& arg : stmt.expr->args) {
+                            if (exprContainsRuntimeCall(*arg)) {
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                    return exprContainsRuntimeCall(*stmt.expr);
+                case StmtKind::DeclStmt:
+                    return stmt.decl && stmt.decl->init && exprContainsRuntimeCall(*stmt.decl->init);
+                case StmtKind::If:
+                    return (stmt.expr && exprContainsRuntimeCall(*stmt.expr)) ||
+                           (stmt.thenBranch && stmtContainsRuntimeCall(*stmt.thenBranch)) ||
+                           (stmt.elseBranch && stmtContainsRuntimeCall(*stmt.elseBranch));
+                case StmtKind::While:
+                    return (stmt.expr && exprContainsRuntimeCall(*stmt.expr)) ||
+                           (stmt.thenBranch && stmtContainsRuntimeCall(*stmt.thenBranch));
+            }
+            return false;
+        }
+
+        bool exprContainsRuntimeCall(const Expr& expr) const {
+            switch (expr.kind) {
+                case ExprKind::Number:
+                case ExprKind::Variable:
+                    return false;
+                case ExprKind::Unary:
+                    return exprContainsRuntimeCall(*expr.lhs);
+                case ExprKind::Binary:
+                    return exprContainsRuntimeCall(*expr.lhs) || exprContainsRuntimeCall(*expr.rhs);
+                case ExprKind::Call:
+                    for (const auto& arg : expr.args) {
+                        if (exprContainsRuntimeCall(*arg)) {
+                            return true;
+                        }
+                    }
+                    return !callIsFullyInlineable(expr);
             }
             return false;
         }
