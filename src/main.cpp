@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cstdint>
 #include <exception>
+#include <initializer_list>
 #include <iostream>
 #include <iterator>
 #include <limits>
@@ -1338,6 +1339,9 @@ private:
                         }
                         return true;
                     }
+                    if (emitMultiplyBySparseConstant(symbol.reg, symbol.reg, *rhsConst)) {
+                        return true;
+                    }
                 }
             }
             if (rhsConst && (expr.op == "+" || expr.op == "-")) {
@@ -1865,6 +1869,66 @@ private:
             }
         }
 
+        std::string chooseScratch(std::initializer_list<std::string> avoid) const {
+            for (const char* candidateName : {"t0", "t5", "t6"}) {
+                const std::string candidate(candidateName);
+                bool used = false;
+                for (const std::string& reg : avoid) {
+                    if (candidate == reg) {
+                        used = true;
+                        break;
+                    }
+                }
+                if (!used) {
+                    return candidate;
+                }
+            }
+            return "t6";
+        }
+
+        void emitShiftedTerm(const std::string& dst, const std::string& baseReg, int shift) {
+            if (shift == 0) {
+                emitMove(dst, baseReg);
+            } else {
+                body_ << "    slli " << dst << ", " << baseReg << ", " << shift << '\n';
+            }
+        }
+
+        bool emitMultiplyBySparseConstant(const std::string& dst, const std::string& lhsReg, int imm) {
+            const std::int64_t value = imm;
+            std::uint64_t magnitude = value < 0 ? static_cast<std::uint64_t>(-value)
+                                                : static_cast<std::uint64_t>(value);
+            if (magnitude == 0 || (magnitude & (magnitude - 1)) == 0) {
+                return false;
+            }
+
+            std::vector<int> shifts;
+            for (int bit = 0; bit < 31; ++bit) {
+                if ((magnitude & (1ull << bit)) != 0) {
+                    shifts.push_back(bit);
+                }
+            }
+            if (shifts.size() != 2) {
+                return false;
+            }
+
+            std::string baseReg = lhsReg;
+            std::string scratch = chooseScratch({dst, lhsReg});
+            if (dst == lhsReg) {
+                emitMove(scratch, lhsReg);
+                baseReg = scratch;
+                scratch = chooseScratch({dst, baseReg});
+            }
+
+            emitShiftedTerm(dst, baseReg, shifts[0]);
+            emitShiftedTerm(scratch, baseReg, shifts[1]);
+            body_ << "    add " << dst << ", " << dst << ", " << scratch << '\n';
+            if (value < 0) {
+                body_ << "    sub " << dst << ", zero, " << dst << '\n';
+            }
+            return true;
+        }
+
         bool isComparisonOp(const std::string& op) const {
             return op == "<" || op == ">" || op == "<=" || op == ">=" || op == "==" || op == "!=";
         }
@@ -1993,6 +2057,9 @@ private:
                             body_ << "    sub " << dst << ", zero, " << dst << '\n';
                         }
                     }
+                    return true;
+                }
+                if (emitMultiplyBySparseConstant(dst, lhsReg, imm)) {
                     return true;
                 }
             }
