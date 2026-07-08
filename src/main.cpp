@@ -876,9 +876,11 @@ private:
             }
 
             body_ << bodyEntryLabel_ << ":\n";
-            emitStmt(*function_.body);
+            const bool hasFinalReturn = emitFunctionBody();
             const bool omitFrame = canOmitFrame();
-            body_ << "    li a0, 0\n";
+            if (!hasFinalReturn) {
+                body_ << "    li a0, 0\n";
+            }
             body_ << returnLabel_ << ":\n";
             if (omitFrame) {
                 body_ << "    ret\n\n";
@@ -1035,6 +1037,23 @@ private:
 
         std::string newLabel(const std::string& hint) {
             return ".L_" + functionLabel(function_.name) + "_" + hint + "_" + std::to_string(labelCounter_++);
+        }
+
+        bool emitFunctionBody() {
+            if (function_.body && function_.body->kind == StmtKind::Block &&
+                !function_.body->statements.empty() &&
+                function_.body->statements.back()->kind == StmtKind::Return) {
+                pushScope();
+                for (std::size_t i = 0; i + 1 < function_.body->statements.size(); ++i) {
+                    emitStmt(*function_.body->statements[i]);
+                }
+                emitReturn(*function_.body->statements.back(), false);
+                popScope();
+                return true;
+            }
+
+            emitStmt(*function_.body);
+            return false;
         }
 
         std::optional<Symbol> lookup(const std::string& name) const {
@@ -1244,16 +1263,22 @@ private:
                     body_ << "    jal zero, " << loopStack_.back().first << '\n';
                     break;
                 case StmtKind::Return:
-                    if (stmt.expr && parent_.options_.optimize && emitTailRecursiveReturn(*stmt.expr)) {
-                        break;
-                    }
-                    if (stmt.expr) {
-                        emitExpr(*stmt.expr);
-                    } else {
-                        body_ << "    li a0, 0\n";
-                    }
-                    body_ << "    jal zero, " << returnLabel_ << '\n';
+                    emitReturn(stmt, true);
                     break;
+            }
+        }
+
+        void emitReturn(const Stmt& stmt, bool jumpToEpilogue) {
+            if (stmt.expr && parent_.options_.optimize && emitTailRecursiveReturn(*stmt.expr)) {
+                return;
+            }
+            if (stmt.expr) {
+                emitExpr(*stmt.expr);
+            } else {
+                body_ << "    li a0, 0\n";
+            }
+            if (jumpToEpilogue) {
+                body_ << "    jal zero, " << returnLabel_ << '\n';
             }
         }
 
