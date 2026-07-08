@@ -17,6 +17,7 @@ These samples are small regression inputs for the compiler. The expected result 
 | `func/inline_args_once.tc` | 6 | Inline call arguments are evaluated once |
 | `func/inline_simple.tc` | 23 | Simple return-expression function inlining |
 | `func/many_args.tc` | 55 | More than eight call arguments |
+| `func/register_args.tc` | 55 | Register and stack argument passing |
 | `func/tail_recursive.tc` | 120 | Tail-recursive self-call lowering |
 | `func/void_side_effect.tc` | 9 | `void` function and global side effect |
 | `global/globals.tc` | 18 | Global variables, global constants, assignment |

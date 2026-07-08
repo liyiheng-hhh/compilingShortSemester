@@ -1,0 +1,17 @@
+int sum10_runtime(int a, int b, int c, int d, int e, int f, int g, int h, int i, int j) {
+    int s = a + b;
+    s = s + c;
+    s = s + d;
+    s = s + e;
+    s = s + f;
+    s = s + g;
+    s = s + h;
+    s = s + i;
+    return s + j;
+}
+
+int main() {
+    int one = 1;
+    int two = 2;
+    return sum10_runtime(one, two, 3, 4, 5, 6, 7, 8, 9, 10);
+}

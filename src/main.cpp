@@ -854,7 +854,11 @@ private:
                 Symbol symbol = allocateLocal();
                 paramSymbols_.push_back(symbol);
                 currentScope()[function_.params[i]] = symbol;
-                emitLoadOffset(body_, "t0", static_cast<int>(i * 4), "s0");
+                if (i < 8) {
+                    body_ << "    addi t0, " << argRegisterName(i) << ", 0\n";
+                } else {
+                    emitLoadOffset(body_, "t0", static_cast<int>((i - 8) * 4), "s0");
+                }
                 storeSymbol(symbol, "t0");
             }
 
@@ -938,6 +942,10 @@ private:
                 return "a" + std::to_string(index - 10);
             }
             return "s" + std::to_string(index + 1);
+        }
+
+        std::string argRegisterName(std::size_t index) const {
+            return "a" + std::to_string(index);
         }
 
         Symbol allocateLocal() {
@@ -1984,18 +1992,71 @@ private:
                 return;
             }
 
-            const int reserve = alignTo16(static_cast<int>(expr.args.size() * 4));
+            const bool directArgs = parent_.options_.optimize && canPassDirectArgs(expr);
+            const bool noCallArgs = parent_.options_.optimize && !directArgs && canPassNoCallArgs(expr);
+            const std::size_t regArgCount = std::min<std::size_t>(expr.args.size(), 8);
+            const std::size_t stackArgCount = expr.args.size() > 8 ? expr.args.size() - 8 : 0;
+            const std::size_t tempArgCount = (directArgs || noCallArgs) ? 0 : regArgCount;
+            const int tempBase = static_cast<int>(stackArgCount * 4);
+            const int reserve = alignTo16(static_cast<int>((stackArgCount + tempArgCount) * 4));
             if (reserve > 0) {
                 emitRegAdd(body_, "sp", "sp", -reserve);
             }
-            for (std::size_t i = 0; i < expr.args.size(); ++i) {
-                emitExpr(*expr.args[i]);
-                emitStoreOffset(body_, "a0", static_cast<int>(i * 4), "sp");
+            if (directArgs) {
+                for (std::size_t i = 8; i < expr.args.size(); ++i) {
+                    emitValueTo(*expr.args[i], "t0");
+                    emitStoreOffset(body_, "t0", static_cast<int>((i - 8) * 4), "sp");
+                }
+                for (std::size_t i = 0; i < regArgCount; ++i) {
+                    emitValueTo(*expr.args[i], argRegisterName(i));
+                }
+            } else if (noCallArgs) {
+                for (std::size_t i = 8; i < expr.args.size(); ++i) {
+                    emitExpr(*expr.args[i]);
+                    emitStoreOffset(body_, "a0", static_cast<int>((i - 8) * 4), "sp");
+                }
+                for (std::size_t i = regArgCount; i > 0; --i) {
+                    const std::size_t index = i - 1;
+                    emitExpr(*expr.args[index]);
+                    if (index != 0) {
+                        body_ << "    addi " << argRegisterName(index) << ", a0, 0\n";
+                    }
+                }
+            } else {
+                for (std::size_t i = 0; i < expr.args.size(); ++i) {
+                    emitExpr(*expr.args[i]);
+                    if (i < 8) {
+                        emitStoreOffset(body_, "a0", tempBase + static_cast<int>(i * 4), "sp");
+                    } else {
+                        emitStoreOffset(body_, "a0", static_cast<int>((i - 8) * 4), "sp");
+                    }
+                }
+                for (std::size_t i = 0; i < regArgCount; ++i) {
+                    emitLoadOffset(body_, argRegisterName(i), tempBase + static_cast<int>(i * 4), "sp");
+                }
             }
             body_ << "    call " << function->second.label << '\n';
             if (reserve > 0) {
                 emitRegAdd(body_, "sp", "sp", reserve);
             }
+        }
+
+        bool canPassDirectArgs(const Expr& expr) const {
+            for (const auto& arg : expr.args) {
+                if (!isDirectValue(*arg)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool canPassNoCallArgs(const Expr& expr) const {
+            for (const auto& arg : expr.args) {
+                if (exprContainsCall(*arg)) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         bool emitInlineCall(const Expr& expr, const FunctionInfo& info) {
