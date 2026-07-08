@@ -855,11 +855,11 @@ private:
                 paramSymbols_.push_back(symbol);
                 currentScope()[function_.params[i]] = symbol;
                 if (i < 8) {
-                    body_ << "    addi t0, " << argRegisterName(i) << ", 0\n";
+                    storeSymbol(symbol, argRegisterName(i));
                 } else {
                     emitLoadOffset(body_, "t0", static_cast<int>((i - 8) * 4), "s0");
+                    storeSymbol(symbol, "t0");
                 }
-                storeSymbol(symbol, "t0");
             }
 
             body_ << bodyEntryLabel_ << ":\n";
@@ -1034,6 +1034,15 @@ private:
                 body_ << "    la t0, " << symbol.label << '\n';
                 body_ << "    sw " << src << ", 0(t0)\n";
             }
+        }
+
+        void copySymbol(const Symbol& dst, const Symbol& src) {
+            if (src.kind == SymbolKind::LocalVar && !src.reg.empty()) {
+                storeSymbol(dst, src.reg);
+                return;
+            }
+            loadSymbol(src, "a0");
+            storeSymbol(dst, "a0");
         }
 
         std::optional<std::int32_t> evalConst(const Expr& expr) const {
@@ -1214,14 +1223,17 @@ private:
             argSymbols.reserve(expr.args.size());
             for (const auto& arg : expr.args) {
                 Symbol symbol = allocateLocal();
-                emitExpr(*arg);
-                storeSymbol(symbol, "a0");
+                if (!symbol.reg.empty()) {
+                    emitExprTo(*arg, symbol.reg);
+                } else {
+                    emitExpr(*arg);
+                    storeSymbol(symbol, "a0");
+                }
                 argSymbols.push_back(symbol);
             }
 
             for (std::size_t i = 0; i < argSymbols.size(); ++i) {
-                loadSymbol(argSymbols[i], "a0");
-                storeSymbol(paramSymbols_[i], "a0");
+                copySymbol(paramSymbols_[i], argSymbols[i]);
             }
             popScope();
             body_ << "    jal zero, " << bodyEntryLabel_ << '\n';
@@ -1239,8 +1251,8 @@ private:
             }
 
             Symbol symbol = allocateLocal();
-            if (parent_.options_.optimize && !symbol.reg.empty() && isDirectValue(*decl.init)) {
-                emitValueTo(*decl.init, symbol.reg);
+            if (parent_.options_.optimize && !symbol.reg.empty()) {
+                emitExprTo(*decl.init, symbol.reg);
                 currentScope()[decl.name] = std::move(symbol);
                 return;
             }
@@ -1283,9 +1295,17 @@ private:
             }
 
             if (expr.kind != ExprKind::Binary || expr.op == "&&" || expr.op == "||") {
+                if (!exprReferencesVariable(expr, stmt.name)) {
+                    emitExprTo(expr, symbol.reg);
+                    return true;
+                }
                 return false;
             }
             if (expr.lhs->kind != ExprKind::Variable || expr.lhs->name != stmt.name) {
+                if (!exprReferencesVariable(expr, stmt.name)) {
+                    emitExprTo(expr, symbol.reg);
+                    return true;
+                }
                 return false;
             }
 
@@ -1455,6 +1475,42 @@ private:
             }
         }
 
+        void emitExprTo(const Expr& expr, const std::string& dst) {
+            if (dst == "a0") {
+                emitExpr(expr);
+                return;
+            }
+            if (parent_.options_.optimize) {
+                const auto value = evalConst(expr);
+                if (value) {
+                    body_ << "    li " << dst << ", " << printableI32(*value) << '\n';
+                    return;
+                }
+            }
+
+            switch (expr.kind) {
+                case ExprKind::Number:
+                case ExprKind::Variable:
+                    emitValueTo(expr, dst);
+                    return;
+                case ExprKind::Unary:
+                    if (emitUnaryTo(expr, dst)) {
+                        return;
+                    }
+                    break;
+                case ExprKind::Binary:
+                    if (expr.op != "&&" && expr.op != "||" && emitBinaryTo(expr, dst)) {
+                        return;
+                    }
+                    break;
+                case ExprKind::Call:
+                    break;
+            }
+
+            emitExpr(expr);
+            emitMove(dst, "a0");
+        }
+
         void emitVariable(const Expr& expr) {
             const auto symbol = lookup(expr.name);
             if (!symbol) {
@@ -1484,6 +1540,22 @@ private:
                 return;
             }
             fail(expr.loc, "unknown unary operator");
+        }
+
+        bool emitUnaryTo(const Expr& expr, const std::string& dst) {
+            emitExprTo(*expr.lhs, dst);
+            if (expr.op == "+") {
+                return true;
+            }
+            if (expr.op == "-") {
+                body_ << "    sub " << dst << ", zero, " << dst << '\n';
+                return true;
+            }
+            if (expr.op == "!") {
+                body_ << "    sltiu " << dst << ", " << dst << ", 1\n";
+                return true;
+            }
+            return false;
         }
 
         void emitBranchIfFalse(const Expr& expr, const std::string& falseLabel) {
@@ -1637,6 +1709,19 @@ private:
             throw std::runtime_error("internal error: unsupported direct value");
         }
 
+        bool emitBinaryTo(const Expr& expr, const std::string& dst) {
+            if (emitRepeatedOperandBinaryTo(expr, dst)) {
+                return true;
+            }
+            if (emitImmediateBinaryTo(expr, dst)) {
+                return true;
+            }
+            if (emitDirectValueBinaryTo(expr, dst)) {
+                return true;
+            }
+            return false;
+        }
+
         std::string emitValueAsRegister(const Expr& expr, const std::string& scratchReg) {
             if (expr.kind == ExprKind::Number) {
                 body_ << "    li " << scratchReg << ", " << printableI32(toInt32(expr.number)) << '\n';
@@ -1654,6 +1739,37 @@ private:
                 return scratchReg;
             }
             throw std::runtime_error("internal error: unsupported direct value");
+        }
+
+        void emitBinaryOpTo(const Expr& expr, const std::string& dst, const std::string& lhsReg,
+                            const std::string& rhsReg) {
+            if (expr.op == "+") {
+                body_ << "    add " << dst << ", " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == "-") {
+                body_ << "    sub " << dst << ", " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == "*") {
+                body_ << "    mul " << dst << ", " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == "/") {
+                body_ << "    div " << dst << ", " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == "%") {
+                body_ << "    rem " << dst << ", " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == "<") {
+                body_ << "    slt " << dst << ", " << lhsReg << ", " << rhsReg << '\n';
+            } else if (expr.op == ">") {
+                body_ << "    slt " << dst << ", " << rhsReg << ", " << lhsReg << '\n';
+            } else if (expr.op == "<=") {
+                body_ << "    slt " << dst << ", " << rhsReg << ", " << lhsReg << '\n';
+                body_ << "    xori " << dst << ", " << dst << ", 1\n";
+            } else if (expr.op == ">=") {
+                body_ << "    slt " << dst << ", " << lhsReg << ", " << rhsReg << '\n';
+                body_ << "    xori " << dst << ", " << dst << ", 1\n";
+            } else if (expr.op == "==") {
+                body_ << "    sub " << dst << ", " << lhsReg << ", " << rhsReg << '\n';
+                body_ << "    sltiu " << dst << ", " << dst << ", 1\n";
+            } else if (expr.op == "!=") {
+                body_ << "    sub " << dst << ", " << lhsReg << ", " << rhsReg << '\n';
+                body_ << "    sltu " << dst << ", zero, " << dst << '\n';
+            }
         }
 
         bool sameExpr(const Expr& lhs, const Expr& rhs) const {
@@ -1684,42 +1800,68 @@ private:
             return false;
         }
 
+        bool exprReferencesVariable(const Expr& expr, const std::string& name) const {
+            switch (expr.kind) {
+                case ExprKind::Number:
+                    return false;
+                case ExprKind::Variable:
+                    return expr.name == name;
+                case ExprKind::Unary:
+                    return exprReferencesVariable(*expr.lhs, name);
+                case ExprKind::Binary:
+                    return exprReferencesVariable(*expr.lhs, name) ||
+                           exprReferencesVariable(*expr.rhs, name);
+                case ExprKind::Call:
+                    for (const auto& arg : expr.args) {
+                        if (exprReferencesVariable(*arg, name)) {
+                            return true;
+                        }
+                    }
+                    return false;
+            }
+            return false;
+        }
+
         bool emitRepeatedOperandBinary(const Expr& expr) {
+            return emitRepeatedOperandBinaryTo(expr, "a0");
+        }
+
+        bool emitRepeatedOperandBinaryTo(const Expr& expr, const std::string& dst) {
             if (!sameExpr(*expr.lhs, *expr.rhs) || exprContainsCall(*expr.lhs)) {
                 return false;
             }
 
             if (expr.op == "+") {
-                emitExpr(*expr.lhs);
-                body_ << "    slli a0, a0, 1\n";
+                emitExprTo(*expr.lhs, dst);
+                body_ << "    slli " << dst << ", " << dst << ", 1\n";
                 return true;
             }
             if (expr.op == "-") {
-                emitExpr(*expr.lhs);
-                body_ << "    li a0, 0\n";
+                emitExprTo(*expr.lhs, dst);
+                body_ << "    li " << dst << ", 0\n";
                 return true;
             }
             if (expr.op == "*") {
-                emitExpr(*expr.lhs);
-                body_ << "    mul a0, a0, a0\n";
+                emitExprTo(*expr.lhs, dst);
+                body_ << "    mul " << dst << ", " << dst << ", " << dst << '\n';
                 return true;
             }
             if (expr.op == "<" || expr.op == ">" || expr.op == "!=") {
-                emitExpr(*expr.lhs);
-                body_ << "    li a0, 0\n";
+                emitExprTo(*expr.lhs, dst);
+                body_ << "    li " << dst << ", 0\n";
                 return true;
             }
             if (expr.op == "<=" || expr.op == ">=" || expr.op == "==") {
-                emitExpr(*expr.lhs);
-                body_ << "    li a0, 1\n";
+                emitExprTo(*expr.lhs, dst);
+                body_ << "    li " << dst << ", 1\n";
                 return true;
             }
             return false;
         }
 
-        void emitMoveToA0(const std::string& reg) {
-            if (reg != "a0") {
-                body_ << "    addi a0, " << reg << ", 0\n";
+        void emitMove(const std::string& dst, const std::string& src) {
+            if (dst != src) {
+                body_ << "    addi " << dst << ", " << src << ", 0\n";
             }
         }
 
@@ -1784,84 +1926,71 @@ private:
             return true;
         }
 
-        bool emitDirectValueBinary(const Expr& expr) {
-            if (!isDirectValue(*expr.lhs) || !isDirectValue(*expr.rhs)) {
+        bool isValueBinaryOp(const std::string& op) const {
+            return op == "+" || op == "-" || op == "*" || op == "/" || op == "%" ||
+                   isComparisonOp(op);
+        }
+
+        bool emitDirectValueBinaryTo(const Expr& expr, const std::string& dst) {
+            if (!isValueBinaryOp(expr.op) || !isDirectValue(*expr.lhs) || !isDirectValue(*expr.rhs)) {
                 return false;
             }
 
-            const std::string lhsReg = emitValueAsRegister(*expr.lhs, "t5");
-            const std::string rhsReg = emitValueAsRegister(*expr.rhs, "t0");
-
-            if (expr.op == "+") {
-                body_ << "    add a0, " << lhsReg << ", " << rhsReg << '\n';
-            } else if (expr.op == "-") {
-                body_ << "    sub a0, " << lhsReg << ", " << rhsReg << '\n';
-            } else if (expr.op == "*") {
-                body_ << "    mul a0, " << lhsReg << ", " << rhsReg << '\n';
-            } else if (expr.op == "/") {
-                body_ << "    div a0, " << lhsReg << ", " << rhsReg << '\n';
-            } else if (expr.op == "%") {
-                body_ << "    rem a0, " << lhsReg << ", " << rhsReg << '\n';
-            } else if (expr.op == "<") {
-                body_ << "    slt a0, " << lhsReg << ", " << rhsReg << '\n';
-            } else if (expr.op == ">") {
-                body_ << "    slt a0, " << rhsReg << ", " << lhsReg << '\n';
-            } else if (expr.op == "<=") {
-                body_ << "    slt a0, " << rhsReg << ", " << lhsReg << '\n';
-                body_ << "    xori a0, a0, 1\n";
-            } else if (expr.op == ">=") {
-                body_ << "    slt a0, " << lhsReg << ", " << rhsReg << '\n';
-                body_ << "    xori a0, a0, 1\n";
-            } else if (expr.op == "==") {
-                body_ << "    sub a0, " << lhsReg << ", " << rhsReg << '\n';
-                body_ << "    sltiu a0, a0, 1\n";
-            } else if (expr.op == "!=") {
-                body_ << "    sub a0, " << lhsReg << ", " << rhsReg << '\n';
-                body_ << "    sltu a0, zero, a0\n";
-            } else {
-                return false;
-            }
+            const std::string lhsScratch = dst == "t0" ? "t5" : dst;
+            const std::string rhsScratch = dst == "t0" ? "t6" : "t0";
+            const std::string lhsReg = emitValueAsRegister(*expr.lhs, lhsScratch);
+            const std::string rhsReg = emitValueAsRegister(*expr.rhs, rhsScratch);
+            emitBinaryOpTo(expr, dst, lhsReg, rhsReg);
             return true;
         }
 
-        bool emitImmediateBinary(const Expr& expr) {
+        bool emitDirectValueBinary(const Expr& expr) {
+            return emitDirectValueBinaryTo(expr, "a0");
+        }
+
+        bool emitImmediateBinaryTo(const Expr& expr, const std::string& dst) {
+            if (!isValueBinaryOp(expr.op)) {
+                return false;
+            }
             const auto rhs = evalConst(*expr.rhs);
             if (!rhs) {
                 return false;
             }
             const int imm = *rhs;
-            std::string lhsReg = "a0";
+            std::string lhsReg = dst;
             if (isDirectValue(*expr.lhs)) {
-                lhsReg = emitValueAsRegister(*expr.lhs, "a0");
+                lhsReg = emitValueAsRegister(*expr.lhs, dst);
             } else {
                 emitExpr(*expr.lhs);
+                lhsReg = "a0";
             }
+            const std::string immReg = lhsReg == "t0" ? "t5" : "t0";
 
             if ((expr.op == "+" || expr.op == "-") && imm == 0) {
-                emitMoveToA0(lhsReg);
+                emitMove(dst, lhsReg);
                 return true;
             }
             if ((expr.op == "*" || expr.op == "/") && imm == 1) {
-                emitMoveToA0(lhsReg);
+                emitMove(dst, lhsReg);
                 return true;
             }
             if (expr.op == "*" && imm == 0) {
-                body_ << "    li a0, 0\n";
+                body_ << "    li " << dst << ", 0\n";
                 return true;
             }
             if (expr.op == "%" && (imm == 1 || imm == -1)) {
-                body_ << "    li a0, 0\n";
+                body_ << "    li " << dst << ", 0\n";
                 return true;
             }
             if (expr.op == "*") {
                 const auto shift = powerOfTwoShift(imm);
                 if (shift) {
                     if (imm < 0 && *shift == 0) {
-                        body_ << "    sub a0, zero, " << lhsReg << '\n';
+                        body_ << "    sub " << dst << ", zero, " << lhsReg << '\n';
                     } else {
-                        body_ << "    slli a0, " << lhsReg << ", " << *shift << '\n';
+                        body_ << "    slli " << dst << ", " << lhsReg << ", " << *shift << '\n';
                         if (imm < 0) {
-                            body_ << "    sub a0, zero, a0\n";
+                            body_ << "    sub " << dst << ", zero, " << dst << '\n';
                         }
                     }
                     return true;
@@ -1869,79 +1998,79 @@ private:
             }
 
             if (expr.op == "+" && fitsI12(imm)) {
-                body_ << "    addi a0, " << lhsReg << ", " << imm << '\n';
+                body_ << "    addi " << dst << ", " << lhsReg << ", " << imm << '\n';
                 return true;
             }
             if (expr.op == "+") {
-                body_ << "    li t0, " << printableI32(imm) << '\n';
-                body_ << "    add a0, " << lhsReg << ", t0\n";
+                body_ << "    li " << immReg << ", " << printableI32(imm) << '\n';
+                body_ << "    add " << dst << ", " << lhsReg << ", " << immReg << '\n';
                 return true;
             }
             if (expr.op == "-" && fitsI12(-imm)) {
-                body_ << "    addi a0, " << lhsReg << ", " << -imm << '\n';
+                body_ << "    addi " << dst << ", " << lhsReg << ", " << -imm << '\n';
                 return true;
             }
             if (expr.op == "-") {
-                body_ << "    li t0, " << printableI32(imm) << '\n';
-                body_ << "    sub a0, " << lhsReg << ", t0\n";
+                body_ << "    li " << immReg << ", " << printableI32(imm) << '\n';
+                body_ << "    sub " << dst << ", " << lhsReg << ", " << immReg << '\n';
                 return true;
             }
             if (expr.op == "<" && fitsI12(imm)) {
-                body_ << "    slti a0, " << lhsReg << ", " << imm << '\n';
+                body_ << "    slti " << dst << ", " << lhsReg << ", " << imm << '\n';
                 return true;
             }
             if (expr.op == "<") {
-                body_ << "    li t0, " << printableI32(imm) << '\n';
-                body_ << "    slt a0, " << lhsReg << ", t0\n";
+                body_ << "    li " << immReg << ", " << printableI32(imm) << '\n';
+                body_ << "    slt " << dst << ", " << lhsReg << ", " << immReg << '\n';
                 return true;
             }
             if (expr.op == "==" && fitsI12(-imm)) {
-                body_ << "    addi a0, " << lhsReg << ", " << -imm << '\n';
-                body_ << "    sltiu a0, a0, 1\n";
+                body_ << "    addi " << dst << ", " << lhsReg << ", " << -imm << '\n';
+                body_ << "    sltiu " << dst << ", " << dst << ", 1\n";
                 return true;
             }
             if (expr.op == "==") {
-                body_ << "    li t0, " << printableI32(imm) << '\n';
-                body_ << "    sub a0, " << lhsReg << ", t0\n";
-                body_ << "    sltiu a0, a0, 1\n";
+                body_ << "    li " << immReg << ", " << printableI32(imm) << '\n';
+                body_ << "    sub " << dst << ", " << lhsReg << ", " << immReg << '\n';
+                body_ << "    sltiu " << dst << ", " << dst << ", 1\n";
                 return true;
             }
             if (expr.op == "!=" && fitsI12(-imm)) {
-                body_ << "    addi a0, " << lhsReg << ", " << -imm << '\n';
-                body_ << "    sltu a0, zero, a0\n";
+                body_ << "    addi " << dst << ", " << lhsReg << ", " << -imm << '\n';
+                body_ << "    sltu " << dst << ", zero, " << dst << '\n';
                 return true;
             }
             if (expr.op == "!=") {
-                body_ << "    li t0, " << printableI32(imm) << '\n';
-                body_ << "    sub a0, " << lhsReg << ", t0\n";
-                body_ << "    sltu a0, zero, a0\n";
+                body_ << "    li " << immReg << ", " << printableI32(imm) << '\n';
+                body_ << "    sub " << dst << ", " << lhsReg << ", " << immReg << '\n';
+                body_ << "    sltu " << dst << ", zero, " << dst << '\n';
                 return true;
             }
-
-            if (expr.op == "*") {
-                body_ << "    li t0, " << printableI32(imm) << '\n';
-                body_ << "    mul a0, " << lhsReg << ", t0\n";
-                return true;
-            }
-            if (expr.op == "/" || expr.op == "%" || expr.op == "<=" || expr.op == ">" ||
-                expr.op == ">=") {
-                body_ << "    li t0, " << printableI32(imm) << '\n';
-                if (expr.op == "/") {
-                    body_ << "    div a0, " << lhsReg << ", t0\n";
+            if (expr.op == "*" || expr.op == "/" || expr.op == "%" || expr.op == "<=" ||
+                expr.op == ">" || expr.op == ">=") {
+                body_ << "    li " << immReg << ", " << printableI32(imm) << '\n';
+                if (expr.op == "*") {
+                    body_ << "    mul " << dst << ", " << lhsReg << ", " << immReg << '\n';
+                } else if (expr.op == "/") {
+                    body_ << "    div " << dst << ", " << lhsReg << ", " << immReg << '\n';
                 } else if (expr.op == "%") {
-                    body_ << "    rem a0, " << lhsReg << ", t0\n";
+                    body_ << "    rem " << dst << ", " << lhsReg << ", " << immReg << '\n';
                 } else if (expr.op == "<=") {
-                    body_ << "    slt a0, t0, " << lhsReg << '\n';
-                    body_ << "    xori a0, a0, 1\n";
+                    body_ << "    slt " << dst << ", " << immReg << ", " << lhsReg << '\n';
+                    body_ << "    xori " << dst << ", " << dst << ", 1\n";
                 } else if (expr.op == ">") {
-                    body_ << "    slt a0, t0, " << lhsReg << '\n';
+                    body_ << "    slt " << dst << ", " << immReg << ", " << lhsReg << '\n';
                 } else {
-                    body_ << "    slt a0, " << lhsReg << ", t0\n";
-                    body_ << "    xori a0, a0, 1\n";
+                    body_ << "    slt " << dst << ", " << lhsReg << ", " << immReg << '\n';
+                    body_ << "    xori " << dst << ", " << dst << ", 1\n";
                 }
                 return true;
             }
             return false;
+        }
+
+        bool emitImmediateBinary(const Expr& expr) {
+            return emitImmediateBinaryTo(expr, "a0");
         }
 
         void emitLogicalAnd(const Expr& expr) {
@@ -2071,8 +2200,12 @@ private:
                 Symbol symbol;
                 if (!bindInlineArg(*expr.args[i], symbol)) {
                     symbol = allocateLocal();
-                    emitExpr(*expr.args[i]);
-                    storeSymbol(symbol, "a0");
+                    if (!symbol.reg.empty()) {
+                        emitExprTo(*expr.args[i], symbol.reg);
+                    } else {
+                        emitExpr(*expr.args[i]);
+                        storeSymbol(symbol, "a0");
+                    }
                 }
                 currentScope()[info.params[i]] = std::move(symbol);
             }
