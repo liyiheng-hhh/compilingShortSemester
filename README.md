@@ -45,6 +45,7 @@ cmake --build build
 
 - [项目初始化与分工计划](docs/项目初始化与分工计划.md)
 - [完整实现方案](docs/完整实现方案.md)
+- [竞赛资料与性能优化分析](docs/竞赛资料与性能优化分析.md)
 
 ## 目录规划
 
@@ -54,7 +55,8 @@ cmake --build build
 ├── README.md
 ├── docs/
 │   ├── 项目初始化与分工计划.md
-│   └── 完整实现方案.md
+│   ├── 完整实现方案.md
+│   └── 竞赛资料与性能优化分析.md
 ├── src/
 │   └── main.cpp
 └── tests/
