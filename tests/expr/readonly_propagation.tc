@@ -1,0 +1,8 @@
+int main() {
+    int base = 7;
+    int copy = base;
+    int folded = copy * 6;
+    int unused = base + 100;
+    base + unused;
+    return folded;
+}

@@ -8,6 +8,7 @@ These samples are small regression inputs for the compiler. The expected result 
 | `smoke/return_expr.tc` | 14 | Constant expression and precedence |
 | `expr/logic_short_circuit.tc` | 7 | Logical operators and short-circuit behavior |
 | `expr/algebra_strength.tc` | 49 | Algebraic simplification and multiply strength reduction |
+| `expr/readonly_propagation.tc` | 42 | Read-only local constant/copy propagation and pure dead expressions |
 | `expr/nested_binary.tc` | 45 | Nested binary expressions and temporary registers |
 | `expr/many_locals_nested.tc` | 124 | Many locals, spilled stack slots, nested expressions |
 | `expr/repeated_subexpr.tc` | 81 | Repeated operand expression reuse |
@@ -15,6 +16,8 @@ These samples are small regression inputs for the compiler. The expected result 
 | `expr/target_reg_assign.tc` | 26 | Target-register assignment without clobbering self references |
 | `stmt/control_flow.tc` | 12 | `while`, `if`, `break`, `continue` |
 | `stmt/branch_conditions.tc` | 17 | Direct conditional branches and logical negation |
+| `stmt/dead_unreachable.tc` | 7 | Pure dead statements and unreachable code after terminating branches |
+| `stmt/loop_bound_cache.tc` | 86 | Loop-invariant comparison bound caching |
 | `func/factorial.tc` | 120 | Function call and recursion |
 | `func/inline_args_once.tc` | 6 | Inline call arguments are evaluated once |
 | `func/inline_block.tc` | 19 | Inline functions with local declarations and final return |

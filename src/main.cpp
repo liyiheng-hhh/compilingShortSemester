@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -855,6 +856,9 @@ private:
               returnLabel_(".L_return_" + functionLabel(function.name)) {}
 
         std::string emit() {
+            if (parent_.options_.optimize) {
+                collectVariableUses(*function_.body);
+            }
             containsCall_ = parent_.options_.optimize ? stmtContainsRuntimeCall(*function_.body)
                                                       : stmtContainsCall(*function_.body);
             body_ << "    # parameters\n";
@@ -922,6 +926,8 @@ private:
         int inlineDepth_ = 0;
         bool containsCall_ = false;
         std::vector<Symbol> paramSymbols_;
+        std::unordered_set<std::string> assignedNames_;
+        std::unordered_set<std::string> referencedNames_;
         std::string bodyEntryLabel_;
         std::string returnLabel_;
 
@@ -1046,6 +1052,10 @@ private:
                 pushScope();
                 for (std::size_t i = 0; i + 1 < function_.body->statements.size(); ++i) {
                     emitStmt(*function_.body->statements[i]);
+                    if (stmtAlwaysTerminates(*function_.body->statements[i])) {
+                        popScope();
+                        return true;
+                    }
                 }
                 emitReturn(*function_.body->statements.back(), false);
                 popScope();
@@ -1230,13 +1240,18 @@ private:
                     pushScope();
                     for (const auto& child : stmt.statements) {
                         emitStmt(*child);
+                        if (parent_.options_.optimize && stmtAlwaysTerminates(*child)) {
+                            break;
+                        }
                     }
                     popScope();
                     break;
                 case StmtKind::Empty:
                     break;
                 case StmtKind::ExprStmt:
-                    emitExpr(*stmt.expr);
+                    if (!parent_.options_.optimize || exprContainsCall(*stmt.expr)) {
+                        emitExpr(*stmt.expr);
+                    }
                     break;
                 case StmtKind::Assign:
                     emitAssign(stmt);
@@ -1318,6 +1333,28 @@ private:
                 }
                 currentScope()[decl.name] = Symbol{SymbolKind::Const, 0, "", *value, ""};
                 return;
+            }
+
+            if (parent_.options_.optimize && inlineDepth_ == 0 &&
+                referencedNames_.find(decl.name) == referencedNames_.end() &&
+                !exprContainsCall(*decl.init)) {
+                return;
+            }
+
+            if (parent_.options_.optimize && inlineDepth_ == 0 &&
+                assignedNames_.find(decl.name) == assignedNames_.end()) {
+                if (const auto value = evalConst(*decl.init)) {
+                    currentScope()[decl.name] = Symbol{SymbolKind::Const, 0, "", *value, ""};
+                    return;
+                }
+                if (decl.init->kind == ExprKind::Variable &&
+                    assignedNames_.find(decl.init->name) == assignedNames_.end()) {
+                    const auto source = lookup(decl.init->name);
+                    if (source && source->kind != SymbolKind::GlobalVar) {
+                        currentScope()[decl.name] = *source;
+                        return;
+                    }
+                }
             }
 
             Symbol symbol = allocateLocal();
@@ -1479,6 +1516,7 @@ private:
 
             const std::string elseLabel = newLabel("else");
             const std::string endLabel = newLabel("endif");
+            const bool thenTerminates = stmtAlwaysTerminates(*stmt.thenBranch);
             if (parent_.options_.optimize) {
                 emitBranchIfFalse(*stmt.expr, elseLabel);
             } else {
@@ -1487,10 +1525,14 @@ private:
             }
             emitStmt(*stmt.thenBranch);
             if (stmt.elseBranch) {
-                body_ << "    jal zero, " << endLabel << '\n';
+                if (!parent_.options_.optimize || !thenTerminates) {
+                    body_ << "    jal zero, " << endLabel << '\n';
+                }
                 body_ << elseLabel << ":\n";
                 emitStmt(*stmt.elseBranch);
-                body_ << endLabel << ":\n";
+                if (!parent_.options_.optimize || !thenTerminates) {
+                    body_ << endLabel << ":\n";
+                }
             } else {
                 body_ << elseLabel << ":\n";
             }
@@ -1506,9 +1548,14 @@ private:
 
             const std::string condLabel = newLabel("while_cond");
             const std::string endLabel = newLabel("while_end");
+            const std::string cachedBound = cacheLoopComparisonBound(*stmt.expr);
             body_ << condLabel << ":\n";
             if (parent_.options_.optimize) {
-                emitBranchIfFalse(*stmt.expr, endLabel);
+                if (cachedBound.empty()) {
+                    emitBranchIfFalse(*stmt.expr, endLabel);
+                } else {
+                    emitComparisonBranchWithCachedRhs(*stmt.expr, cachedBound, endLabel);
+                }
             } else {
                 emitExpr(*stmt.expr);
                 body_ << "    beq a0, zero, " << endLabel << '\n';
@@ -1518,6 +1565,35 @@ private:
             loopStack_.pop_back();
             body_ << "    jal zero, " << condLabel << '\n';
             body_ << endLabel << ":\n";
+        }
+
+        std::string cacheLoopComparisonBound(const Expr& expr) {
+            if (!parent_.options_.optimize || expr.kind != ExprKind::Binary ||
+                !isComparisonOp(expr.op) || localRegCount_ >= allocatableLocalRegisterCount()) {
+                return {};
+            }
+            const auto rhs = evalConst(*expr.rhs);
+            if (!rhs || *rhs == 0 || evalConst(*expr.lhs)) {
+                return {};
+            }
+            Symbol cached = allocateLocal();
+            if (cached.reg.empty()) {
+                return {};
+            }
+            body_ << "    li " << cached.reg << ", " << printableI32(*rhs) << '\n';
+            return cached.reg;
+        }
+
+        void emitComparisonBranchWithCachedRhs(const Expr& expr, const std::string& rhsReg,
+                                               const std::string& falseLabel) {
+            std::string lhsReg;
+            if (isDirectValue(*expr.lhs)) {
+                lhsReg = emitValueAsRegister(*expr.lhs, "t5");
+            } else {
+                emitExpr(*expr.lhs);
+                lhsReg = "a0";
+            }
+            emitComparisonJump(expr.op, lhsReg, rhsReg, false, falseLabel);
         }
 
         void emitExpr(const Expr& expr) {
@@ -2370,6 +2446,96 @@ private:
             }
             symbol = *value;
             return true;
+        }
+
+        void collectExprUses(const Expr& expr) {
+            switch (expr.kind) {
+                case ExprKind::Number:
+                    return;
+                case ExprKind::Variable:
+                    referencedNames_.insert(expr.name);
+                    return;
+                case ExprKind::Unary:
+                    collectExprUses(*expr.lhs);
+                    return;
+                case ExprKind::Binary:
+                    collectExprUses(*expr.lhs);
+                    collectExprUses(*expr.rhs);
+                    return;
+                case ExprKind::Call:
+                    for (const auto& arg : expr.args) {
+                        collectExprUses(*arg);
+                    }
+                    return;
+            }
+        }
+
+        void collectVariableUses(const Stmt& stmt) {
+            switch (stmt.kind) {
+                case StmtKind::Block:
+                    for (const auto& child : stmt.statements) {
+                        collectVariableUses(*child);
+                    }
+                    return;
+                case StmtKind::Empty:
+                case StmtKind::Break:
+                case StmtKind::Continue:
+                    return;
+                case StmtKind::ExprStmt:
+                case StmtKind::Return:
+                    if (stmt.expr) {
+                        collectExprUses(*stmt.expr);
+                    }
+                    return;
+                case StmtKind::Assign:
+                    assignedNames_.insert(stmt.name);
+                    if (stmt.expr) {
+                        collectExprUses(*stmt.expr);
+                    }
+                    return;
+                case StmtKind::DeclStmt:
+                    if (stmt.decl && stmt.decl->init) {
+                        collectExprUses(*stmt.decl->init);
+                    }
+                    return;
+                case StmtKind::If:
+                    collectExprUses(*stmt.expr);
+                    collectVariableUses(*stmt.thenBranch);
+                    if (stmt.elseBranch) {
+                        collectVariableUses(*stmt.elseBranch);
+                    }
+                    return;
+                case StmtKind::While:
+                    collectExprUses(*stmt.expr);
+                    collectVariableUses(*stmt.thenBranch);
+                    return;
+            }
+        }
+
+        bool stmtAlwaysTerminates(const Stmt& stmt) const {
+            switch (stmt.kind) {
+                case StmtKind::Return:
+                case StmtKind::Break:
+                case StmtKind::Continue:
+                    return true;
+                case StmtKind::Block:
+                    for (const auto& child : stmt.statements) {
+                        if (stmtAlwaysTerminates(*child)) {
+                            return true;
+                        }
+                    }
+                    return false;
+                case StmtKind::If:
+                    return stmt.elseBranch && stmtAlwaysTerminates(*stmt.thenBranch) &&
+                           stmtAlwaysTerminates(*stmt.elseBranch);
+                case StmtKind::Empty:
+                case StmtKind::ExprStmt:
+                case StmtKind::Assign:
+                case StmtKind::DeclStmt:
+                case StmtKind::While:
+                    return false;
+            }
+            return false;
         }
 
         bool declContainsCall(const Decl& decl) const {
