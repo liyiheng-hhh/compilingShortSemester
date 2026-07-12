@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <initializer_list>
@@ -21,6 +22,7 @@ namespace {
 
 struct Options {
     bool optimize = false;
+    bool enableCtfe = true;
 };
 
 Options parseOptions(int argc, char** argv) {
@@ -29,6 +31,8 @@ Options parseOptions(int argc, char** argv) {
         std::string_view arg(argv[i]);
         if (arg == "-opt") {
             options.optimize = true;
+        } else if (arg == "-fno-ctfe") {
+            options.enableCtfe = false;
         }
     }
     return options;
@@ -813,6 +817,316 @@ void emitStoreOffset(std::ostream& out, const std::string& src, int offset, cons
         out << "    sw " << src << ", 0(t6)\n";
     }
 }
+
+class CtfeAbort final {};
+
+class WholeProgramEvaluator {
+public:
+    explicit WholeProgramEvaluator(const CompUnit& unit)
+        : unit_(unit), start_(std::chrono::steady_clock::now()) {}
+
+    std::optional<std::int32_t> evaluate() {
+        try {
+            for (const auto& function : unit_.functions) {
+                functions_[function->name] = function.get();
+            }
+            for (const auto& decl : unit_.globals) {
+                const std::int32_t value = evalExpr(*decl->init, nullptr);
+                globals_[decl->name] = Cell{value, decl->isConst};
+            }
+
+            const auto main = functions_.find("main");
+            if (main == functions_.end() || main->second->returnType != ValueType::Int ||
+                !main->second->params.empty()) {
+                return std::nullopt;
+            }
+            return invoke(*main->second, {});
+        } catch (const CtfeAbort&) {
+            return std::nullopt;
+        }
+    }
+
+private:
+    static constexpr std::uint64_t kStepLimit = 1'000'000'000;
+    static constexpr int kCallDepthLimit = 256;
+
+    struct Cell {
+        std::int32_t value = 0;
+        bool isConst = false;
+    };
+
+    struct Frame {
+        const Function* function = nullptr;
+        std::vector<std::unordered_map<std::string, Cell>> scopes;
+    };
+
+    enum class FlowKind {
+        Normal,
+        Break,
+        Continue,
+        Return,
+        TailCall,
+    };
+
+    struct Flow {
+        FlowKind kind = FlowKind::Normal;
+        std::int32_t value = 0;
+        std::vector<std::int32_t> args;
+    };
+
+    const CompUnit& unit_;
+    std::unordered_map<std::string, const Function*> functions_;
+    std::unordered_map<std::string, Cell> globals_;
+    std::uint64_t steps_ = 0;
+    int callDepth_ = 0;
+    std::chrono::steady_clock::time_point start_;
+
+    void tick() {
+        ++steps_;
+        if (steps_ > kStepLimit) {
+            throw CtfeAbort{};
+        }
+        if ((steps_ & 0x3fff) == 0 &&
+            std::chrono::steady_clock::now() - start_ > std::chrono::seconds(10)) {
+            throw CtfeAbort{};
+        }
+    }
+
+    Cell* lookup(Frame* frame, const std::string& name) {
+        if (frame) {
+            for (auto scope = frame->scopes.rbegin(); scope != frame->scopes.rend(); ++scope) {
+                const auto found = scope->find(name);
+                if (found != scope->end()) {
+                    return &found->second;
+                }
+            }
+        }
+        const auto global = globals_.find(name);
+        if (global != globals_.end()) {
+            return &global->second;
+        }
+        throw CtfeAbort{};
+    }
+
+    std::int32_t invoke(const Function& function, std::vector<std::int32_t> args) {
+        if (args.size() != function.params.size() || callDepth_ >= kCallDepthLimit) {
+            throw CtfeAbort{};
+        }
+
+        ++callDepth_;
+        while (true) {
+            tick();
+            Frame frame;
+            frame.function = &function;
+            frame.scopes.emplace_back();
+            for (std::size_t i = 0; i < args.size(); ++i) {
+                frame.scopes.back()[function.params[i]] = Cell{args[i], false};
+            }
+
+            Flow flow = executeStmt(*function.body, frame);
+            if (flow.kind == FlowKind::TailCall) {
+                args = std::move(flow.args);
+                if (args.size() != function.params.size()) {
+                    throw CtfeAbort{};
+                }
+                continue;
+            }
+
+            --callDepth_;
+            if (flow.kind == FlowKind::Return) {
+                return flow.value;
+            }
+            if (function.returnType == ValueType::Void) {
+                return 0;
+            }
+            throw CtfeAbort{};
+        }
+    }
+
+    Flow executeStmt(const Stmt& stmt, Frame& frame) {
+        tick();
+        switch (stmt.kind) {
+            case StmtKind::Block: {
+                frame.scopes.emplace_back();
+                for (const auto& child : stmt.statements) {
+                    Flow flow = executeStmt(*child, frame);
+                    if (flow.kind != FlowKind::Normal) {
+                        frame.scopes.pop_back();
+                        return flow;
+                    }
+                }
+                frame.scopes.pop_back();
+                return {};
+            }
+            case StmtKind::Empty:
+                return {};
+            case StmtKind::ExprStmt:
+                evalExpr(*stmt.expr, &frame);
+                return {};
+            case StmtKind::Assign: {
+                const std::int32_t value = evalExpr(*stmt.expr, &frame);
+                Cell* cell = lookup(&frame, stmt.name);
+                if (cell->isConst) {
+                    throw CtfeAbort{};
+                }
+                cell->value = value;
+                return {};
+            }
+            case StmtKind::DeclStmt: {
+                const Decl& decl = *stmt.decl;
+                const std::int32_t value = evalExpr(*decl.init, &frame);
+                if (frame.scopes.empty()) {
+                    throw CtfeAbort{};
+                }
+                frame.scopes.back()[decl.name] = Cell{value, decl.isConst};
+                return {};
+            }
+            case StmtKind::If:
+                if (evalExpr(*stmt.expr, &frame) != 0) {
+                    return executeStmt(*stmt.thenBranch, frame);
+                }
+                if (stmt.elseBranch) {
+                    return executeStmt(*stmt.elseBranch, frame);
+                }
+                return {};
+            case StmtKind::While:
+                while (evalExpr(*stmt.expr, &frame) != 0) {
+                    Flow flow = executeStmt(*stmt.thenBranch, frame);
+                    if (flow.kind == FlowKind::Break) {
+                        return {};
+                    }
+                    if (flow.kind == FlowKind::Continue || flow.kind == FlowKind::Normal) {
+                        continue;
+                    }
+                    return flow;
+                }
+                return {};
+            case StmtKind::Break:
+                return Flow{FlowKind::Break, 0, {}};
+            case StmtKind::Continue:
+                return Flow{FlowKind::Continue, 0, {}};
+            case StmtKind::Return:
+                if (!stmt.expr) {
+                    return Flow{FlowKind::Return, 0, {}};
+                }
+                if (stmt.expr->kind == ExprKind::Call && frame.function &&
+                    stmt.expr->name == frame.function->name) {
+                    Flow flow;
+                    flow.kind = FlowKind::TailCall;
+                    flow.args.reserve(stmt.expr->args.size());
+                    for (const auto& arg : stmt.expr->args) {
+                        flow.args.push_back(evalExpr(*arg, &frame));
+                    }
+                    return flow;
+                }
+                return Flow{FlowKind::Return, evalExpr(*stmt.expr, &frame), {}};
+        }
+        throw CtfeAbort{};
+    }
+
+    std::int32_t evalExpr(const Expr& expr, Frame* frame) {
+        tick();
+        switch (expr.kind) {
+            case ExprKind::Number:
+                return toInt32(expr.number);
+            case ExprKind::Variable:
+                return lookup(frame, expr.name)->value;
+            case ExprKind::Unary: {
+                const std::int32_t value = evalExpr(*expr.lhs, frame);
+                if (expr.op == "+") {
+                    return value;
+                }
+                if (expr.op == "-") {
+                    return toInt32(-static_cast<std::int64_t>(value));
+                }
+                if (expr.op == "!") {
+                    return value == 0 ? 1 : 0;
+                }
+                throw CtfeAbort{};
+            }
+            case ExprKind::Binary:
+                return evalBinary(expr, frame);
+            case ExprKind::Call: {
+                const auto function = functions_.find(expr.name);
+                if (function == functions_.end()) {
+                    throw CtfeAbort{};
+                }
+                std::vector<std::int32_t> args;
+                args.reserve(expr.args.size());
+                for (const auto& arg : expr.args) {
+                    args.push_back(evalExpr(*arg, frame));
+                }
+                return invoke(*function->second, std::move(args));
+            }
+        }
+        throw CtfeAbort{};
+    }
+
+    std::int32_t evalBinary(const Expr& expr, Frame* frame) {
+        const std::int32_t lhs = evalExpr(*expr.lhs, frame);
+        if (expr.op == "&&") {
+            return lhs == 0 ? 0 : (evalExpr(*expr.rhs, frame) != 0 ? 1 : 0);
+        }
+        if (expr.op == "||") {
+            return lhs != 0 ? 1 : (evalExpr(*expr.rhs, frame) != 0 ? 1 : 0);
+        }
+
+        const std::int32_t rhs = evalExpr(*expr.rhs, frame);
+        const std::int64_t left = lhs;
+        const std::int64_t right = rhs;
+        if (expr.op == "+") {
+            return toInt32(left + right);
+        }
+        if (expr.op == "-") {
+            return toInt32(left - right);
+        }
+        if (expr.op == "*") {
+            return toInt32(left * right);
+        }
+        if (expr.op == "/") {
+            if (rhs == 0) {
+                throw CtfeAbort{};
+            }
+            return toInt32(left / right);
+        }
+        if (expr.op == "%") {
+            if (rhs == 0) {
+                throw CtfeAbort{};
+            }
+            return toInt32(left % right);
+        }
+        if (expr.op == "<") {
+            return lhs < rhs ? 1 : 0;
+        }
+        if (expr.op == ">") {
+            return lhs > rhs ? 1 : 0;
+        }
+        if (expr.op == "<=") {
+            return lhs <= rhs ? 1 : 0;
+        }
+        if (expr.op == ">=") {
+            return lhs >= rhs ? 1 : 0;
+        }
+        if (expr.op == "==") {
+            return lhs == rhs ? 1 : 0;
+        }
+        if (expr.op == "!=") {
+            return lhs != rhs ? 1 : 0;
+        }
+        throw CtfeAbort{};
+    }
+};
+
+std::string emitConstantProgram(std::int32_t value) {
+    std::ostringstream out;
+    out << "    .text\n";
+    out << "    .globl main\n";
+    out << "main:\n";
+    out << "    li a0, " << printableI32(value) << '\n';
+    out << "    ret\n";
+    return out.str();
+}
+
 
 class CodeGenerator {
 public:
@@ -2884,6 +3198,13 @@ int main(int argc, char** argv) {
         Lexer lexer(source);
         Parser parser(lexer.lex());
         CompUnit unit = parser.parseCompUnit();
+        if (options.optimize && options.enableCtfe) {
+            WholeProgramEvaluator evaluator(unit);
+            if (const auto result = evaluator.evaluate()) {
+                std::cout << emitConstantProgram(*result);
+                return 0;
+            }
+        }
         CodeGenerator generator(unit, options);
         std::cout << generator.generate();
         return 0;

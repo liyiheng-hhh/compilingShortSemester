@@ -172,10 +172,8 @@ class Machine:
         raise AssertionError(f"program exceeded {max_steps} simulated instructions")
 
 
-def compile_case(compiler, source, optimize):
-    command = [str(compiler)]
-    if optimize:
-        command.append("-opt")
+def compile_case(compiler, source, extra_args):
+    command = [str(compiler), *extra_args]
     result = subprocess.run(
         command,
         input=source.read_text(encoding="utf-8"),
@@ -192,11 +190,21 @@ def main():
     compiler = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT.parent / "build" / "toyc.exe"
     failures = []
     cases = parse_expected()
+    modes = [
+        ("normal", []),
+        ("-opt", ["-opt"]),
+        ("-opt backend", ["-opt", "-fno-ctfe"]),
+    ]
     for source, expected in cases:
-        for optimize in (False, True):
-            mode = "-opt" if optimize else "normal"
+        for mode, extra_args in modes:
             try:
-                actual = Machine(compile_case(compiler, source, optimize)).run()
+                assembly = compile_case(compiler, source, extra_args)
+                machine = Machine(assembly)
+                if mode == "-opt" and len(machine.instructions) != 2:
+                    failures.append(
+                        f"{source.relative_to(ROOT)} [{mode}]: CTFE emitted {len(machine.instructions)} instructions"
+                    )
+                actual = machine.run()
                 if actual != expected:
                     failures.append(f"{source.relative_to(ROOT)} [{mode}]: expected {expected}, got {actual}")
             except Exception as error:
@@ -204,7 +212,7 @@ def main():
     if failures:
         print("\n".join(failures), file=sys.stderr)
         return 1
-    print(f"passed {len(cases)} cases in normal and -opt modes")
+    print(f"passed {len(cases)} cases in normal, -opt, and -opt backend modes")
     return 0
 
 

@@ -1,0 +1,27 @@
+int g = 3;
+
+int bump(int x) {
+    g = g + x;
+    return g;
+}
+
+int sum_to(int n, int acc) {
+    if (n == 0) {
+        return acc;
+    }
+    return sum_to(n - 1, acc + n);
+}
+
+int main() {
+    int i = 0;
+    int total = 0;
+    while (i < 10000) {
+        if (i % 3 == 0) {
+            total = total + bump(1);
+        } else {
+            total = total + i % 7;
+        }
+        i = i + 1;
+    }
+    return total + sum_to(100, 0) + g;
+}

@@ -167,6 +167,7 @@ python run_tests.py --opt
 | `func/void_side_effect.tc` | 9 | void 函数与全局副作用 |
 | `global/globals.tc` | 18 | 全局变量、常量与赋值 |
 | `decl/scope_const.tc` | 21 | 局部常量和嵌套遮蔽 |
+| `opt/whole_program_eval.tc` | 133 | 全程序求值、全局副作用、循环和尾递归 |
 
 构建后运行：
 
