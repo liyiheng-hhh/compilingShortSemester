@@ -1,0 +1,14 @@
+int g = 1;
+
+int next() {
+    g = g + 1;
+    return g;
+}
+
+int twice(int x) {
+    return x + x;
+}
+
+int main() {
+    return twice(next()) + g;
+}

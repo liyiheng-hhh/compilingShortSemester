@@ -1,0 +1,16 @@
+int fail() {
+    return 100;
+}
+
+int main() {
+    int x = 0;
+    int y = 7;
+    if (x && fail()) {
+        return 1;
+    }
+    if (y || fail()) {
+        return y;
+    }
+    return 2;
+}
+

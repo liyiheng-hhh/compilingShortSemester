@@ -134,3 +134,44 @@ python run_tests.py --opt
 - 避免在测试中使用硬编码的文件路径
 - 负面测试需明确期望的错误类型和退出码
 - 回归测试需在注释中说明修复的问题
+## 当前可执行回归
+
+完整回归由 `tests/run_regressions.py` 内置的 RISC-V32 执行器完成，不依赖外部 QEMU、汇编器或链接器。以下每个样例都会分别在普通模式和 `-opt` 模式运行并断言最终退出码：
+
+| 文件 | 期望退出码 | 覆盖内容 |
+| --- | ---: | --- |
+| `smoke/return_zero.tc` | 0 | 最小 main |
+| `smoke/return_one.tc` | 1 | 基础常量返回 |
+| `smoke/return_42.tc` | 42 | 基础常量返回 |
+| `smoke/return_expr.tc` | 14 | 常量表达式与优先级 |
+| `expr/logic_short_circuit.tc` | 7 | 逻辑运算与短路求值 |
+| `expr/algebra_strength.tc` | 49 | 代数化简与乘法强度削弱 |
+| `expr/readonly_propagation.tc` | 42 | 只读常量、复制传播与纯死表达式 |
+| `expr/nested_binary.tc` | 45 | 嵌套二元表达式与临时寄存器 |
+| `expr/many_locals_nested.tc` | 124 | 多局部变量、栈槽与嵌套表达式 |
+| `expr/repeated_subexpr.tc` | 81 | 重复子表达式复用 |
+| `expr/sparse_multiply.tc` | 56 | 稀疏常量乘法的移位加法 |
+| `expr/target_reg_assign.tc` | 26 | 目标寄存器赋值 |
+| `stmt/control_flow.tc` | 12 | while、if、break、continue |
+| `stmt/branch_conditions.tc` | 17 | 直接条件分支与逻辑取反 |
+| `stmt/dead_unreachable.tc` | 7 | 纯死语句与不可达代码 |
+| `stmt/loop_bound_cache.tc` | 86 | 循环不变量边界缓存 |
+| `func/factorial.tc` | 120 | 函数调用与递归 |
+| `func/inline_args_once.tc` | 6 | 内联实参只求值一次 |
+| `func/inline_block.tc` | 19 | 带局部声明的函数内联 |
+| `func/inline_simple.tc` | 23 | 简单返回表达式内联 |
+| `func/leaf_no_frame.tc` | 15 | 无栈帧叶函数 |
+| `func/many_args.tc` | 55 | 超过八个实参 |
+| `func/register_args.tc` | 55 | 寄存器与栈传参 |
+| `func/tail_recursive.tc` | 120 | 尾递归转跳转 |
+| `func/void_side_effect.tc` | 9 | void 函数与全局副作用 |
+| `global/globals.tc` | 18 | 全局变量、常量与赋值 |
+| `decl/scope_const.tc` | 21 | 局部常量和嵌套遮蔽 |
+
+构建后运行：
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+根目录的 `run_tests.py` 继续保留，用于按目录筛选、检查编译器诊断和维护 `.expected` 文件；最终运行结果以 CTest 的完整退出码回归为准。

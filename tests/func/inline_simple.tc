@@ -1,0 +1,12 @@
+int inc(int x) {
+    return x + 1;
+}
+
+int mix(int a, int b) {
+    return inc(a) * 2 + b;
+}
+
+int main() {
+    int i = 3;
+    return mix(i, 4) + inc(10);
+}
