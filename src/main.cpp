@@ -1853,34 +1853,48 @@ private:
         }
 
         void emitWhile(const Stmt& stmt) {
+            std::optional<std::int32_t> constantCondition;
             if (parent_.options_.optimize) {
-                const auto condition = evalConst(*stmt.expr);
-                if (condition && *condition == 0) {
+                constantCondition = evalConst(*stmt.expr);
+                if (constantCondition && *constantCondition == 0) {
                     return;
                 }
             }
 
+            if (constantCondition) {
+                const std::string bodyLabel = newLabel("while_body");
+                const std::string endLabel = newLabel("while_end");
+                body_ << bodyLabel << ":\n";
+                loopStack_.push_back({bodyLabel, endLabel});
+                emitStmt(*stmt.thenBranch);
+                loopStack_.pop_back();
+                body_ << "    jal zero, " << bodyLabel << '\n';
+                body_ << endLabel << ":\n";
+                return;
+            }
+
+            const std::string bodyLabel = newLabel("while_body");
             const std::string condLabel = newLabel("while_cond");
             const std::string endLabel = newLabel("while_end");
             const std::string cachedBound = cacheLoopComparisonBound(*stmt.expr);
-            body_ << condLabel << ":\n";
-            if (parent_.options_.optimize) {
-                if (cachedBound.empty()) {
-                    emitBranchIfFalse(*stmt.expr, endLabel);
-                } else {
-                    emitComparisonBranchWithCachedRhs(*stmt.expr, cachedBound, endLabel);
-                }
-            } else {
-                emitExpr(*stmt.expr);
-                body_ << "    beq a0, zero, " << endLabel << '\n';
-            }
+            body_ << "    jal zero, " << condLabel << '\n';
+            body_ << bodyLabel << ":\n";
             loopStack_.push_back({condLabel, endLabel});
             emitStmt(*stmt.thenBranch);
             loopStack_.pop_back();
-            body_ << "    jal zero, " << condLabel << '\n';
+            body_ << condLabel << ":\n";
+            if (parent_.options_.optimize) {
+                if (cachedBound.empty()) {
+                    emitBranchIfTrue(*stmt.expr, bodyLabel);
+                } else {
+                    emitComparisonBranchWithCachedRhs(*stmt.expr, cachedBound, true, bodyLabel);
+                }
+            } else {
+                emitExpr(*stmt.expr);
+                body_ << "    bne a0, zero, " << bodyLabel << '\n';
+            }
             body_ << endLabel << ":\n";
         }
-
         std::string cacheLoopComparisonBound(const Expr& expr) {
             if (!parent_.options_.optimize || expr.kind != ExprKind::Binary ||
                 !isComparisonOp(expr.op) || localRegCount_ >= allocatableLocalRegisterCount()) {
@@ -1899,7 +1913,7 @@ private:
         }
 
         void emitComparisonBranchWithCachedRhs(const Expr& expr, const std::string& rhsReg,
-                                               const std::string& falseLabel) {
+                                               bool branchIfTrue, const std::string& label) {
             std::string lhsReg;
             if (isDirectValue(*expr.lhs)) {
                 lhsReg = emitValueAsRegister(*expr.lhs, "t5");
@@ -1907,9 +1921,8 @@ private:
                 emitExpr(*expr.lhs);
                 lhsReg = "a0";
             }
-            emitComparisonJump(expr.op, lhsReg, rhsReg, false, falseLabel);
+            emitComparisonJump(expr.op, lhsReg, rhsReg, branchIfTrue, label);
         }
-
         void emitExpr(const Expr& expr) {
             if (parent_.options_.optimize) {
                 const auto value = evalConst(expr);
