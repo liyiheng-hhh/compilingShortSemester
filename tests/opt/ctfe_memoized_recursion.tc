@@ -1,0 +1,25 @@
+int visits = 0;
+
+int fib(int n) {
+    if (n < 2) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+int mark() {
+    visits = visits + 1;
+    return visits;
+}
+
+int countedFib(int n) {
+    mark();
+    if (n < 2) {
+        return n;
+    }
+    return countedFib(n - 1) + countedFib(n - 2);
+}
+
+int main() {
+    return fib(18) + countedFib(8) + visits;
+}

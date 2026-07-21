@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <initializer_list>
 #include <iostream>
 #include <iterator>
@@ -316,6 +317,26 @@ enum class ExprKind {
     Call,
 };
 
+enum class CtfeOp {
+    None,
+    Positive,
+    Negative,
+    LogicalNot,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Remainder,
+    Less,
+    Greater,
+    LessEqual,
+    GreaterEqual,
+    Equal,
+    NotEqual,
+    LogicalAnd,
+    LogicalOr,
+};
+
 struct Function;
 
 struct Expr {
@@ -330,6 +351,7 @@ struct Expr {
     int ctfeSlot = -1;
     bool ctfeGlobal = false;
     Function* ctfeCallee = nullptr;
+    CtfeOp ctfeOp = CtfeOp::None;
 };
 
 struct Decl {
@@ -374,6 +396,7 @@ struct Function {
     std::unique_ptr<Stmt> body;
     SourceLocation loc;
     std::size_t ctfeLocalCount = 0;
+    bool ctfeMemoizable = false;
 };
 
 struct CompUnit {
@@ -858,6 +881,7 @@ public:
 private:
     static constexpr std::uint64_t kStepLimit = 1'000'000'000;
     static constexpr int kCallDepthLimit = 256;
+    static constexpr std::size_t kMemoEntryLimit = 100'000;
 
     struct Cell {
         std::int32_t value = 0;
@@ -889,11 +913,31 @@ private:
         std::vector<std::int32_t> args;
     };
 
+    struct EffectInfo {
+        bool touchesGlobal = false;
+        int selfCallSites = 0;
+        std::vector<const Function*> callees;
+    };
+
+    struct ArgsHash {
+        std::size_t operator()(const std::vector<std::int32_t>& args) const noexcept {
+            std::size_t result = args.size();
+            for (const std::int32_t value : args) {
+                const std::size_t item = std::hash<std::int32_t>{}(value);
+                result ^= item + 0x9e3779b9u + (result << 6) + (result >> 2);
+            }
+            return result;
+        }
+    };
+
+    using MemoTable = std::unordered_map<std::vector<std::int32_t>, std::int32_t, ArgsHash>;
+
     CompUnit& unit_;
     std::unordered_map<std::string, Function*> functions_;
     std::vector<Cell> globals_;
     std::unordered_map<std::string, Binding> globalBindings_;
     std::vector<std::unordered_map<std::string, Binding>> bindingScopes_;
+    std::unordered_map<const Function*, MemoTable> memo_;
     std::uint64_t steps_ = 0;
     int callDepth_ = 0;
     std::chrono::steady_clock::time_point start_;
@@ -951,6 +995,8 @@ private:
         for (const auto& function : unit_.functions) {
             bindFunction(*function);
         }
+        analyzeMemoizableFunctions();
+        memo_.clear();
     }
 
     void bindFunction(Function& function) {
@@ -1030,10 +1076,12 @@ private:
             }
             case ExprKind::Unary:
                 bindExpr(*expr.lhs);
+                expr.ctfeOp = decodeUnaryOp(expr.op);
                 return;
             case ExprKind::Binary:
                 bindExpr(*expr.lhs);
                 bindExpr(*expr.rhs);
+                expr.ctfeOp = decodeBinaryOp(expr.op);
                 return;
             case ExprKind::Call: {
                 for (const auto& arg : expr.args) {
@@ -1048,6 +1096,140 @@ private:
             }
         }
         throw CtfeAbort{};
+    }
+
+    static CtfeOp decodeUnaryOp(const std::string& op) {
+        if (op == "+") {
+            return CtfeOp::Positive;
+        }
+        if (op == "-") {
+            return CtfeOp::Negative;
+        }
+        if (op == "!") {
+            return CtfeOp::LogicalNot;
+        }
+        throw CtfeAbort{};
+    }
+
+    static CtfeOp decodeBinaryOp(const std::string& op) {
+        if (op == "+") return CtfeOp::Add;
+        if (op == "-") return CtfeOp::Subtract;
+        if (op == "*") return CtfeOp::Multiply;
+        if (op == "/") return CtfeOp::Divide;
+        if (op == "%") return CtfeOp::Remainder;
+        if (op == "<") return CtfeOp::Less;
+        if (op == ">") return CtfeOp::Greater;
+        if (op == "<=") return CtfeOp::LessEqual;
+        if (op == ">=") return CtfeOp::GreaterEqual;
+        if (op == "==") return CtfeOp::Equal;
+        if (op == "!=") return CtfeOp::NotEqual;
+        if (op == "&&") return CtfeOp::LogicalAnd;
+        if (op == "||") return CtfeOp::LogicalOr;
+        throw CtfeAbort{};
+    }
+
+    void collectExprEffects(const Expr& expr, const Function& owner, EffectInfo& info) const {
+        switch (expr.kind) {
+            case ExprKind::Number:
+                return;
+            case ExprKind::Variable:
+                info.touchesGlobal = info.touchesGlobal || expr.ctfeGlobal;
+                return;
+            case ExprKind::Unary:
+                collectExprEffects(*expr.lhs, owner, info);
+                return;
+            case ExprKind::Binary:
+                collectExprEffects(*expr.lhs, owner, info);
+                collectExprEffects(*expr.rhs, owner, info);
+                return;
+            case ExprKind::Call:
+                if (!expr.ctfeCallee) {
+                    throw CtfeAbort{};
+                }
+                info.callees.push_back(expr.ctfeCallee);
+                if (expr.ctfeCallee == &owner) {
+                    ++info.selfCallSites;
+                }
+                for (const auto& arg : expr.args) {
+                    collectExprEffects(*arg, owner, info);
+                }
+                return;
+        }
+        throw CtfeAbort{};
+    }
+
+    void collectStmtEffects(const Stmt& stmt, const Function& owner, EffectInfo& info) const {
+        switch (stmt.kind) {
+            case StmtKind::Block:
+                for (const auto& child : stmt.statements) {
+                    collectStmtEffects(*child, owner, info);
+                }
+                return;
+            case StmtKind::Empty:
+            case StmtKind::Break:
+            case StmtKind::Continue:
+                return;
+            case StmtKind::ExprStmt:
+            case StmtKind::Return:
+                if (stmt.expr) {
+                    collectExprEffects(*stmt.expr, owner, info);
+                }
+                return;
+            case StmtKind::Assign:
+                info.touchesGlobal = info.touchesGlobal || stmt.ctfeGlobal;
+                collectExprEffects(*stmt.expr, owner, info);
+                return;
+            case StmtKind::DeclStmt:
+                collectExprEffects(*stmt.decl->init, owner, info);
+                return;
+            case StmtKind::If:
+                collectExprEffects(*stmt.expr, owner, info);
+                collectStmtEffects(*stmt.thenBranch, owner, info);
+                if (stmt.elseBranch) {
+                    collectStmtEffects(*stmt.elseBranch, owner, info);
+                }
+                return;
+            case StmtKind::While:
+                collectExprEffects(*stmt.expr, owner, info);
+                collectStmtEffects(*stmt.thenBranch, owner, info);
+                return;
+        }
+        throw CtfeAbort{};
+    }
+
+    void analyzeMemoizableFunctions() {
+        std::unordered_map<const Function*, EffectInfo> effects;
+        for (const auto& function : unit_.functions) {
+            EffectInfo info;
+            collectStmtEffects(*function->body, *function, info);
+            function->ctfeMemoizable = !info.touchesGlobal;
+            effects.emplace(function.get(), std::move(info));
+        }
+
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (const auto& function : unit_.functions) {
+                if (!function->ctfeMemoizable) {
+                    continue;
+                }
+                for (const Function* callee : effects.at(function.get()).callees) {
+                    if (!callee->ctfeMemoizable) {
+                        function->ctfeMemoizable = false;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        for (const auto& function : unit_.functions) {
+            const EffectInfo& info = effects.at(function.get());
+            // Unique loop and tail-recursive arguments should not pay memo-table overhead.
+            function->ctfeMemoizable = function->ctfeMemoizable &&
+                                         function->returnType == ValueType::Int &&
+                                         info.selfCallSites >= 2;
+        }
     }
 
     Cell* boundCell(Frame* frame, int slot, bool global, bool requireInitialized = true) {
@@ -1070,10 +1252,25 @@ private:
     }
 
     std::int32_t invoke(const Function& function, std::vector<std::int32_t> args) {
-        if (args.size() != function.params.size() || callDepth_ >= kCallDepthLimit) {
+        if (args.size() != function.params.size()) {
             throw CtfeAbort{};
         }
 
+        MemoTable* memo = nullptr;
+        std::vector<std::int32_t> memoKey;
+        if (function.ctfeMemoizable) {
+            MemoTable& table = memo_[&function];
+            const auto found = table.find(args);
+            if (found != table.end()) {
+                return found->second;
+            }
+            memo = &table;
+            memoKey = args;
+        }
+
+        if (callDepth_ >= kCallDepthLimit) {
+            throw CtfeAbort{};
+        }
         ++callDepth_;
         while (true) {
             tick();
@@ -1095,6 +1292,9 @@ private:
 
             --callDepth_;
             if (flow.kind == FlowKind::Return) {
+                if (memo && memo->size() < kMemoEntryLimit) {
+                    memo->emplace(std::move(memoKey), flow.value);
+                }
                 return flow.value;
             }
             if (function.returnType == ValueType::Void) {
@@ -1188,16 +1388,16 @@ private:
                 return boundCell(frame, expr.ctfeSlot, expr.ctfeGlobal)->value;
             case ExprKind::Unary: {
                 const std::int32_t value = evalExpr(*expr.lhs, frame);
-                if (expr.op == "+") {
-                    return value;
+                switch (expr.ctfeOp) {
+                    case CtfeOp::Positive:
+                        return value;
+                    case CtfeOp::Negative:
+                        return toInt32(-static_cast<std::int64_t>(value));
+                    case CtfeOp::LogicalNot:
+                        return value == 0 ? 1 : 0;
+                    default:
+                        throw CtfeAbort{};
                 }
-                if (expr.op == "-") {
-                    return toInt32(-static_cast<std::int64_t>(value));
-                }
-                if (expr.op == "!") {
-                    return value == 0 ? 1 : 0;
-                }
-                throw CtfeAbort{};
             }
             case ExprKind::Binary:
                 return evalBinary(expr, frame);
@@ -1218,56 +1418,48 @@ private:
 
     std::int32_t evalBinary(const Expr& expr, Frame* frame) {
         const std::int32_t lhs = evalExpr(*expr.lhs, frame);
-        if (expr.op == "&&") {
+        if (expr.ctfeOp == CtfeOp::LogicalAnd) {
             return lhs == 0 ? 0 : (evalExpr(*expr.rhs, frame) != 0 ? 1 : 0);
         }
-        if (expr.op == "||") {
+        if (expr.ctfeOp == CtfeOp::LogicalOr) {
             return lhs != 0 ? 1 : (evalExpr(*expr.rhs, frame) != 0 ? 1 : 0);
         }
 
         const std::int32_t rhs = evalExpr(*expr.rhs, frame);
         const std::int64_t left = lhs;
         const std::int64_t right = rhs;
-        if (expr.op == "+") {
-            return toInt32(left + right);
-        }
-        if (expr.op == "-") {
-            return toInt32(left - right);
-        }
-        if (expr.op == "*") {
-            return toInt32(left * right);
-        }
-        if (expr.op == "/") {
-            if (rhs == 0) {
+        switch (expr.ctfeOp) {
+            case CtfeOp::Add:
+                return toInt32(left + right);
+            case CtfeOp::Subtract:
+                return toInt32(left - right);
+            case CtfeOp::Multiply:
+                return toInt32(left * right);
+            case CtfeOp::Divide:
+                if (rhs == 0) {
+                    throw CtfeAbort{};
+                }
+                return toInt32(left / right);
+            case CtfeOp::Remainder:
+                if (rhs == 0) {
+                    throw CtfeAbort{};
+                }
+                return toInt32(left % right);
+            case CtfeOp::Less:
+                return lhs < rhs ? 1 : 0;
+            case CtfeOp::Greater:
+                return lhs > rhs ? 1 : 0;
+            case CtfeOp::LessEqual:
+                return lhs <= rhs ? 1 : 0;
+            case CtfeOp::GreaterEqual:
+                return lhs >= rhs ? 1 : 0;
+            case CtfeOp::Equal:
+                return lhs == rhs ? 1 : 0;
+            case CtfeOp::NotEqual:
+                return lhs != rhs ? 1 : 0;
+            default:
                 throw CtfeAbort{};
-            }
-            return toInt32(left / right);
         }
-        if (expr.op == "%") {
-            if (rhs == 0) {
-                throw CtfeAbort{};
-            }
-            return toInt32(left % right);
-        }
-        if (expr.op == "<") {
-            return lhs < rhs ? 1 : 0;
-        }
-        if (expr.op == ">") {
-            return lhs > rhs ? 1 : 0;
-        }
-        if (expr.op == "<=") {
-            return lhs <= rhs ? 1 : 0;
-        }
-        if (expr.op == ">=") {
-            return lhs >= rhs ? 1 : 0;
-        }
-        if (expr.op == "==") {
-            return lhs == rhs ? 1 : 0;
-        }
-        if (expr.op == "!=") {
-            return lhs != rhs ? 1 : 0;
-        }
-        throw CtfeAbort{};
     }
 };
 
