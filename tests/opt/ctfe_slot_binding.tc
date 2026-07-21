@@ -1,0 +1,33 @@
+int g = 2;
+
+int bump(int value) {
+    g = g + value;
+    return g;
+}
+
+int main() {
+    int x = 3;
+    int total = bump(4);
+
+    {
+        int x = x + 5;
+        total = total + x;
+    }
+
+    if (total > 10) {
+        int x = total - 2;
+        total = x + g;
+    } else {
+        int x = 100;
+        total = x;
+    }
+
+    int i = 0;
+    while (i < 4) {
+        int x = i + 1;
+        total = total + x;
+        i = i + 1;
+    }
+
+    return total + x + g;
+}

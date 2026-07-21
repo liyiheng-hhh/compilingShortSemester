@@ -168,6 +168,7 @@ python run_tests.py --opt
 | `global/globals.tc` | 18 | 全局变量、常量与赋值 |
 | `decl/scope_const.tc` | 21 | 局部常量和嵌套遮蔽 |
 | `opt/whole_program_eval.tc` | 133 | 全程序求值、全局副作用、循环和尾递归 |
+| `opt/ctfe_slot_binding.tc` | 37 | CTFE 槽位绑定、遮蔽和循环内重复声明 |
 
 构建后运行：
 

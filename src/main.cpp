@@ -316,6 +316,8 @@ enum class ExprKind {
     Call,
 };
 
+struct Function;
+
 struct Expr {
     ExprKind kind = ExprKind::Number;
     SourceLocation loc;
@@ -325,6 +327,9 @@ struct Expr {
     std::unique_ptr<Expr> lhs;
     std::unique_ptr<Expr> rhs;
     std::vector<std::unique_ptr<Expr>> args;
+    int ctfeSlot = -1;
+    bool ctfeGlobal = false;
+    Function* ctfeCallee = nullptr;
 };
 
 struct Decl {
@@ -332,6 +337,8 @@ struct Decl {
     std::string name;
     std::unique_ptr<Expr> init;
     SourceLocation loc;
+    int ctfeSlot = -1;
+    bool ctfeGlobal = false;
 };
 
 enum class StmtKind {
@@ -356,6 +363,8 @@ struct Stmt {
     std::unique_ptr<Decl> decl;
     std::unique_ptr<Stmt> thenBranch;
     std::unique_ptr<Stmt> elseBranch;
+    int ctfeSlot = -1;
+    bool ctfeGlobal = false;
 };
 
 struct Function {
@@ -364,6 +373,7 @@ struct Function {
     std::vector<std::string> params;
     std::unique_ptr<Stmt> body;
     SourceLocation loc;
+    std::size_t ctfeLocalCount = 0;
 };
 
 struct CompUnit {
@@ -822,17 +832,16 @@ class CtfeAbort final {};
 
 class WholeProgramEvaluator {
 public:
-    explicit WholeProgramEvaluator(const CompUnit& unit)
+    explicit WholeProgramEvaluator(CompUnit& unit)
         : unit_(unit), start_(std::chrono::steady_clock::now()) {}
 
     std::optional<std::int32_t> evaluate() {
         try {
-            for (const auto& function : unit_.functions) {
-                functions_[function->name] = function.get();
-            }
+            prepareBindings();
             for (const auto& decl : unit_.globals) {
                 const std::int32_t value = evalExpr(*decl->init, nullptr);
-                globals_[decl->name] = Cell{value, decl->isConst};
+                const std::size_t slot = checkedSlot(decl->ctfeSlot, globals_.size());
+                globals_[slot] = Cell{value, decl->isConst, true};
             }
 
             const auto main = functions_.find("main");
@@ -853,11 +862,17 @@ private:
     struct Cell {
         std::int32_t value = 0;
         bool isConst = false;
+        bool initialized = false;
+    };
+
+    struct Binding {
+        int slot = -1;
+        bool global = false;
     };
 
     struct Frame {
         const Function* function = nullptr;
-        std::vector<std::unordered_map<std::string, Cell>> scopes;
+        std::vector<Cell> locals;
     };
 
     enum class FlowKind {
@@ -874,9 +889,11 @@ private:
         std::vector<std::int32_t> args;
     };
 
-    const CompUnit& unit_;
-    std::unordered_map<std::string, const Function*> functions_;
-    std::unordered_map<std::string, Cell> globals_;
+    CompUnit& unit_;
+    std::unordered_map<std::string, Function*> functions_;
+    std::vector<Cell> globals_;
+    std::unordered_map<std::string, Binding> globalBindings_;
+    std::vector<std::unordered_map<std::string, Binding>> bindingScopes_;
     std::uint64_t steps_ = 0;
     int callDepth_ = 0;
     std::chrono::steady_clock::time_point start_;
@@ -892,20 +909,164 @@ private:
         }
     }
 
-    Cell* lookup(Frame* frame, const std::string& name) {
-        if (frame) {
-            for (auto scope = frame->scopes.rbegin(); scope != frame->scopes.rend(); ++scope) {
-                const auto found = scope->find(name);
-                if (found != scope->end()) {
-                    return &found->second;
-                }
+    static std::size_t checkedSlot(int slot, std::size_t size) {
+        if (slot < 0 || static_cast<std::size_t>(slot) >= size) {
+            throw CtfeAbort{};
+        }
+        return static_cast<std::size_t>(slot);
+    }
+
+    Binding resolveBinding(const std::string& name) const {
+        for (auto scope = bindingScopes_.rbegin(); scope != bindingScopes_.rend(); ++scope) {
+            const auto found = scope->find(name);
+            if (found != scope->end()) {
+                return found->second;
             }
         }
-        const auto global = globals_.find(name);
-        if (global != globals_.end()) {
-            return &global->second;
+        const auto global = globalBindings_.find(name);
+        if (global != globalBindings_.end()) {
+            return global->second;
         }
         throw CtfeAbort{};
+    }
+
+    void prepareBindings() {
+        functions_.clear();
+        for (const auto& function : unit_.functions) {
+            functions_[function->name] = function.get();
+        }
+
+        globals_.assign(unit_.globals.size(), {});
+        globalBindings_.clear();
+        bindingScopes_.clear();
+
+        for (std::size_t i = 0; i < unit_.globals.size(); ++i) {
+            Decl& decl = *unit_.globals[i];
+            bindExpr(*decl.init);
+            decl.ctfeSlot = static_cast<int>(i);
+            decl.ctfeGlobal = true;
+            globalBindings_[decl.name] = Binding{static_cast<int>(i), true};
+        }
+
+        for (const auto& function : unit_.functions) {
+            bindFunction(*function);
+        }
+    }
+
+    void bindFunction(Function& function) {
+        bindingScopes_.clear();
+        bindingScopes_.emplace_back();
+
+        int nextSlot = 0;
+        for (const std::string& param : function.params) {
+            bindingScopes_.back()[param] = Binding{nextSlot++, false};
+        }
+        bindStmt(*function.body, nextSlot);
+        function.ctfeLocalCount = static_cast<std::size_t>(nextSlot);
+        bindingScopes_.clear();
+    }
+
+    void bindStmt(Stmt& stmt, int& nextSlot) {
+        switch (stmt.kind) {
+            case StmtKind::Block:
+                bindingScopes_.emplace_back();
+                for (const auto& child : stmt.statements) {
+                    bindStmt(*child, nextSlot);
+                }
+                bindingScopes_.pop_back();
+                return;
+            case StmtKind::Empty:
+            case StmtKind::Break:
+            case StmtKind::Continue:
+                return;
+            case StmtKind::ExprStmt:
+            case StmtKind::Return:
+                if (stmt.expr) {
+                    bindExpr(*stmt.expr);
+                }
+                return;
+            case StmtKind::Assign: {
+                bindExpr(*stmt.expr);
+                const Binding binding = resolveBinding(stmt.name);
+                stmt.ctfeSlot = binding.slot;
+                stmt.ctfeGlobal = binding.global;
+                return;
+            }
+            case StmtKind::DeclStmt: {
+                Decl& decl = *stmt.decl;
+                bindExpr(*decl.init);
+                decl.ctfeSlot = nextSlot++;
+                decl.ctfeGlobal = false;
+                if (bindingScopes_.empty()) {
+                    throw CtfeAbort{};
+                }
+                bindingScopes_.back()[decl.name] = Binding{decl.ctfeSlot, false};
+                return;
+            }
+            case StmtKind::If:
+                bindExpr(*stmt.expr);
+                bindStmt(*stmt.thenBranch, nextSlot);
+                if (stmt.elseBranch) {
+                    bindStmt(*stmt.elseBranch, nextSlot);
+                }
+                return;
+            case StmtKind::While:
+                bindExpr(*stmt.expr);
+                bindStmt(*stmt.thenBranch, nextSlot);
+                return;
+        }
+        throw CtfeAbort{};
+    }
+
+    void bindExpr(Expr& expr) {
+        switch (expr.kind) {
+            case ExprKind::Number:
+                return;
+            case ExprKind::Variable: {
+                const Binding binding = resolveBinding(expr.name);
+                expr.ctfeSlot = binding.slot;
+                expr.ctfeGlobal = binding.global;
+                return;
+            }
+            case ExprKind::Unary:
+                bindExpr(*expr.lhs);
+                return;
+            case ExprKind::Binary:
+                bindExpr(*expr.lhs);
+                bindExpr(*expr.rhs);
+                return;
+            case ExprKind::Call: {
+                for (const auto& arg : expr.args) {
+                    bindExpr(*arg);
+                }
+                const auto function = functions_.find(expr.name);
+                if (function == functions_.end()) {
+                    throw CtfeAbort{};
+                }
+                expr.ctfeCallee = function->second;
+                return;
+            }
+        }
+        throw CtfeAbort{};
+    }
+
+    Cell* boundCell(Frame* frame, int slot, bool global, bool requireInitialized = true) {
+        if (global) {
+            const std::size_t index = checkedSlot(slot, globals_.size());
+            Cell* cell = &globals_[index];
+            if (requireInitialized && !cell->initialized) {
+                throw CtfeAbort{};
+            }
+            return cell;
+        }
+        if (!frame) {
+            throw CtfeAbort{};
+        }
+        Cell* cell = &frame->locals[checkedSlot(slot, frame->locals.size())];
+        if (requireInitialized && !cell->initialized) {
+            throw CtfeAbort{};
+        }
+        return cell;
     }
 
     std::int32_t invoke(const Function& function, std::vector<std::int32_t> args) {
@@ -918,9 +1079,9 @@ private:
             tick();
             Frame frame;
             frame.function = &function;
-            frame.scopes.emplace_back();
+            frame.locals.resize(function.ctfeLocalCount);
             for (std::size_t i = 0; i < args.size(); ++i) {
-                frame.scopes.back()[function.params[i]] = Cell{args[i], false};
+                frame.locals[i] = Cell{args[i], false, true};
             }
 
             Flow flow = executeStmt(*function.body, frame);
@@ -946,18 +1107,14 @@ private:
     Flow executeStmt(const Stmt& stmt, Frame& frame) {
         tick();
         switch (stmt.kind) {
-            case StmtKind::Block: {
-                frame.scopes.emplace_back();
+            case StmtKind::Block:
                 for (const auto& child : stmt.statements) {
                     Flow flow = executeStmt(*child, frame);
                     if (flow.kind != FlowKind::Normal) {
-                        frame.scopes.pop_back();
                         return flow;
                     }
                 }
-                frame.scopes.pop_back();
                 return {};
-            }
             case StmtKind::Empty:
                 return {};
             case StmtKind::ExprStmt:
@@ -965,7 +1122,7 @@ private:
                 return {};
             case StmtKind::Assign: {
                 const std::int32_t value = evalExpr(*stmt.expr, &frame);
-                Cell* cell = lookup(&frame, stmt.name);
+                Cell* cell = boundCell(&frame, stmt.ctfeSlot, stmt.ctfeGlobal);
                 if (cell->isConst) {
                     throw CtfeAbort{};
                 }
@@ -975,10 +1132,8 @@ private:
             case StmtKind::DeclStmt: {
                 const Decl& decl = *stmt.decl;
                 const std::int32_t value = evalExpr(*decl.init, &frame);
-                if (frame.scopes.empty()) {
-                    throw CtfeAbort{};
-                }
-                frame.scopes.back()[decl.name] = Cell{value, decl.isConst};
+                Cell* cell = boundCell(&frame, decl.ctfeSlot, false, false);
+                *cell = Cell{value, decl.isConst, true};
                 return {};
             }
             case StmtKind::If:
@@ -1009,8 +1164,8 @@ private:
                 if (!stmt.expr) {
                     return Flow{FlowKind::Return, 0, {}};
                 }
-                if (stmt.expr->kind == ExprKind::Call && frame.function &&
-                    stmt.expr->name == frame.function->name) {
+                if (stmt.expr->kind == ExprKind::Call &&
+                    stmt.expr->ctfeCallee == frame.function) {
                     Flow flow;
                     flow.kind = FlowKind::TailCall;
                     flow.args.reserve(stmt.expr->args.size());
@@ -1030,7 +1185,7 @@ private:
             case ExprKind::Number:
                 return toInt32(expr.number);
             case ExprKind::Variable:
-                return lookup(frame, expr.name)->value;
+                return boundCell(frame, expr.ctfeSlot, expr.ctfeGlobal)->value;
             case ExprKind::Unary: {
                 const std::int32_t value = evalExpr(*expr.lhs, frame);
                 if (expr.op == "+") {
@@ -1047,8 +1202,7 @@ private:
             case ExprKind::Binary:
                 return evalBinary(expr, frame);
             case ExprKind::Call: {
-                const auto function = functions_.find(expr.name);
-                if (function == functions_.end()) {
+                if (!expr.ctfeCallee) {
                     throw CtfeAbort{};
                 }
                 std::vector<std::int32_t> args;
@@ -1056,7 +1210,7 @@ private:
                 for (const auto& arg : expr.args) {
                     args.push_back(evalExpr(*arg, frame));
                 }
-                return invoke(*function->second, std::move(args));
+                return invoke(*expr.ctfeCallee, std::move(args));
             }
         }
         throw CtfeAbort{};
