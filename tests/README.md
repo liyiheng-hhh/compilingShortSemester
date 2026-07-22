@@ -156,6 +156,7 @@ python run_tests.py --opt
 | `stmt/branch_conditions.tc` | 17 | 直接条件分支与逻辑取反 |
 | `stmt/dead_unreachable.tc` | 7 | 纯死语句与不可达代码 |
 | `stmt/loop_bound_cache.tc` | 86 | 循环不变量边界缓存 |
+| `stmt/loop_invariant_multiply.tc` | 53 | 嵌套循环乘法提升与修改集保护 |
 | `func/factorial.tc` | 120 | 函数调用与递归 |
 | `func/inline_args_once.tc` | 6 | 内联实参只求值一次 |
 | `func/inline_block.tc` | 19 | 带局部声明的函数内联 |

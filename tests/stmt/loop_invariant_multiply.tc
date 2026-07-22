@@ -1,0 +1,22 @@
+int main() {
+    int n = 7;
+    int i = 0;
+    int total = 0;
+    while (i < 5) {
+        int j = 0;
+        while (j < 9) {
+            total = total + i * n + j;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    int factor = 2;
+    int k = 0;
+    while (k < 3) {
+        total = total + k * factor;
+        factor = factor + 1;
+        k = k + 1;
+    }
+    return total;
+}

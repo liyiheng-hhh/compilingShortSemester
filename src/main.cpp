@@ -1640,11 +1640,17 @@ private:
         }
 
     private:
+        struct CachedLoopExpr {
+            const Expr* expr = nullptr;
+            std::string reg;
+        };
+
         CodeGenerator& parent_;
         const Function& function_;
         std::ostringstream body_;
         std::vector<std::unordered_map<std::string, Symbol>> scopes_;
         std::vector<std::pair<std::string, std::string>> loopStack_;
+        std::vector<CachedLoopExpr> cachedLoopExprs_;
         int slotCount_ = 0;
         int localRegCount_ = 0;
         int tempRegDepth_ = 0;
@@ -2276,12 +2282,16 @@ private:
             }
 
             if (constantCondition) {
+                const bool cachedInvariant = cacheLoopInvariantMultiply(*stmt.thenBranch);
                 const std::string bodyLabel = newLabel("while_body");
                 const std::string endLabel = newLabel("while_end");
                 body_ << bodyLabel << ":\n";
                 loopStack_.push_back({bodyLabel, endLabel});
                 emitStmt(*stmt.thenBranch);
                 loopStack_.pop_back();
+                if (cachedInvariant) {
+                    cachedLoopExprs_.pop_back();
+                }
                 body_ << "    jal zero, " << bodyLabel << '\n';
                 body_ << endLabel << ":\n";
                 return;
@@ -2291,11 +2301,15 @@ private:
             const std::string condLabel = newLabel("while_cond");
             const std::string endLabel = newLabel("while_end");
             const std::string cachedBound = cacheLoopComparisonBound(*stmt.expr);
+            const bool cachedInvariant = cacheLoopInvariantMultiply(*stmt.thenBranch);
             body_ << "    jal zero, " << condLabel << '\n';
             body_ << bodyLabel << ":\n";
             loopStack_.push_back({condLabel, endLabel});
             emitStmt(*stmt.thenBranch);
             loopStack_.pop_back();
+            if (cachedInvariant) {
+                cachedLoopExprs_.pop_back();
+            }
             body_ << condLabel << ":\n";
             if (parent_.options_.optimize) {
                 if (cachedBound.empty()) {
@@ -2309,6 +2323,158 @@ private:
             }
             body_ << endLabel << ":\n";
         }
+
+        void collectLoopModifiedNames(const Stmt& stmt,
+                                      std::unordered_set<std::string>& names) const {
+            switch (stmt.kind) {
+                case StmtKind::Block:
+                    for (const auto& child : stmt.statements) {
+                        collectLoopModifiedNames(*child, names);
+                    }
+                    return;
+                case StmtKind::Assign:
+                    names.insert(stmt.name);
+                    return;
+                case StmtKind::DeclStmt:
+                    names.insert(stmt.decl->name);
+                    return;
+                case StmtKind::If:
+                    collectLoopModifiedNames(*stmt.thenBranch, names);
+                    if (stmt.elseBranch) {
+                        collectLoopModifiedNames(*stmt.elseBranch, names);
+                    }
+                    return;
+                case StmtKind::While:
+                    collectLoopModifiedNames(*stmt.thenBranch, names);
+                    return;
+                case StmtKind::Empty:
+                case StmtKind::ExprStmt:
+                case StmtKind::Break:
+                case StmtKind::Continue:
+                case StmtKind::Return:
+                    return;
+            }
+        }
+
+        bool isLoopInvariantExpr(const Expr& expr,
+                                 const std::unordered_set<std::string>& modified) const {
+            switch (expr.kind) {
+                case ExprKind::Number:
+                    return true;
+                case ExprKind::Variable: {
+                    if (modified.find(expr.name) != modified.end()) {
+                        return false;
+                    }
+                    const auto symbol = lookup(expr.name);
+                    return symbol && symbol->kind != SymbolKind::GlobalVar;
+                }
+                case ExprKind::Unary:
+                    return isLoopInvariantExpr(*expr.lhs, modified);
+                case ExprKind::Binary:
+                    return expr.op != "/" && expr.op != "%" &&
+                           isLoopInvariantExpr(*expr.lhs, modified) &&
+                           isLoopInvariantExpr(*expr.rhs, modified);
+                case ExprKind::Call:
+                    return false;
+            }
+            return false;
+        }
+
+        std::optional<std::string> cachedLoopExprRegister(const Expr& expr) const {
+            for (auto it = cachedLoopExprs_.rbegin(); it != cachedLoopExprs_.rend(); ++it) {
+                if (sameExpr(expr, *it->expr)) {
+                    return it->reg;
+                }
+            }
+            return std::nullopt;
+        }
+
+        void collectInvariantMultiplies(const Expr& expr,
+                                        const std::unordered_set<std::string>& modified,
+                                        std::vector<const Expr*>& candidates) const {
+            if (candidates.size() >= 8) {
+                return;
+            }
+            if (expr.kind == ExprKind::Binary && expr.op == "*" && !evalConst(expr) &&
+                isLoopInvariantExpr(expr, modified)) {
+                candidates.push_back(&expr);
+                return;
+            }
+            if (expr.kind == ExprKind::Unary) {
+                collectInvariantMultiplies(*expr.lhs, modified, candidates);
+            } else if (expr.kind == ExprKind::Binary) {
+                collectInvariantMultiplies(*expr.lhs, modified, candidates);
+                collectInvariantMultiplies(*expr.rhs, modified, candidates);
+            } else if (expr.kind == ExprKind::Call) {
+                for (const auto& arg : expr.args) {
+                    collectInvariantMultiplies(*arg, modified, candidates);
+                }
+            }
+        }
+
+        void collectInvariantMultiplies(const Stmt& stmt,
+                                        const std::unordered_set<std::string>& modified,
+                                        std::vector<const Expr*>& candidates) const {
+            switch (stmt.kind) {
+                case StmtKind::Block:
+                    for (const auto& child : stmt.statements) {
+                        collectInvariantMultiplies(*child, modified, candidates);
+                    }
+                    return;
+                case StmtKind::ExprStmt:
+                case StmtKind::Assign:
+                case StmtKind::Return:
+                    if (stmt.expr) {
+                        collectInvariantMultiplies(*stmt.expr, modified, candidates);
+                    }
+                    return;
+                case StmtKind::DeclStmt:
+                    collectInvariantMultiplies(*stmt.decl->init, modified, candidates);
+                    return;
+                case StmtKind::If:
+                    collectInvariantMultiplies(*stmt.expr, modified, candidates);
+                    collectInvariantMultiplies(*stmt.thenBranch, modified, candidates);
+                    if (stmt.elseBranch) {
+                        collectInvariantMultiplies(*stmt.elseBranch, modified, candidates);
+                    }
+                    return;
+                case StmtKind::While:
+                    collectInvariantMultiplies(*stmt.expr, modified, candidates);
+                    collectInvariantMultiplies(*stmt.thenBranch, modified, candidates);
+                    return;
+                case StmtKind::Empty:
+                case StmtKind::Break:
+                case StmtKind::Continue:
+                    return;
+            }
+        }
+
+        bool cacheLoopInvariantMultiply(const Stmt& body) {
+            if (!parent_.options_.optimize ||
+                localRegCount_ >= allocatableLocalRegisterCount()) {
+                return false;
+            }
+
+            // Cache one non-trapping multiply per loop to bound register pressure.
+            std::unordered_set<std::string> modified;
+            collectLoopModifiedNames(body, modified);
+            std::vector<const Expr*> candidates;
+            collectInvariantMultiplies(body, modified, candidates);
+            for (const Expr* candidate : candidates) {
+                if (cachedLoopExprRegister(*candidate)) {
+                    continue;
+                }
+                Symbol cached = allocateLocal();
+                if (cached.reg.empty()) {
+                    return false;
+                }
+                emitExprTo(*candidate, cached.reg);
+                cachedLoopExprs_.push_back(CachedLoopExpr{candidate, cached.reg});
+                return true;
+            }
+            return false;
+        }
+
         std::string cacheLoopComparisonBound(const Expr& expr) {
             if (!parent_.options_.optimize || expr.kind != ExprKind::Binary ||
                 !isComparisonOp(expr.op) || localRegCount_ >= allocatableLocalRegisterCount()) {
@@ -2344,6 +2510,10 @@ private:
                     body_ << "    li a0, " << printableI32(*value) << '\n';
                     return;
                 }
+                if (const auto cached = cachedLoopExprRegister(expr)) {
+                    emitMove("a0", *cached);
+                    return;
+                }
             }
 
             switch (expr.kind) {
@@ -2374,6 +2544,10 @@ private:
                 const auto value = evalConst(expr);
                 if (value) {
                     body_ << "    li " << dst << ", " << printableI32(*value) << '\n';
+                    return;
+                }
+                if (const auto cached = cachedLoopExprRegister(expr)) {
+                    emitMove(dst, *cached);
                     return;
                 }
             }
