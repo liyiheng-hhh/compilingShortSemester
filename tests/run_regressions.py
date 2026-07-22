@@ -34,6 +34,9 @@ class Machine:
         self.data_labels = {}
         self.memory = {}
         self.registers = {"sp": 0x100000, "ra": -1}
+        self.executed_instructions = 0
+        self.call_count = 0
+        self.op_counts = {}
         self._parse(assembly)
 
     def _parse(self, assembly):
@@ -106,6 +109,10 @@ class Machine:
             line = self.instructions[pc]
             parts = self.split(line)
             op, args = parts[0], parts[1:]
+            self.executed_instructions += 1
+            self.op_counts[op] = self.op_counts.get(op, 0) + 1
+            if op == "call":
+                self.call_count += 1
             next_pc = pc + 1
 
             if op == "li":

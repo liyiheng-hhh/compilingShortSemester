@@ -751,7 +751,18 @@ struct FunctionInfo {
     std::string label;
     const Function* function = nullptr;
     const Stmt* inlineBlock = nullptr;
+    std::size_t inlineDeclCount = 0;
     const Expr* inlineReturn = nullptr;
+    const Expr* inlineCondition = nullptr;
+    const Expr* inlineThenReturn = nullptr;
+    const Expr* inlineElseReturn = nullptr;
+};
+
+struct InlineBranchShape {
+    std::size_t declCount = 0;
+    const Expr* condition = nullptr;
+    const Expr* thenReturn = nullptr;
+    const Expr* elseReturn = nullptr;
 };
 
 std::int32_t toInt32(std::int64_t value) {
@@ -814,6 +825,63 @@ const Expr* simpleInlineReturnExpr(const Function& function) {
         return nullptr;
     }
     return stmt.expr.get();
+}
+
+const Expr* singleReturnExpr(const Stmt& stmt) {
+    const Stmt* candidate = &stmt;
+    if (candidate->kind == StmtKind::Block) {
+        if (candidate->statements.size() != 1) {
+            return nullptr;
+        }
+        candidate = candidate->statements.front().get();
+    }
+    if (candidate->kind != StmtKind::Return || !candidate->expr) {
+        return nullptr;
+    }
+    return candidate->expr.get();
+}
+
+std::optional<InlineBranchShape> simpleInlineBranch(const Function& function) {
+    if (function.returnType != ValueType::Int || !function.body ||
+        function.body->kind != StmtKind::Block || function.body->statements.empty() ||
+        function.body->statements.size() > 8) {
+        return std::nullopt;
+    }
+
+    std::size_t index = 0;
+    while (index < function.body->statements.size() &&
+           function.body->statements[index]->kind == StmtKind::DeclStmt) {
+        ++index;
+    }
+    if (index >= function.body->statements.size()) {
+        return std::nullopt;
+    }
+
+    const Stmt& branch = *function.body->statements[index];
+    if (branch.kind != StmtKind::If || !branch.expr || !branch.thenBranch) {
+        return std::nullopt;
+    }
+    const Expr* thenReturn = singleReturnExpr(*branch.thenBranch);
+    if (!thenReturn) {
+        return std::nullopt;
+    }
+
+    const Expr* elseReturn = nullptr;
+    if (branch.elseBranch) {
+        if (index + 1 != function.body->statements.size()) {
+            return std::nullopt;
+        }
+        elseReturn = singleReturnExpr(*branch.elseBranch);
+    } else {
+        if (index + 2 != function.body->statements.size()) {
+            return std::nullopt;
+        }
+        elseReturn = singleReturnExpr(*function.body->statements[index + 1]);
+    }
+    if (!elseReturn) {
+        return std::nullopt;
+    }
+    return InlineBranchShape{index, branch.expr.get(), thenReturn, elseReturn};
 }
 
 void emitRegAdd(std::ostream& out, const std::string& dst, const std::string& base, int amount) {
@@ -2476,7 +2544,7 @@ private:
             }
 
             emitExpr(*expr.lhs);
-            pushA0(exprContainsCall(*expr.rhs));
+            pushA0(exprContainsRuntimeCall(*expr.rhs));
             emitExpr(*expr.rhs);
             const std::string lhsReg = popValue("t0");
 
@@ -2801,7 +2869,7 @@ private:
             }
 
             emitExpr(*expr.lhs);
-            pushA0(exprContainsCall(*expr.rhs));
+            pushA0(exprContainsRuntimeCall(*expr.rhs));
             emitExpr(*expr.rhs);
             const std::string lhsReg = popValue("t0");
             emitComparisonJump(expr.op, lhsReg, "a0", branchIfTrue, label);
@@ -3074,8 +3142,11 @@ private:
         }
 
         bool emitInlineCall(const Expr& expr, const FunctionInfo& info) {
-            if (!info.inlineReturn || info.params.size() != expr.args.size() ||
-                info.function == &function_ || inlineDepth_ >= 8) {
+            const bool straightReturn = info.inlineReturn != nullptr;
+            const bool branchReturn = info.inlineCondition != nullptr;
+            if ((!straightReturn && !branchReturn) || info.params.size() != expr.args.size() ||
+                info.function == &function_ || inlineDepth_ >= 8 ||
+                (branchReturn && stmtContainsCall(*info.function->body))) {
                 return false;
             }
 
@@ -3094,12 +3165,24 @@ private:
                 }
                 currentScope()[info.params[i]] = std::move(symbol);
             }
-            if (info.inlineBlock) {
-                for (std::size_t i = 0; i + 1 < info.inlineBlock->statements.size(); ++i) {
-                    emitDecl(*info.inlineBlock->statements[i]->decl);
-                }
+            for (std::size_t i = 0; i < info.inlineDeclCount; ++i) {
+                emitDecl(*info.inlineBlock->statements[i]->decl);
             }
-            emitExpr(*info.inlineReturn);
+
+            if (straightReturn) {
+                emitExpr(*info.inlineReturn);
+            } else if (const auto condition = evalConst(*info.inlineCondition)) {
+                emitExpr(*(*condition != 0 ? info.inlineThenReturn : info.inlineElseReturn));
+            } else {
+                const std::string elseLabel = newLabel("inline_else");
+                const std::string endLabel = newLabel("inline_end");
+                emitBranchIfFalse(*info.inlineCondition, elseLabel);
+                emitExpr(*info.inlineThenReturn);
+                body_ << "    jal zero, " << endLabel << '\n';
+                body_ << elseLabel << ":\n";
+                emitExpr(*info.inlineElseReturn);
+                body_ << endLabel << ":\n";
+            }
             popScope();
             --inlineDepth_;
             return true;
@@ -3247,7 +3330,8 @@ private:
 
         bool callIsFullyInlineable(const Expr& expr) const {
             const auto function = parent_.functions_.find(expr.name);
-            if (function == parent_.functions_.end() || !function->second.inlineReturn ||
+            if (function == parent_.functions_.end() ||
+                (!function->second.inlineReturn && !function->second.inlineCondition) ||
                 function->second.function == &function_) {
                 return false;
             }
@@ -3395,6 +3479,13 @@ private:
             info.inlineReturn = simpleInlineReturnExpr(*function);
             if (info.inlineReturn) {
                 info.inlineBlock = function->body.get();
+                info.inlineDeclCount = function->body->statements.size() - 1;
+            } else if (const auto branch = simpleInlineBranch(*function)) {
+                info.inlineBlock = function->body.get();
+                info.inlineDeclCount = branch->declCount;
+                info.inlineCondition = branch->condition;
+                info.inlineThenReturn = branch->thenReturn;
+                info.inlineElseReturn = branch->elseReturn;
             }
             functions_[function->name] = std::move(info);
         }

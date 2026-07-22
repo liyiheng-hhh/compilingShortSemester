@@ -1,0 +1,25 @@
+int counter = 0;
+
+int next() {
+    counter = counter + 1;
+    return counter;
+}
+
+int chooseExplicit(int x) {
+    if (x % 2 == 0) {
+        return x + 10;
+    } else {
+        return x * 3;
+    }
+}
+
+int chooseFallthrough(int x) {
+    if (x < 0) {
+        return -x;
+    }
+    return x + 5;
+}
+
+int main() {
+    return chooseExplicit(next()) + chooseFallthrough(next()) + counter;
+}

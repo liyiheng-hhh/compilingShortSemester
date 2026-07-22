@@ -159,6 +159,7 @@ python run_tests.py --opt
 | `func/factorial.tc` | 120 | 函数调用与递归 |
 | `func/inline_args_once.tc` | 6 | 内联实参只求值一次 |
 | `func/inline_block.tc` | 19 | 带局部声明的函数内联 |
+| `func/inline_branch_return.tc` | 12 | 双返回分支叶函数内联与实参单次求值 |
 | `func/inline_simple.tc` | 23 | 简单返回表达式内联 |
 | `func/leaf_no_frame.tc` | 15 | 无栈帧叶函数 |
 | `func/many_args.tc` | 55 | 超过八个实参 |
