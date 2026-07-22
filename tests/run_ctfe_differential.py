@@ -70,6 +70,34 @@ int main() {{
 """
 
 
+def make_affine_declaration_program(rng):
+    bound = rng.randint(1024, 1800)
+    initial_x = rng.randint(-20, 20)
+    initial_y = rng.randint(-20, 20)
+    term_scale = rng.randint(-4, 6)
+    term_bias = rng.randint(-8, 8)
+    factor = rng.randint(-2, 3)
+    mix_scale = rng.randint(-3, 4)
+
+    return f"""int main() {{
+    int i = 0;
+    int x = {initial_x};
+    int y = {initial_y};
+    while (i < {bound}) {{
+        int term = i * {term_scale} + {term_bias};
+        const int factor = {factor};
+        int next = x * factor + term;
+        next = next + y;
+        x = next;
+        int mix = x + y * {mix_scale} - i;
+        y = mix;
+        i = i + 1;
+    }}
+    return x + y + i;
+}}
+"""
+
+
 def main():
     compiler = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT.parent / "build" / "toyc.exe"
     rng = random.Random(0xC0DEC0DE)
@@ -98,10 +126,33 @@ def main():
         except Exception as error:
             failures.append(f"case {index}: {error}")
 
+    for index in range(30):
+        source = make_affine_declaration_program(rng)
+        try:
+            normal_asm = compile_source(compiler, source, [])
+            backend_asm = compile_source(compiler, source, ["-opt", "-fno-ctfe"])
+            ctfe_asm = compile_source(compiler, source, ["-opt"])
+
+            normal = Machine(normal_asm).run()
+            backend = Machine(backend_asm).run()
+            ctfe_machine = Machine(ctfe_asm)
+            ctfe = ctfe_machine.run()
+
+            if normal != backend or backend != ctfe:
+                failures.append(
+                    f"affine declaration case {index}: normal={normal}, backend={backend}, ctfe={ctfe}"
+                )
+            if len(ctfe_machine.instructions) != 2:
+                failures.append(
+                    f"affine declaration case {index}: CTFE emitted {len(ctfe_machine.instructions)} instructions"
+                )
+        except Exception as error:
+            failures.append(f"affine declaration case {index}: {error}")
+
     if failures:
         print("\n".join(failures), file=sys.stderr)
         return 1
-    print("passed 40 deterministic CTFE differential programs")
+    print("passed 70 deterministic CTFE differential programs")
     return 0
 
 

@@ -1406,11 +1406,13 @@ private:
     }
 
     bool collectAffineAssignments(const Stmt& stmt, Frame& frame,
-                                  std::vector<bool>& modified) {
+                                  std::vector<bool>& modified,
+                                  std::vector<std::int8_t>& declarations) {
         switch (stmt.kind) {
             case StmtKind::Block:
                 for (const auto& child : stmt.statements) {
-                    if (!collectAffineAssignments(*child, frame, modified)) {
+                    if (!collectAffineAssignments(
+                            *child, frame, modified, declarations)) {
                         return false;
                     }
                 }
@@ -1418,16 +1420,27 @@ private:
             case StmtKind::Empty:
                 return true;
             case StmtKind::Assign: {
-                Cell* cell = boundCell(&frame, stmt.ctfeSlot, stmt.ctfeGlobal);
-                if (cell->isConst) {
+                const std::size_t index = affineStateIndex(
+                    stmt.ctfeSlot, stmt.ctfeGlobal, frame.locals.size());
+                if (declarations[index] >= 0) {
+                    if (declarations[index] != 0) {
+                        return false;
+                    }
+                } else if (boundCell(
+                               &frame, stmt.ctfeSlot, stmt.ctfeGlobal)->isConst) {
                     return false;
                 }
-                modified[affineStateIndex(
-                    stmt.ctfeSlot, stmt.ctfeGlobal, frame.locals.size())] = true;
+                modified[index] = true;
+                return true;
+            }
+            case StmtKind::DeclStmt: {
+                const std::size_t index = affineStateIndex(
+                    stmt.decl->ctfeSlot, false, frame.locals.size());
+                modified[index] = true;
+                declarations[index] = stmt.decl->isConst ? 1 : 0;
                 return true;
             }
             case StmtKind::ExprStmt:
-            case StmtKind::DeclStmt:
             case StmtKind::If:
             case StmtKind::While:
             case StmtKind::Break:
@@ -1447,14 +1460,14 @@ private:
                 return affineConstant(
                     static_cast<std::uint32_t>(toInt32(expr.number)), dimension);
             case ExprKind::Variable: {
-                Cell* cell = boundCell(&frame, expr.ctfeSlot, expr.ctfeGlobal);
                 const std::size_t index = affineStateIndex(
                     expr.ctfeSlot, expr.ctfeGlobal, frame.locals.size());
-                if (!modified[index]) {
-                    return affineConstant(
-                        static_cast<std::uint32_t>(cell->value), dimension);
+                if (modified[index]) {
+                    return transform[index];
                 }
-                return transform[index];
+                Cell* cell = boundCell(&frame, expr.ctfeSlot, expr.ctfeGlobal);
+                return affineConstant(
+                    static_cast<std::uint32_t>(cell->value), dimension);
             }
             case ExprKind::Unary: {
                 auto value = buildAffineExpr(*expr.lhs, frame, transform, modified);
@@ -1533,8 +1546,18 @@ private:
                 transform[index] = std::move(*value);
                 return true;
             }
+            case StmtKind::DeclStmt: {
+                auto value = buildAffineExpr(
+                    *stmt.decl->init, frame, transform, modified);
+                if (!value) {
+                    return false;
+                }
+                const std::size_t index = affineStateIndex(
+                    stmt.decl->ctfeSlot, false, frame.locals.size());
+                transform[index] = std::move(*value);
+                return true;
+            }
             case StmtKind::ExprStmt:
-            case StmtKind::DeclStmt:
             case StmtKind::If:
             case StmtKind::While:
             case StmtKind::Break:
@@ -1593,7 +1616,9 @@ private:
         }
 
         std::vector<bool> modified(stateCount, false);
-        if (!collectAffineAssignments(*stmt.thenBranch, frame, modified)) {
+        std::vector<std::int8_t> declarations(stateCount, -1);
+        if (!collectAffineAssignments(
+                *stmt.thenBranch, frame, modified, declarations)) {
             return false;
         }
 
@@ -1693,8 +1718,12 @@ private:
         }
 
         for (std::size_t i = 0; i < frame.locals.size(); ++i) {
-            if (frame.locals[i].initialized) {
+            if (frame.locals[i].initialized || declarations[i] >= 0) {
                 frame.locals[i].value = static_cast<std::int32_t>(state[i]);
+            }
+            if (declarations[i] >= 0) {
+                frame.locals[i].isConst = declarations[i] != 0;
+                frame.locals[i].initialized = true;
             }
         }
         for (std::size_t i = 0; i < globals_.size(); ++i) {
