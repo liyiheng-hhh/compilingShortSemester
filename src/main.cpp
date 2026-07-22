@@ -947,7 +947,7 @@ public:
     }
 
 private:
-    static constexpr std::uint64_t kStepLimit = 1'000'000'000;
+    static constexpr std::uint64_t kStepLimit = 4'000'000'000;
     static constexpr int kCallDepthLimit = 256;
     static constexpr std::size_t kMemoEntryLimit = 100'000;
 
