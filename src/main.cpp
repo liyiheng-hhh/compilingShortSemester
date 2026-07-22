@@ -947,7 +947,8 @@ public:
     }
 
 private:
-    static constexpr std::uint64_t kStepLimit = 4'000'000'000;
+    static constexpr std::uint64_t kStepLimit = 12'000'000'000;
+    static constexpr auto kTimeLimit = std::chrono::seconds(30);
     static constexpr int kCallDepthLimit = 256;
     static constexpr std::size_t kMemoEntryLimit = 100'000;
 
@@ -1016,7 +1017,7 @@ private:
             throw CtfeAbort{};
         }
         if ((steps_ & 0x3fff) == 0 &&
-            std::chrono::steady_clock::now() - start_ > std::chrono::seconds(10)) {
+            std::chrono::steady_clock::now() - start_ > kTimeLimit) {
             throw CtfeAbort{};
         }
     }
