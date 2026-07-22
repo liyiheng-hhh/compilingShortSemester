@@ -947,8 +947,7 @@ public:
     }
 
 private:
-    static constexpr std::uint64_t kStepLimit = 12'000'000'000;
-    static constexpr auto kTimeLimit = std::chrono::seconds(30);
+    static constexpr std::uint64_t kStepLimit = 4'000'000'000;
     static constexpr int kCallDepthLimit = 256;
     static constexpr std::size_t kMemoEntryLimit = 100'000;
 
@@ -966,6 +965,7 @@ private:
     struct Frame {
         const Function* function = nullptr;
         std::vector<Cell> locals;
+        std::vector<std::int32_t> tailArgs;
     };
 
     enum class FlowKind {
@@ -979,7 +979,6 @@ private:
     struct Flow {
         FlowKind kind = FlowKind::Normal;
         std::int32_t value = 0;
-        std::vector<std::int32_t> args;
     };
 
     struct EffectInfo {
@@ -1017,7 +1016,7 @@ private:
             throw CtfeAbort{};
         }
         if ((steps_ & 0x3fff) == 0 &&
-            std::chrono::steady_clock::now() - start_ > kTimeLimit) {
+            std::chrono::steady_clock::now() - start_ > std::chrono::seconds(10)) {
             throw CtfeAbort{};
         }
     }
@@ -1352,7 +1351,7 @@ private:
 
             Flow flow = executeStmt(*function.body, frame);
             if (flow.kind == FlowKind::TailCall) {
-                args = std::move(flow.args);
+                args = std::move(frame.tailArgs);
                 if (args.size() != function.params.size()) {
                     throw CtfeAbort{};
                 }
@@ -1426,30 +1425,28 @@ private:
                 }
                 return {};
             case StmtKind::Break:
-                return Flow{FlowKind::Break, 0, {}};
+                return Flow{FlowKind::Break, 0};
             case StmtKind::Continue:
-                return Flow{FlowKind::Continue, 0, {}};
+                return Flow{FlowKind::Continue, 0};
             case StmtKind::Return:
                 if (!stmt.expr) {
-                    return Flow{FlowKind::Return, 0, {}};
+                    return Flow{FlowKind::Return, 0};
                 }
                 if (stmt.expr->kind == ExprKind::Call &&
                     stmt.expr->ctfeCallee == frame.function) {
-                    Flow flow;
-                    flow.kind = FlowKind::TailCall;
-                    flow.args.reserve(stmt.expr->args.size());
+                    frame.tailArgs.clear();
+                    frame.tailArgs.reserve(stmt.expr->args.size());
                     for (const auto& arg : stmt.expr->args) {
-                        flow.args.push_back(evalExpr(*arg, &frame));
+                        frame.tailArgs.push_back(evalExpr(*arg, &frame));
                     }
-                    return flow;
+                    return Flow{FlowKind::TailCall, 0};
                 }
-                return Flow{FlowKind::Return, evalExpr(*stmt.expr, &frame), {}};
+                return Flow{FlowKind::Return, evalExpr(*stmt.expr, &frame)};
         }
         throw CtfeAbort{};
     }
 
     std::int32_t evalExpr(const Expr& expr, Frame* frame) {
-        tick();
         switch (expr.kind) {
             case ExprKind::Number:
                 return toInt32(expr.number);
