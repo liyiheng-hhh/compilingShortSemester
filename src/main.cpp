@@ -2,6 +2,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <initializer_list>
@@ -1006,6 +1007,7 @@ private:
     std::unordered_map<std::string, Binding> globalBindings_;
     std::vector<std::unordered_map<std::string, Binding>> bindingScopes_;
     std::unordered_map<const Function*, MemoTable> memo_;
+    std::deque<Frame> framePool_;
     std::uint64_t steps_ = 0;
     int callDepth_ = 0;
     std::chrono::steady_clock::time_point start_;
@@ -1065,6 +1067,7 @@ private:
         }
         analyzeMemoizableFunctions();
         memo_.clear();
+        framePool_.clear();
     }
 
     void bindFunction(Function& function) {
@@ -1340,11 +1343,16 @@ private:
             throw CtfeAbort{};
         }
         ++callDepth_;
+        const std::size_t frameIndex = static_cast<std::size_t>(callDepth_ - 1);
+        if (framePool_.size() <= frameIndex) {
+            framePool_.emplace_back();
+        }
+        Frame& frame = framePool_[frameIndex];
         while (true) {
             tick();
-            Frame frame;
             frame.function = &function;
-            frame.locals.resize(function.ctfeLocalCount);
+            frame.locals.assign(function.ctfeLocalCount, {});
+            frame.tailArgs.clear();
             for (std::size_t i = 0; i < args.size(); ++i) {
                 frame.locals[i] = Cell{args[i], false, true};
             }
