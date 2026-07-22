@@ -1380,6 +1380,329 @@ private:
         }
     }
 
+    using AffineVector = std::vector<std::uint32_t>;
+    using AffineMatrix = std::vector<AffineVector>;
+
+    std::size_t affineStateIndex(int slot, bool global, std::size_t localCount) const {
+        if (global) {
+            return localCount + checkedSlot(slot, globals_.size());
+        }
+        return checkedSlot(slot, localCount);
+    }
+
+    AffineVector affineConstant(std::uint32_t value, std::size_t dimension) const {
+        AffineVector result(dimension, 0);
+        result.back() = value;
+        return result;
+    }
+
+    std::optional<std::uint32_t> affineConstantValue(const AffineVector& value) const {
+        for (std::size_t i = 0; i + 1 < value.size(); ++i) {
+            if (value[i] != 0) {
+                return std::nullopt;
+            }
+        }
+        return value.back();
+    }
+
+    bool collectAffineAssignments(const Stmt& stmt, Frame& frame,
+                                  std::vector<bool>& modified) {
+        switch (stmt.kind) {
+            case StmtKind::Block:
+                for (const auto& child : stmt.statements) {
+                    if (!collectAffineAssignments(*child, frame, modified)) {
+                        return false;
+                    }
+                }
+                return true;
+            case StmtKind::Empty:
+                return true;
+            case StmtKind::Assign: {
+                Cell* cell = boundCell(&frame, stmt.ctfeSlot, stmt.ctfeGlobal);
+                if (cell->isConst) {
+                    return false;
+                }
+                modified[affineStateIndex(
+                    stmt.ctfeSlot, stmt.ctfeGlobal, frame.locals.size())] = true;
+                return true;
+            }
+            case StmtKind::ExprStmt:
+            case StmtKind::DeclStmt:
+            case StmtKind::If:
+            case StmtKind::While:
+            case StmtKind::Break:
+            case StmtKind::Continue:
+            case StmtKind::Return:
+                return false;
+        }
+        return false;
+    }
+
+    std::optional<AffineVector> buildAffineExpr(
+        const Expr& expr, Frame& frame, const AffineMatrix& transform,
+        const std::vector<bool>& modified) {
+        const std::size_t dimension = transform.size();
+        switch (expr.kind) {
+            case ExprKind::Number:
+                return affineConstant(
+                    static_cast<std::uint32_t>(toInt32(expr.number)), dimension);
+            case ExprKind::Variable: {
+                Cell* cell = boundCell(&frame, expr.ctfeSlot, expr.ctfeGlobal);
+                const std::size_t index = affineStateIndex(
+                    expr.ctfeSlot, expr.ctfeGlobal, frame.locals.size());
+                if (!modified[index]) {
+                    return affineConstant(
+                        static_cast<std::uint32_t>(cell->value), dimension);
+                }
+                return transform[index];
+            }
+            case ExprKind::Unary: {
+                auto value = buildAffineExpr(*expr.lhs, frame, transform, modified);
+                if (!value) {
+                    return std::nullopt;
+                }
+                if (expr.ctfeOp == CtfeOp::Positive) {
+                    return value;
+                }
+                if (expr.ctfeOp == CtfeOp::Negative) {
+                    for (std::uint32_t& coefficient : *value) {
+                        coefficient = 0u - coefficient;
+                    }
+                    return value;
+                }
+                return std::nullopt;
+            }
+            case ExprKind::Binary: {
+                auto lhs = buildAffineExpr(*expr.lhs, frame, transform, modified);
+                auto rhs = buildAffineExpr(*expr.rhs, frame, transform, modified);
+                if (!lhs || !rhs) {
+                    return std::nullopt;
+                }
+                if (expr.ctfeOp == CtfeOp::Add || expr.ctfeOp == CtfeOp::Subtract) {
+                    for (std::size_t i = 0; i < dimension; ++i) {
+                        if (expr.ctfeOp == CtfeOp::Add) {
+                            (*lhs)[i] += (*rhs)[i];
+                        } else {
+                            (*lhs)[i] -= (*rhs)[i];
+                        }
+                    }
+                    return lhs;
+                }
+                if (expr.ctfeOp != CtfeOp::Multiply) {
+                    return std::nullopt;
+                }
+                const auto lhsConstant = affineConstantValue(*lhs);
+                const auto rhsConstant = affineConstantValue(*rhs);
+                if (!lhsConstant && !rhsConstant) {
+                    return std::nullopt;
+                }
+                AffineVector result = lhsConstant ? std::move(*rhs) : std::move(*lhs);
+                const std::uint32_t scale = lhsConstant ? *lhsConstant : *rhsConstant;
+                for (std::uint32_t& coefficient : result) {
+                    coefficient = static_cast<std::uint32_t>(
+                        static_cast<std::uint64_t>(coefficient) * scale);
+                }
+                return result;
+            }
+            case ExprKind::Call:
+                return std::nullopt;
+        }
+        return std::nullopt;
+    }
+
+    bool buildAffineTransform(const Stmt& stmt, Frame& frame,
+                              AffineMatrix& transform,
+                              const std::vector<bool>& modified) {
+        switch (stmt.kind) {
+            case StmtKind::Block:
+                for (const auto& child : stmt.statements) {
+                    if (!buildAffineTransform(*child, frame, transform, modified)) {
+                        return false;
+                    }
+                }
+                return true;
+            case StmtKind::Empty:
+                return true;
+            case StmtKind::Assign: {
+                auto value = buildAffineExpr(*stmt.expr, frame, transform, modified);
+                if (!value) {
+                    return false;
+                }
+                const std::size_t index = affineStateIndex(
+                    stmt.ctfeSlot, stmt.ctfeGlobal, frame.locals.size());
+                transform[index] = std::move(*value);
+                return true;
+            }
+            case StmtKind::ExprStmt:
+            case StmtKind::DeclStmt:
+            case StmtKind::If:
+            case StmtKind::While:
+            case StmtKind::Break:
+            case StmtKind::Continue:
+            case StmtKind::Return:
+                return false;
+        }
+        return false;
+    }
+
+    static AffineVector multiplyAffine(
+        const AffineMatrix& matrix, const AffineVector& value) {
+        AffineVector result(value.size(), 0);
+        for (std::size_t i = 0; i < matrix.size(); ++i) {
+            std::uint32_t sum = 0;
+            for (std::size_t j = 0; j < value.size(); ++j) {
+                sum += static_cast<std::uint32_t>(
+                    static_cast<std::uint64_t>(matrix[i][j]) * value[j]);
+            }
+            result[i] = sum;
+        }
+        return result;
+    }
+
+    static AffineMatrix multiplyAffine(
+        const AffineMatrix& lhs, const AffineMatrix& rhs) {
+        const std::size_t dimension = lhs.size();
+        AffineMatrix result(dimension, AffineVector(dimension, 0));
+        for (std::size_t i = 0; i < dimension; ++i) {
+            for (std::size_t k = 0; k < dimension; ++k) {
+                if (lhs[i][k] == 0) {
+                    continue;
+                }
+                for (std::size_t j = 0; j < dimension; ++j) {
+                    result[i][j] += static_cast<std::uint32_t>(
+                        static_cast<std::uint64_t>(lhs[i][k]) * rhs[k][j]);
+                }
+            }
+        }
+        return result;
+    }
+
+    bool tryExecuteAffineLoop(const Stmt& stmt, Frame& frame) {
+        const Expr& condition = *stmt.expr;
+        if (condition.kind != ExprKind::Binary ||
+            (condition.ctfeOp != CtfeOp::Less &&
+             condition.ctfeOp != CtfeOp::LessEqual) ||
+            condition.lhs->kind != ExprKind::Variable) {
+            return false;
+        }
+
+        const std::size_t stateCount = frame.locals.size() + globals_.size();
+        const std::size_t dimension = stateCount + 1;
+        if (dimension > 24) {
+            return false;
+        }
+
+        std::vector<bool> modified(stateCount, false);
+        if (!collectAffineAssignments(*stmt.thenBranch, frame, modified)) {
+            return false;
+        }
+
+        Cell* inductionCell = boundCell(
+            &frame, condition.lhs->ctfeSlot, condition.lhs->ctfeGlobal);
+        const std::size_t inductionIndex = affineStateIndex(
+            condition.lhs->ctfeSlot, condition.lhs->ctfeGlobal,
+            frame.locals.size());
+        if (!modified[inductionIndex]) {
+            return false;
+        }
+
+        std::int32_t bound = 0;
+        if (condition.rhs->kind == ExprKind::Number) {
+            bound = toInt32(condition.rhs->number);
+        } else if (condition.rhs->kind == ExprKind::Variable) {
+            Cell* boundValue = boundCell(
+                &frame, condition.rhs->ctfeSlot, condition.rhs->ctfeGlobal);
+            const std::size_t boundIndex = affineStateIndex(
+                condition.rhs->ctfeSlot, condition.rhs->ctfeGlobal,
+                frame.locals.size());
+            if (modified[boundIndex]) {
+                return false;
+            }
+            bound = boundValue->value;
+        } else {
+            return false;
+        }
+
+        AffineMatrix transform(dimension, AffineVector(dimension, 0));
+        for (std::size_t i = 0; i < dimension; ++i) {
+            transform[i][i] = 1;
+        }
+        if (!buildAffineTransform(
+                *stmt.thenBranch, frame, transform, modified)) {
+            return false;
+        }
+
+        const AffineVector& induction = transform[inductionIndex];
+        for (std::size_t i = 0; i < stateCount; ++i) {
+            const std::uint32_t expected = i == inductionIndex ? 1u : 0u;
+            if (induction[i] != expected) {
+                return false;
+            }
+        }
+        const std::int32_t step = static_cast<std::int32_t>(induction.back());
+        const std::int32_t start = inductionCell->value;
+        if (step <= 0 || start >= bound) {
+            return false;
+        }
+
+        const std::int64_t distance =
+            static_cast<std::int64_t>(bound) - start;
+        std::uint64_t iterations = 0;
+        if (condition.ctfeOp == CtfeOp::Less) {
+            iterations = static_cast<std::uint64_t>(
+                (distance + step - 1) / step);
+        } else {
+            iterations = static_cast<std::uint64_t>(
+                distance / step + 1);
+        }
+        if (iterations < 1024) {
+            return false;
+        }
+
+        const std::int64_t finalInduction =
+            static_cast<std::int64_t>(start) +
+            static_cast<std::int64_t>(iterations) * step;
+        if (finalInduction > std::numeric_limits<std::int32_t>::max()) {
+            return false;
+        }
+        if ((condition.ctfeOp == CtfeOp::Less && finalInduction < bound) ||
+            (condition.ctfeOp == CtfeOp::LessEqual && finalInduction <= bound)) {
+            return false;
+        }
+
+        AffineVector state(dimension, 0);
+        for (std::size_t i = 0; i < frame.locals.size(); ++i) {
+            state[i] = static_cast<std::uint32_t>(frame.locals[i].value);
+        }
+        for (std::size_t i = 0; i < globals_.size(); ++i) {
+            state[frame.locals.size() + i] =
+                static_cast<std::uint32_t>(globals_[i].value);
+        }
+        state.back() = 1;
+
+        AffineMatrix power = std::move(transform);
+        std::uint64_t remaining = iterations;
+        while (remaining != 0) {
+            if ((remaining & 1u) != 0) {
+                state = multiplyAffine(power, state);
+            }
+            remaining >>= 1;
+            if (remaining != 0) {
+                power = multiplyAffine(power, power);
+            }
+        }
+
+        for (std::size_t i = 0; i < frame.locals.size(); ++i) {
+            if (frame.locals[i].initialized) {
+                frame.locals[i].value = static_cast<std::int32_t>(state[i]);
+            }
+        }
+        for (std::size_t i = 0; i < globals_.size(); ++i) {
+            globals_[i].value = static_cast<std::int32_t>(
+                state[frame.locals.size() + i]);
+        }
+        return true;
+    }
     Flow executeStmt(const Stmt& stmt, Frame& frame) {
         tick();
         switch (stmt.kind) {
@@ -1421,6 +1744,9 @@ private:
                 }
                 return {};
             case StmtKind::While:
+                if (tryExecuteAffineLoop(stmt, frame)) {
+                    return {};
+                }
                 while (evalExpr(*stmt.expr, &frame) != 0) {
                     Flow flow = executeStmt(*stmt.thenBranch, frame);
                     if (flow.kind == FlowKind::Break) {
