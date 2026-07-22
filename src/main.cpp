@@ -1643,6 +1643,14 @@ private:
         struct CachedLoopExpr {
             const Expr* expr = nullptr;
             std::string reg;
+            std::string inductionName;
+            const Expr* stride = nullptr;
+        };
+
+        struct InductionMultiplyCandidate {
+            const Expr* product = nullptr;
+            std::string inductionName;
+            const Expr* stride = nullptr;
         };
 
         CodeGenerator& parent_;
@@ -2112,6 +2120,7 @@ private:
             }
 
             if (parent_.options_.optimize && emitOptimizedAssign(stmt, *symbol)) {
+                emitCachedInductionUpdates(stmt);
                 return;
             }
 
@@ -2122,6 +2131,7 @@ private:
                 body_ << "    la t0, " << symbol->label << '\n';
                 body_ << "    sw a0, 0(t0)\n";
             }
+            emitCachedInductionUpdates(stmt);
         }
 
         bool emitOptimizedAssign(const Stmt& stmt, const Symbol& symbol) {
@@ -2199,6 +2209,10 @@ private:
                 return true;
             }
 
+            if (const auto cached = cachedLoopExprRegister(*expr.rhs)) {
+                emitBinaryOpTo(expr, symbol.reg, symbol.reg, *cached);
+                return true;
+            }
             if (!isDirectValue(*expr.rhs)) {
                 return false;
             }
@@ -2281,15 +2295,18 @@ private:
                 }
             }
 
+            int cachedExprCount = cacheLoopInvariantMultiply(*stmt.thenBranch) ? 1 : 0;
+            if (cacheLoopInductionMultiply(*stmt.thenBranch)) {
+                ++cachedExprCount;
+            }
             if (constantCondition) {
-                const bool cachedInvariant = cacheLoopInvariantMultiply(*stmt.thenBranch);
                 const std::string bodyLabel = newLabel("while_body");
                 const std::string endLabel = newLabel("while_end");
                 body_ << bodyLabel << ":\n";
                 loopStack_.push_back({bodyLabel, endLabel});
                 emitStmt(*stmt.thenBranch);
                 loopStack_.pop_back();
-                if (cachedInvariant) {
+                while (cachedExprCount-- > 0) {
                     cachedLoopExprs_.pop_back();
                 }
                 body_ << "    jal zero, " << bodyLabel << '\n';
@@ -2301,13 +2318,12 @@ private:
             const std::string condLabel = newLabel("while_cond");
             const std::string endLabel = newLabel("while_end");
             const std::string cachedBound = cacheLoopComparisonBound(*stmt.expr);
-            const bool cachedInvariant = cacheLoopInvariantMultiply(*stmt.thenBranch);
             body_ << "    jal zero, " << condLabel << '\n';
             body_ << bodyLabel << ":\n";
             loopStack_.push_back({condLabel, endLabel});
             emitStmt(*stmt.thenBranch);
             loopStack_.pop_back();
-            if (cachedInvariant) {
+            while (cachedExprCount-- > 0) {
                 cachedLoopExprs_.pop_back();
             }
             body_ << condLabel << ":\n";
@@ -2469,12 +2485,191 @@ private:
                     return false;
                 }
                 emitExprTo(*candidate, cached.reg);
-                cachedLoopExprs_.push_back(CachedLoopExpr{candidate, cached.reg});
+                cachedLoopExprs_.push_back(CachedLoopExpr{candidate, cached.reg, {}, nullptr});
                 return true;
             }
             return false;
         }
 
+        bool isUnitIncrement(const Stmt& stmt, const std::string& name) const {
+            if (stmt.kind != StmtKind::Assign || stmt.name != name || !stmt.expr ||
+                stmt.expr->kind != ExprKind::Binary || stmt.expr->op != "+") {
+                return false;
+            }
+            const Expr* step = nullptr;
+            if (stmt.expr->lhs->kind == ExprKind::Variable && stmt.expr->lhs->name == name) {
+                step = stmt.expr->rhs.get();
+            } else if (stmt.expr->rhs->kind == ExprKind::Variable &&
+                       stmt.expr->rhs->name == name) {
+                step = stmt.expr->lhs.get();
+            }
+            const auto value = step ? evalConst(*step) : std::nullopt;
+            return value && *value == 1;
+        }
+
+        void inspectInductionUpdates(const Stmt& stmt, const std::string& name,
+                                     int& assignments, const Stmt*& unitUpdate,
+                                     bool& redeclared) const {
+            switch (stmt.kind) {
+                case StmtKind::Block:
+                    for (const auto& child : stmt.statements) {
+                        inspectInductionUpdates(*child, name, assignments, unitUpdate, redeclared);
+                    }
+                    return;
+                case StmtKind::Assign:
+                    if (stmt.name == name) {
+                        ++assignments;
+                        unitUpdate = isUnitIncrement(stmt, name) ? &stmt : nullptr;
+                    }
+                    return;
+                case StmtKind::DeclStmt:
+                    redeclared = redeclared || stmt.decl->name == name;
+                    return;
+                case StmtKind::If:
+                    inspectInductionUpdates(
+                        *stmt.thenBranch, name, assignments, unitUpdate, redeclared);
+                    if (stmt.elseBranch) {
+                        inspectInductionUpdates(
+                            *stmt.elseBranch, name, assignments, unitUpdate, redeclared);
+                    }
+                    return;
+                case StmtKind::While:
+                    inspectInductionUpdates(
+                        *stmt.thenBranch, name, assignments, unitUpdate, redeclared);
+                    return;
+                case StmtKind::Empty:
+                case StmtKind::ExprStmt:
+                case StmtKind::Break:
+                case StmtKind::Continue:
+                case StmtKind::Return:
+                    return;
+            }
+        }
+
+        void collectInductionMultiplies(
+            const Expr& expr, const std::unordered_set<std::string>& modified,
+            std::vector<InductionMultiplyCandidate>& candidates) const {
+            if (candidates.size() >= 8) {
+                return;
+            }
+            if (expr.kind == ExprKind::Binary && expr.op == "*") {
+                const Expr* induction = nullptr;
+                const Expr* stride = nullptr;
+                if (expr.lhs->kind == ExprKind::Variable && isDirectValue(*expr.rhs)) {
+                    induction = expr.lhs.get();
+                    stride = expr.rhs.get();
+                } else if (expr.rhs->kind == ExprKind::Variable && isDirectValue(*expr.lhs)) {
+                    induction = expr.rhs.get();
+                    stride = expr.lhs.get();
+                }
+                if (induction && isLoopInvariantExpr(*stride, modified)) {
+                    candidates.push_back(
+                        InductionMultiplyCandidate{&expr, induction->name, stride});
+                    return;
+                }
+            }
+            if (expr.kind == ExprKind::Unary) {
+                collectInductionMultiplies(*expr.lhs, modified, candidates);
+            } else if (expr.kind == ExprKind::Binary) {
+                collectInductionMultiplies(*expr.lhs, modified, candidates);
+                collectInductionMultiplies(*expr.rhs, modified, candidates);
+            } else if (expr.kind == ExprKind::Call) {
+                for (const auto& arg : expr.args) {
+                    collectInductionMultiplies(*arg, modified, candidates);
+                }
+            }
+        }
+
+        void collectInductionMultiplies(
+            const Stmt& stmt, const std::unordered_set<std::string>& modified,
+            std::vector<InductionMultiplyCandidate>& candidates) const {
+            switch (stmt.kind) {
+                case StmtKind::Block:
+                    for (const auto& child : stmt.statements) {
+                        collectInductionMultiplies(*child, modified, candidates);
+                    }
+                    return;
+                case StmtKind::ExprStmt:
+                case StmtKind::Assign:
+                case StmtKind::Return:
+                    if (stmt.expr) collectInductionMultiplies(*stmt.expr, modified, candidates);
+                    return;
+                case StmtKind::DeclStmt:
+                    collectInductionMultiplies(*stmt.decl->init, modified, candidates);
+                    return;
+                case StmtKind::If:
+                    collectInductionMultiplies(*stmt.expr, modified, candidates);
+                    collectInductionMultiplies(*stmt.thenBranch, modified, candidates);
+                    if (stmt.elseBranch) {
+                        collectInductionMultiplies(*stmt.elseBranch, modified, candidates);
+                    }
+                    return;
+                case StmtKind::While:
+                    collectInductionMultiplies(*stmt.expr, modified, candidates);
+                    collectInductionMultiplies(*stmt.thenBranch, modified, candidates);
+                    return;
+                case StmtKind::Empty:
+                case StmtKind::Break:
+                case StmtKind::Continue:
+                    return;
+            }
+        }
+
+        bool cacheLoopInductionMultiply(const Stmt& body) {
+            if (!parent_.options_.optimize ||
+                localRegCount_ >= allocatableLocalRegisterCount()) return false;
+            std::unordered_set<std::string> modified;
+            collectLoopModifiedNames(body, modified);
+            std::vector<InductionMultiplyCandidate> candidates;
+            collectInductionMultiplies(body, modified, candidates);
+            for (const auto& candidate : candidates) {
+                const auto occurrences = std::count_if(
+                    candidates.begin(), candidates.end(), [&](const auto& other) {
+                        return sameExpr(*candidate.product, *other.product);
+                    });
+                int assignments = 0;
+                const Stmt* unitUpdate = nullptr;
+                bool redeclared = false;
+                inspectInductionUpdates(body, candidate.inductionName,
+                                         assignments, unitUpdate, redeclared);
+                const auto symbol = lookup(candidate.inductionName);
+                const auto strideValue = evalConst(*candidate.stride);
+                if (occurrences < 2 || assignments != 1 || !unitUpdate || redeclared || !symbol ||
+                    symbol->kind != SymbolKind::LocalVar ||
+                    (strideValue && (*strideValue == 0 || *strideValue == 1 ||
+                                     *strideValue == -1)) ||
+                    cachedLoopExprRegister(*candidate.product)) {
+                    continue;
+                }
+                Symbol cached = allocateLocal();
+                if (cached.reg.empty()) return false;
+                emitExprTo(*candidate.product, cached.reg);
+                cachedLoopExprs_.push_back(CachedLoopExpr{
+                    candidate.product, cached.reg, candidate.inductionName, candidate.stride});
+                return true;
+            }
+            return false;
+        }
+
+        void emitCachedInductionUpdates(const Stmt& assignment) {
+            if (!parent_.options_.optimize) return;
+            for (const CachedLoopExpr& cached : cachedLoopExprs_) {
+                if (cached.inductionName != assignment.name || !cached.stride) continue;
+                if (const auto stride = evalConst(*cached.stride)) {
+                    if (fitsI12(*stride)) {
+                        body_ << "    addi " << cached.reg << ", " << cached.reg << ", "
+                              << printableI32(*stride) << '\n';
+                    } else {
+                        body_ << "    li t0, " << printableI32(*stride) << '\n';
+                        body_ << "    add " << cached.reg << ", " << cached.reg << ", t0\n";
+                    }
+                } else {
+                    const std::string strideReg = emitValueAsRegister(*cached.stride, "t0");
+                    body_ << "    add " << cached.reg << ", " << cached.reg << ", "
+                          << strideReg << '\n';
+                }
+            }
+        }
         std::string cacheLoopComparisonBound(const Expr& expr) {
             if (!parent_.options_.optimize || expr.kind != ExprKind::Binary ||
                 !isComparisonOp(expr.op) || localRegCount_ >= allocatableLocalRegisterCount()) {
@@ -2707,6 +2902,9 @@ private:
                 emitLogicalOr(expr);
                 return;
             }
+            if (parent_.options_.optimize && emitCachedOperandBinaryTo(expr, "a0")) {
+                return;
+            }
             if (parent_.options_.optimize && emitRepeatedOperandBinary(expr)) {
                 return;
             }
@@ -2773,7 +2971,31 @@ private:
             throw std::runtime_error("internal error: unsupported direct value");
         }
 
+        bool emitCachedOperandBinaryTo(const Expr& expr, const std::string& dst) {
+            if (!parent_.options_.optimize || !isValueBinaryOp(expr.op)) {
+                return false;
+            }
+            const auto lhsCached = cachedLoopExprRegister(*expr.lhs);
+            const auto rhsCached = cachedLoopExprRegister(*expr.rhs);
+            if (!lhsCached && !rhsCached) {
+                return false;
+            }
+            if (lhsCached && rhsCached) {
+                emitBinaryOpTo(expr, dst, *lhsCached, *rhsCached);
+            } else if (rhsCached) {
+                emitExprTo(*expr.lhs, dst);
+                emitBinaryOpTo(expr, dst, dst, *rhsCached);
+            } else {
+                emitExprTo(*expr.rhs, dst);
+                emitBinaryOpTo(expr, dst, *lhsCached, dst);
+            }
+            return true;
+        }
+
         bool emitBinaryTo(const Expr& expr, const std::string& dst) {
+            if (emitCachedOperandBinaryTo(expr, dst)) {
+                return true;
+            }
             if (emitRepeatedOperandBinaryTo(expr, dst)) {
                 return true;
             }

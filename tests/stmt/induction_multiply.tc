@@ -1,0 +1,24 @@
+int seed() {
+    return 7;
+}
+
+int main() {
+    int stride = seed();
+    int i = 0;
+    int total = 0;
+    int check = 0;
+    while (i < 20) {
+        total = total + i * stride;
+        check = check + i * stride;
+        i = i + 1;
+    }
+
+    int factor = 3;
+    int j = 0;
+    while (j < 4) {
+        total = total + j * factor;
+        factor = factor + 1;
+        j = j + 1;
+    }
+    return total + check;
+}
