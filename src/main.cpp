@@ -744,6 +744,8 @@ struct Symbol {
     std::string label;
     std::int32_t constValue = 0;
     std::string reg;
+    int localRegIndex = -1;
+    bool ownsLocalRegister = false;
 };
 
 struct FunctionInfo {
@@ -1946,14 +1948,20 @@ private:
 
         std::string emit() {
             if (parent_.options_.optimize) {
-                collectVariableUses(*function_.body);
+                for (const std::string& param : function_.params) {
+                    localCandidateNames_.insert(param);
+                }
+                collectVariableUses(*function_.body, 1);
             }
             containsCall_ = parent_.options_.optimize ? stmtContainsRuntimeCall(*function_.body)
                                                       : stmtContainsCall(*function_.body);
+            if (parent_.options_.optimize) {
+                selectPreferredRegisterNames();
+            }
             body_ << "    # parameters\n";
             pushScope();
             for (std::size_t i = 0; i < function_.params.size(); ++i) {
-                Symbol symbol = allocateLocal();
+                Symbol symbol = allocateLocal(function_.params[i]);
                 paramSymbols_.push_back(symbol);
                 currentScope()[function_.params[i]] = symbol;
             }
@@ -2031,6 +2039,13 @@ private:
         std::vector<Symbol> paramSymbols_;
         std::unordered_set<std::string> assignedNames_;
         std::unordered_set<std::string> referencedNames_;
+        std::unordered_map<std::string, std::uint64_t> variableUseWeights_;
+        std::unordered_set<std::string> localCandidateNames_;
+        std::unordered_set<std::string> preferredRegisterNames_;
+        std::unordered_set<std::string> pendingPreferredRegisterNames_;
+        std::vector<int> freeLocalRegisters_;
+        std::vector<bool> localRegisterActive_;
+        int activeLocalRegCount_ = 0;
         std::string bodyEntryLabel_;
         std::string returnLabel_;
 
@@ -2046,6 +2061,10 @@ private:
         }
 
         void popScope() {
+            for (auto& [name, symbol] : scopes_.back()) {
+                (void)name;
+                releaseLocalRegister(symbol);
+            }
             scopes_.pop_back();
         }
 
@@ -2104,12 +2123,75 @@ private:
             return "a" + std::to_string(index);
         }
 
-        Symbol allocateLocal() {
-            if (useRegisterLocals() && localRegCount_ < allocatableLocalRegisterCount()) {
-                Symbol symbol;
-                symbol.kind = SymbolKind::LocalVar;
-                symbol.reg = localRegisterName(localRegCount_++);
-                return symbol;
+        void selectPreferredRegisterNames() {
+            std::vector<std::pair<std::uint64_t, std::string>> ranked;
+            ranked.reserve(localCandidateNames_.size());
+            for (const std::string& name : localCandidateNames_) {
+                const auto found = variableUseWeights_.find(name);
+                if (found != variableUseWeights_.end() && found->second != 0) {
+                    ranked.emplace_back(found->second, name);
+                }
+            }
+            std::sort(ranked.begin(), ranked.end(), [](const auto& lhs, const auto& rhs) {
+                if (lhs.first != rhs.first) {
+                    return lhs.first > rhs.first;
+                }
+                return lhs.second < rhs.second;
+            });
+            const std::size_t limit = std::min<std::size_t>(
+                ranked.size(), static_cast<std::size_t>(allocatableLocalRegisterCount()));
+            for (std::size_t i = 0; i < limit; ++i) {
+                preferredRegisterNames_.insert(ranked[i].second);
+                pendingPreferredRegisterNames_.insert(ranked[i].second);
+            }
+        }
+
+        void releaseLocalRegister(Symbol& symbol) {
+            if (!symbol.ownsLocalRegister) {
+                return;
+            }
+            const int index = symbol.localRegIndex;
+            if (index < 0 || static_cast<std::size_t>(index) >= localRegisterActive_.size() ||
+                !localRegisterActive_[static_cast<std::size_t>(index)]) {
+                throw std::runtime_error("internal error: invalid local register release");
+            }
+            localRegisterActive_[static_cast<std::size_t>(index)] = false;
+            freeLocalRegisters_.push_back(index);
+            --activeLocalRegCount_;
+            symbol.ownsLocalRegister = false;
+        }
+
+        Symbol allocateLocal(const std::string& name = {}) {
+            if (useRegisterLocals()) {
+                const bool named = !name.empty();
+                const bool preferred =
+                    !named || preferredRegisterNames_.find(name) != preferredRegisterNames_.end();
+                if (named && preferred) {
+                    pendingPreferredRegisterNames_.erase(name);
+                }
+                const int available =
+                    allocatableLocalRegisterCount() - activeLocalRegCount_;
+                const bool reserveForPreferred =
+                    !named && available <=
+                                  static_cast<int>(pendingPreferredRegisterNames_.size());
+                if (preferred && available > 0 && !reserveForPreferred) {
+                    int index = -1;
+                    if (!freeLocalRegisters_.empty()) {
+                        index = freeLocalRegisters_.back();
+                        freeLocalRegisters_.pop_back();
+                        localRegisterActive_[static_cast<std::size_t>(index)] = true;
+                    } else {
+                        index = localRegCount_++;
+                        localRegisterActive_.push_back(true);
+                    }
+                    ++activeLocalRegCount_;
+                    Symbol symbol;
+                    symbol.kind = SymbolKind::LocalVar;
+                    symbol.reg = localRegisterName(index);
+                    symbol.localRegIndex = index;
+                    symbol.ownsLocalRegister = true;
+                    return symbol;
+                }
             }
 
             Symbol symbol;
@@ -2429,6 +2511,7 @@ private:
         }
 
         void emitDecl(const Decl& decl) {
+            pendingPreferredRegisterNames_.erase(decl.name);
             if (decl.isConst) {
                 const auto value = evalConst(*decl.init);
                 if (!value) {
@@ -2454,13 +2537,16 @@ private:
                     assignedNames_.find(decl.init->name) == assignedNames_.end()) {
                     const auto source = lookup(decl.init->name);
                     if (source && source->kind != SymbolKind::GlobalVar) {
-                        currentScope()[decl.name] = *source;
+                        Symbol alias = *source;
+                        alias.ownsLocalRegister = false;
+                        currentScope()[decl.name] = std::move(alias);
                         return;
                     }
                 }
             }
 
-            Symbol symbol = allocateLocal();
+            Symbol symbol =
+                allocateLocal(inlineDepth_ == 0 ? decl.name : std::string{});
             if (parent_.options_.optimize && !symbol.reg.empty()) {
                 emitExprTo(*decl.init, symbol.reg);
                 currentScope()[decl.name] = std::move(symbol);
@@ -3919,6 +4005,8 @@ private:
                         emitExpr(*expr.args[i]);
                         storeSymbol(symbol, "a0");
                     }
+                } else {
+                    symbol.ownsLocalRegister = false;
                 }
                 currentScope()[info.params[i]] = std::move(symbol);
             }
@@ -3961,33 +4049,41 @@ private:
             return true;
         }
 
-        void collectExprUses(const Expr& expr) {
+        static std::uint64_t loopUseWeight(std::uint64_t weight) {
+            constexpr std::uint64_t kMaxWeight =
+                std::numeric_limits<std::uint64_t>::max() / 32;
+            return weight > kMaxWeight ? std::numeric_limits<std::uint64_t>::max()
+                                       : weight * 32;
+        }
+
+        void collectExprUses(const Expr& expr, std::uint64_t weight) {
             switch (expr.kind) {
                 case ExprKind::Number:
                     return;
                 case ExprKind::Variable:
                     referencedNames_.insert(expr.name);
+                    variableUseWeights_[expr.name] += weight;
                     return;
                 case ExprKind::Unary:
-                    collectExprUses(*expr.lhs);
+                    collectExprUses(*expr.lhs, weight);
                     return;
                 case ExprKind::Binary:
-                    collectExprUses(*expr.lhs);
-                    collectExprUses(*expr.rhs);
+                    collectExprUses(*expr.lhs, weight);
+                    collectExprUses(*expr.rhs, weight);
                     return;
                 case ExprKind::Call:
                     for (const auto& arg : expr.args) {
-                        collectExprUses(*arg);
+                        collectExprUses(*arg, weight);
                     }
                     return;
             }
         }
 
-        void collectVariableUses(const Stmt& stmt) {
+        void collectVariableUses(const Stmt& stmt, std::uint64_t weight) {
             switch (stmt.kind) {
                 case StmtKind::Block:
                     for (const auto& child : stmt.statements) {
-                        collectVariableUses(*child);
+                        collectVariableUses(*child, weight);
                     }
                     return;
                 case StmtKind::Empty:
@@ -3997,31 +4093,36 @@ private:
                 case StmtKind::ExprStmt:
                 case StmtKind::Return:
                     if (stmt.expr) {
-                        collectExprUses(*stmt.expr);
+                        collectExprUses(*stmt.expr, weight);
                     }
                     return;
                 case StmtKind::Assign:
                     assignedNames_.insert(stmt.name);
                     if (stmt.expr) {
-                        collectExprUses(*stmt.expr);
+                        collectExprUses(*stmt.expr, weight);
                     }
                     return;
                 case StmtKind::DeclStmt:
+                    if (stmt.decl) {
+                        localCandidateNames_.insert(stmt.decl->name);
+                    }
                     if (stmt.decl && stmt.decl->init) {
-                        collectExprUses(*stmt.decl->init);
+                        collectExprUses(*stmt.decl->init, weight);
                     }
                     return;
                 case StmtKind::If:
-                    collectExprUses(*stmt.expr);
-                    collectVariableUses(*stmt.thenBranch);
+                    collectExprUses(*stmt.expr, weight);
+                    collectVariableUses(*stmt.thenBranch, weight);
                     if (stmt.elseBranch) {
-                        collectVariableUses(*stmt.elseBranch);
+                        collectVariableUses(*stmt.elseBranch, weight);
                     }
                     return;
-                case StmtKind::While:
-                    collectExprUses(*stmt.expr);
-                    collectVariableUses(*stmt.thenBranch);
+                case StmtKind::While: {
+                    const std::uint64_t loopWeight = loopUseWeight(weight);
+                    collectExprUses(*stmt.expr, loopWeight);
+                    collectVariableUses(*stmt.thenBranch, loopWeight);
                     return;
+                }
             }
         }
 

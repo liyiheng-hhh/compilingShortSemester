@@ -1,0 +1,30 @@
+int seed(int x) {
+    int i = 0;
+    while (i < 1) {
+        x = x + i;
+        i = i + 1;
+    }
+    return x;
+}
+
+int main() {
+    int cold0 = seed(0);
+    int cold1 = seed(1);
+    int cold2 = seed(2);
+    int cold3 = seed(3);
+    int cold4 = seed(4);
+    int cold5 = seed(5);
+    int cold6 = seed(6);
+    int cold7 = seed(7);
+    int cold8 = seed(8);
+    int cold9 = seed(9);
+    int cold10 = seed(10);
+    int i = 0;
+    int total = seed(3);
+    while (i < 5000) {
+        total = total + i * 3 + 1;
+        i = i + 1;
+    }
+    return total + cold0 + cold1 + cold2 + cold3 + cold4 +
+           cold5 + cold6 + cold7 + cold8 + cold9 + cold10;
+}

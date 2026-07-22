@@ -160,6 +160,7 @@ python run_tests.py --opt
 | `stmt/induction_multiply.tc` | 132 | 单位步长归纳乘积强度削弱与可变步长保护 |
 | `stmt/affine_loop_ctfe.tc` | 20 | 仿射计数循环快速幂与顺序递推语义 |
 | `stmt/affine_loop_declarations.tc` | 20 | 仿射循环内局部声明、常量槽位与临时量依赖 |
+| `stmt/loop_register_priority.tc` | 214 | 循环热点变量优先寄存器分配与动态指令上限 |
 | `func/factorial.tc` | 120 | 函数调用与递归 |
 | `func/inline_args_once.tc` | 6 | 内联实参只求值一次 |
 | `func/inline_block.tc` | 19 | 带局部声明的函数内联 |

@@ -214,6 +214,14 @@ def main():
                 actual = machine.run()
                 if actual != expected:
                     failures.append(f"{source.relative_to(ROOT)} [{mode}]: expected {expected}, got {actual}")
+                if (
+                    source.name == "loop_register_priority.tc"
+                    and mode == "-opt backend"
+                    and machine.executed_instructions >= 65_000
+                ):
+                    failures.append(
+                        f"{source.relative_to(ROOT)} [{mode}]: expected fewer than 65000 dynamic instructions, got {machine.executed_instructions}"
+                    )
             except Exception as error:
                 failures.append(f"{source.relative_to(ROOT)} [{mode}]: {error}")
     if failures:
