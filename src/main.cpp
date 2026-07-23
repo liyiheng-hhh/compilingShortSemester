@@ -957,9 +957,10 @@ private:
     static constexpr std::uint64_t kStepLimit = 4'000'000'000;
     static constexpr int kCallDepthLimit = 1024;
     static constexpr std::size_t kMemoEntryLimit = 500'000;
-    static constexpr int kCtfeTimeLimitSeconds = 5;
+    static constexpr int kCtfeTimeLimitSeconds = 10;
     static constexpr std::size_t kAffineDimensionLimit = 40;
     static constexpr std::uint64_t kAffineMinIterations = 16;
+    static constexpr std::uint64_t kLoopTickBatch = 64;
 
     struct Cell {
         std::int32_t value = 0;
@@ -1029,6 +1030,17 @@ private:
         if ((steps_ & 0xfff) == 0 &&
             std::chrono::steady_clock::now() - start_ >
                 std::chrono::seconds(kCtfeTimeLimitSeconds)) {
+            throw CtfeAbort{};
+        }
+    }
+
+    void tickMany(std::uint64_t count) {
+        steps_ += count;
+        if (steps_ > kStepLimit) {
+            throw CtfeAbort{};
+        }
+        if (std::chrono::steady_clock::now() - start_ >
+            std::chrono::seconds(kCtfeTimeLimitSeconds)) {
             throw CtfeAbort{};
         }
     }
@@ -1868,6 +1880,50 @@ private:
         }
         return true;
     }
+    bool evalSimpleCompareCondition(const Expr& expr, Frame* frame, bool& result) const {
+        if (expr.kind != ExprKind::Binary) {
+            return false;
+        }
+        std::int32_t lhs = 0;
+        std::int32_t rhs = 0;
+        if (expr.lhs->kind == ExprKind::Variable) {
+            lhs = readSlot(frame, expr.lhs->ctfeSlot, expr.lhs->ctfeGlobal);
+        } else if (expr.lhs->kind == ExprKind::Number) {
+            lhs = toInt32(expr.lhs->number);
+        } else {
+            return false;
+        }
+        if (expr.rhs->kind == ExprKind::Variable) {
+            rhs = readSlot(frame, expr.rhs->ctfeSlot, expr.rhs->ctfeGlobal);
+        } else if (expr.rhs->kind == ExprKind::Number) {
+            rhs = toInt32(expr.rhs->number);
+        } else {
+            return false;
+        }
+        switch (expr.ctfeOp) {
+            case CtfeOp::Less:
+                result = lhs < rhs;
+                return true;
+            case CtfeOp::Greater:
+                result = lhs > rhs;
+                return true;
+            case CtfeOp::LessEqual:
+                result = lhs <= rhs;
+                return true;
+            case CtfeOp::GreaterEqual:
+                result = lhs >= rhs;
+                return true;
+            case CtfeOp::Equal:
+                result = lhs == rhs;
+                return true;
+            case CtfeOp::NotEqual:
+                result = lhs != rhs;
+                return true;
+            default:
+                return false;
+        }
+    }
+
     Flow executeStmt(const Stmt& stmt, Frame& frame, bool accountSteps = true) {
         // Empty/While handle their own accounting; skip the shared pre-tick.
         if (accountSteps && stmt.kind != StmtKind::Empty && stmt.kind != StmtKind::While) {
@@ -1911,20 +1967,30 @@ private:
                 if (tryExecuteAffineLoop(stmt, frame)) {
                     return {};
                 }
-                // One tick per iteration; body runs without per-statement accounting.
-                while (true) {
-                    tick();
-                    if (evalExpr(*stmt.expr, &frame) == 0) {
-                        break;
+                // Batch step accounting: one host check per 64 iterations.
+                {
+                    std::uint64_t iters = 0;
+                    while (true) {
+                        if ((iters++ & (kLoopTickBatch - 1)) == 0) {
+                            tickMany(kLoopTickBatch);
+                        }
+                        bool keepGoing = false;
+                        if (!evalSimpleCompareCondition(*stmt.expr, &frame, keepGoing)) {
+                            keepGoing = evalExpr(*stmt.expr, &frame) != 0;
+                        }
+                        if (!keepGoing) {
+                            break;
+                        }
+                        Flow flow = executeStmt(*stmt.thenBranch, frame, false);
+                        if (flow.kind == FlowKind::Break) {
+                            return {};
+                        }
+                        if (flow.kind == FlowKind::Continue ||
+                            flow.kind == FlowKind::Normal) {
+                            continue;
+                        }
+                        return flow;
                     }
-                    Flow flow = executeStmt(*stmt.thenBranch, frame, false);
-                    if (flow.kind == FlowKind::Break) {
-                        return {};
-                    }
-                    if (flow.kind == FlowKind::Continue || flow.kind == FlowKind::Normal) {
-                        continue;
-                    }
-                    return flow;
                 }
                 return {};
             case StmtKind::Break:
