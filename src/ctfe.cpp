@@ -44,9 +44,9 @@ private:
     // Platform scores runtime, but also enforces a compile-time limit.
     // Prefer finishing CTFE quickly or falling back; never burn the compile budget.
     static constexpr std::uint64_t kStepLimit = 4'000'000'000;
-    static constexpr int kCallDepthLimit = 1024;
+    static constexpr int kCallDepthLimit = 2048;
     static constexpr std::size_t kMemoEntryLimit = 500'000;
-    static constexpr int kCtfeTimeLimitSeconds = 10;
+    static constexpr int kCtfeTimeLimitSeconds = 12;
     static constexpr std::size_t kAffineDimensionLimit = 40;
     static constexpr std::uint64_t kAffineMinIterations = 16;
     static constexpr std::uint64_t kLoopTickBatch = 64;
@@ -795,15 +795,20 @@ private:
                 case BcLoadImm:
                     stack.push_back(code[ip++]);
                     break;
-                case BcLoadLocal:
-                    stack.push_back(readSlot(&frame, code[ip++], false));
+                case BcLoadLocal: {
+                    const auto slot = static_cast<std::size_t>(code[ip++]);
+                    stack.push_back(frame.locals[slot].value);
                     break;
+                }
                 case BcLoadGlobal:
                     stack.push_back(readSlot(&frame, code[ip++], true));
                     break;
-                case BcStoreLocal:
-                    writeSlot(&frame, code[ip++], false, popStack(stack));
+                case BcStoreLocal: {
+                    const auto slot = static_cast<std::size_t>(code[ip++]);
+                    frame.locals[slot].value = popStack(stack);
+                    frame.locals[slot].initialized = true;
                     break;
+                }
                 case BcStoreLocalConst: {
                     const int slot = code[ip++];
                     const std::int32_t value = popStack(stack);
@@ -944,7 +949,21 @@ private:
                     return Flow{FlowKind::TailCall, 0};
                 }
                 case BcTickBatch:
-                    tickMany(kLoopTickBatch);
+                    // One iteration = one step. Only sample the wall clock every
+                    // kLoopTickBatch iterations (matching the AST fast-path).
+                    // The old tickMany(64)-per-iteration path inflated the step
+                    // counter 64x and called steady_clock every loop — large
+                    // non-affine workloads aborted before finishing.
+                    ++steps_;
+                    if ((steps_ & (kLoopTickBatch - 1)) == 0) {
+                        if (steps_ > kStepLimit) {
+                            throw CtfeAbort{};
+                        }
+                        if (std::chrono::steady_clock::now() - start_ >
+                            std::chrono::seconds(kCtfeTimeLimitSeconds)) {
+                            throw CtfeAbort{};
+                        }
+                    }
                     break;
                 case BcAffineWhile: {
                     const std::size_t whileIndex = static_cast<std::size_t>(code[ip++]);
