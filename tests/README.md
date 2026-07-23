@@ -181,6 +181,7 @@ python run_tests.py --opt
 | `opt/ctfe_memoized_recursion.tc` | 112 | 纯递归记忆化与全局副作用隔离 |
 | `opt/ctfe_global_const_memo.tc` | 55 | 读取全局常量仍可记忆化的纯递归 |
 | `opt/ctfe_branched_loop.tc` | 52 | 含分支的非仿射大循环快速 CTFE |
+| `opt/pe_param_shadow.tc` | 50 | PE 折叠调用时参数名不得遮蔽于调用方局部量 |
 
 构建后运行：
 

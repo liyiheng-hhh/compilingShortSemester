@@ -706,6 +706,20 @@ private:
                 case ExprKind::Number:
                     return toInt32(expr.number);
                 case ExprKind::Variable: {
+                    // Inside evalConstCall, bind only through the callee PE frame
+                    // (and global consts). Caller's locals/consts must not shadow
+                    // callee parameters of the same name.
+                    if (peCallDepth_ > 0 && parent_.options_.optimize &&
+                        peTrackingEnabled()) {
+                        if (const auto value = peLookup(expr.name)) {
+                            return *value;
+                        }
+                        const auto global = parent_.lookupGlobal(expr.name);
+                        if (global && global->kind == SymbolKind::Const) {
+                            return global->constValue;
+                        }
+                        return std::nullopt;
+                    }
                     const auto symbol = lookup(expr.name);
                     if (symbol && symbol->kind == SymbolKind::Const) {
                         return symbol->constValue;
