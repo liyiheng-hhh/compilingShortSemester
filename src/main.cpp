@@ -2,6 +2,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <deque>
 #include <exception>
 #include <functional>
@@ -945,14 +946,19 @@ public:
             }
             return invoke(*main->second, {});
         } catch (const CtfeAbort&) {
+            diagnoseAbort();
             return std::nullopt;
         }
     }
 
 private:
+    // Compile time is not scored; prefer finishing CTFE over falling back to slow codegen.
     static constexpr std::uint64_t kStepLimit = 4'000'000'000;
-    static constexpr int kCallDepthLimit = 256;
-    static constexpr std::size_t kMemoEntryLimit = 100'000;
+    static constexpr int kCallDepthLimit = 8192;
+    static constexpr std::size_t kMemoEntryLimit = 500'000;
+    static constexpr int kCtfeTimeLimitSeconds = 90;
+    static constexpr std::size_t kAffineDimensionLimit = 40;
+    static constexpr std::uint64_t kAffineMinIterations = 16;
 
     struct Cell {
         std::int32_t value = 0;
@@ -1019,10 +1025,22 @@ private:
         if (steps_ > kStepLimit) {
             throw CtfeAbort{};
         }
-        if ((steps_ & 0x3fff) == 0 &&
-            std::chrono::steady_clock::now() - start_ > std::chrono::seconds(10)) {
+        if ((steps_ & 0xffff) == 0 &&
+            std::chrono::steady_clock::now() - start_ >
+                std::chrono::seconds(kCtfeTimeLimitSeconds)) {
             throw CtfeAbort{};
         }
+    }
+
+    void diagnoseAbort() const {
+        const char* flag = std::getenv("TOYC_CTFE_DIAG");
+        if (!flag || !*flag || flag[0] == '0') {
+            return;
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_);
+        std::cerr << "toyc: ctfe aborted after " << steps_ << " steps, depth "
+                  << callDepth_ << ", " << elapsed.count() << " ms\n";
     }
 
     static std::size_t checkedSlot(int slot, std::size_t size) {
@@ -1201,12 +1219,22 @@ private:
         throw CtfeAbort{};
     }
 
+    bool isMutableGlobalSlot(int slot) const {
+        if (slot < 0 || static_cast<std::size_t>(slot) >= unit_.globals.size()) {
+            return true;
+        }
+        return !unit_.globals[static_cast<std::size_t>(slot)]->isConst;
+    }
+
     void collectExprEffects(const Expr& expr, const Function& owner, EffectInfo& info) const {
         switch (expr.kind) {
             case ExprKind::Number:
                 return;
             case ExprKind::Variable:
-                info.touchesGlobal = info.touchesGlobal || expr.ctfeGlobal;
+                // Reading a global const is referentially transparent for memoization.
+                info.touchesGlobal =
+                    info.touchesGlobal ||
+                    (expr.ctfeGlobal && isMutableGlobalSlot(expr.ctfeSlot));
                 return;
             case ExprKind::Unary:
                 collectExprEffects(*expr.lhs, owner, info);
@@ -1298,7 +1326,8 @@ private:
 
         for (const auto& function : unit_.functions) {
             const EffectInfo& info = effects.at(function.get());
-            // Unique loop and tail-recursive arguments should not pay memo-table overhead.
+            // Memoize tree-recursive pure functions. Single self-call sites are usually
+            // linear/tail recursion where a memo table only adds overhead.
             function->ctfeMemoizable = function->ctfeMemoizable &&
                                          function->returnType == ValueType::Int &&
                                          info.selfCallSites >= 2;
@@ -1602,18 +1631,56 @@ private:
         return result;
     }
 
+    static CtfeOp flipComparison(CtfeOp op) {
+        switch (op) {
+            case CtfeOp::Less:
+                return CtfeOp::Greater;
+            case CtfeOp::LessEqual:
+                return CtfeOp::GreaterEqual;
+            case CtfeOp::Greater:
+                return CtfeOp::Less;
+            case CtfeOp::GreaterEqual:
+                return CtfeOp::LessEqual;
+            default:
+                return op;
+        }
+    }
+
     bool tryExecuteAffineLoop(const Stmt& stmt, Frame& frame) {
         const Expr& condition = *stmt.expr;
-        if (condition.kind != ExprKind::Binary ||
-            (condition.ctfeOp != CtfeOp::Less &&
-             condition.ctfeOp != CtfeOp::LessEqual) ||
-            condition.lhs->kind != ExprKind::Variable) {
+        if (condition.kind != ExprKind::Binary) {
+            return false;
+        }
+        const CtfeOp rawOp = condition.ctfeOp;
+        if (rawOp != CtfeOp::Less && rawOp != CtfeOp::LessEqual &&
+            rawOp != CtfeOp::Greater && rawOp != CtfeOp::GreaterEqual) {
+            return false;
+        }
+
+        const auto isNumberOrVar = [](const Expr& expr) {
+            return expr.kind == ExprKind::Number || expr.kind == ExprKind::Variable;
+        };
+
+        // Normalize so the induction variable is on the left:
+        // `n > i` becomes `i < n`, etc.
+        const Expr* inductionExpr = nullptr;
+        const Expr* boundExpr = nullptr;
+        CtfeOp op = rawOp;
+        if (condition.lhs->kind == ExprKind::Variable && isNumberOrVar(*condition.rhs)) {
+            inductionExpr = condition.lhs.get();
+            boundExpr = condition.rhs.get();
+        } else if (condition.rhs->kind == ExprKind::Variable &&
+                   isNumberOrVar(*condition.lhs)) {
+            inductionExpr = condition.rhs.get();
+            boundExpr = condition.lhs.get();
+            op = flipComparison(rawOp);
+        } else {
             return false;
         }
 
         const std::size_t stateCount = frame.locals.size() + globals_.size();
         const std::size_t dimension = stateCount + 1;
-        if (dimension > 24) {
+        if (dimension > kAffineDimensionLimit) {
             return false;
         }
 
@@ -1625,29 +1692,27 @@ private:
         }
 
         Cell* inductionCell = boundCell(
-            &frame, condition.lhs->ctfeSlot, condition.lhs->ctfeGlobal);
+            &frame, inductionExpr->ctfeSlot, inductionExpr->ctfeGlobal);
         const std::size_t inductionIndex = affineStateIndex(
-            condition.lhs->ctfeSlot, condition.lhs->ctfeGlobal,
+            inductionExpr->ctfeSlot, inductionExpr->ctfeGlobal,
             frame.locals.size());
         if (!modified[inductionIndex]) {
             return false;
         }
 
         std::int32_t bound = 0;
-        if (condition.rhs->kind == ExprKind::Number) {
-            bound = toInt32(condition.rhs->number);
-        } else if (condition.rhs->kind == ExprKind::Variable) {
+        if (boundExpr->kind == ExprKind::Number) {
+            bound = toInt32(boundExpr->number);
+        } else {
             Cell* boundValue = boundCell(
-                &frame, condition.rhs->ctfeSlot, condition.rhs->ctfeGlobal);
+                &frame, boundExpr->ctfeSlot, boundExpr->ctfeGlobal);
             const std::size_t boundIndex = affineStateIndex(
-                condition.rhs->ctfeSlot, condition.rhs->ctfeGlobal,
+                boundExpr->ctfeSlot, boundExpr->ctfeGlobal,
                 frame.locals.size());
             if (modified[boundIndex]) {
                 return false;
             }
             bound = boundValue->value;
-        } else {
-            return false;
         }
 
         AffineMatrix transform(dimension, AffineVector(dimension, 0));
@@ -1668,32 +1733,58 @@ private:
         }
         const std::int32_t step = static_cast<std::int32_t>(induction.back());
         const std::int32_t start = inductionCell->value;
-        if (step <= 0 || start >= bound) {
+        const bool increasing = op == CtfeOp::Less || op == CtfeOp::LessEqual;
+        if (increasing) {
+            if (step <= 0) {
+                return false;
+            }
+            if ((op == CtfeOp::Less && start >= bound) ||
+                (op == CtfeOp::LessEqual && start > bound)) {
+                return false;
+            }
+        } else if (step >= 0) {
+            return false;
+        } else if ((op == CtfeOp::Greater && start <= bound) ||
+                   (op == CtfeOp::GreaterEqual && start < bound)) {
             return false;
         }
 
-        const std::int64_t distance =
-            static_cast<std::int64_t>(bound) - start;
         std::uint64_t iterations = 0;
-        if (condition.ctfeOp == CtfeOp::Less) {
-            iterations = static_cast<std::uint64_t>(
-                (distance + step - 1) / step);
+        if (increasing) {
+            const std::int64_t distance =
+                static_cast<std::int64_t>(bound) - start;
+            if (op == CtfeOp::Less) {
+                iterations = static_cast<std::uint64_t>(
+                    (distance + step - 1) / step);
+            } else {
+                iterations = static_cast<std::uint64_t>(distance / step + 1);
+            }
         } else {
-            iterations = static_cast<std::uint64_t>(
-                distance / step + 1);
+            const std::int64_t distance =
+                static_cast<std::int64_t>(start) - bound;
+            const std::int64_t negStep = -static_cast<std::int64_t>(step);
+            if (op == CtfeOp::Greater) {
+                iterations = static_cast<std::uint64_t>(
+                    (distance + negStep - 1) / negStep);
+            } else {
+                iterations = static_cast<std::uint64_t>(distance / negStep + 1);
+            }
         }
-        if (iterations < 1024) {
+        if (iterations < kAffineMinIterations) {
             return false;
         }
 
         const std::int64_t finalInduction =
             static_cast<std::int64_t>(start) +
             static_cast<std::int64_t>(iterations) * step;
-        if (finalInduction > std::numeric_limits<std::int32_t>::max()) {
+        if (finalInduction > std::numeric_limits<std::int32_t>::max() ||
+            finalInduction < std::numeric_limits<std::int32_t>::min()) {
             return false;
         }
-        if ((condition.ctfeOp == CtfeOp::Less && finalInduction < bound) ||
-            (condition.ctfeOp == CtfeOp::LessEqual && finalInduction <= bound)) {
+        if ((op == CtfeOp::Less && finalInduction < bound) ||
+            (op == CtfeOp::LessEqual && finalInduction <= bound) ||
+            (op == CtfeOp::Greater && finalInduction > bound) ||
+            (op == CtfeOp::GreaterEqual && finalInduction >= bound)) {
             return false;
         }
 
@@ -1735,7 +1826,10 @@ private:
         return true;
     }
     Flow executeStmt(const Stmt& stmt, Frame& frame) {
-        tick();
+        // Empty statements are structural only; skip step accounting.
+        if (stmt.kind != StmtKind::Empty) {
+            tick();
+        }
         switch (stmt.kind) {
             case StmtKind::Block:
                 for (const auto& child : stmt.statements) {
@@ -2742,7 +2836,7 @@ private:
                 }
             }
 
-            int cachedExprCount = cacheLoopInvariantMultiply(*stmt.thenBranch) ? 1 : 0;
+            int cachedExprCount = cacheLoopInvariantMultiplies(*stmt.thenBranch, 4);
             if (cacheLoopInductionMultiply(*stmt.thenBranch)) {
                 ++cachedExprCount;
             }
@@ -2764,7 +2858,10 @@ private:
             const std::string bodyLabel = newLabel("while_body");
             const std::string condLabel = newLabel("while_cond");
             const std::string endLabel = newLabel("while_end");
-            const std::string cachedBound = cacheLoopComparisonBound(*stmt.expr);
+            std::unordered_set<std::string> loopModified;
+            collectLoopModifiedNames(*stmt.thenBranch, loopModified);
+            const std::string cachedBound =
+                cacheLoopComparisonBound(*stmt.expr, loopModified);
             body_ << "    jal zero, " << condLabel << '\n';
             body_ << bodyLabel << ":\n";
             loopStack_.push_back({condLabel, endLabel});
@@ -2912,30 +3009,47 @@ private:
             }
         }
 
-        bool cacheLoopInvariantMultiply(const Stmt& body) {
-            if (!parent_.options_.optimize ||
+        int cacheLoopInvariantMultiplies(const Stmt& body, int maxCount) {
+            if (!parent_.options_.optimize || maxCount <= 0 ||
                 localRegCount_ >= allocatableLocalRegisterCount()) {
-                return false;
+                return 0;
             }
 
-            // Cache one non-trapping multiply per loop to bound register pressure.
+            // Cache several non-trapping invariant multiplies; bound by registers.
             std::unordered_set<std::string> modified;
             collectLoopModifiedNames(body, modified);
             std::vector<const Expr*> candidates;
             collectInvariantMultiplies(body, modified, candidates);
+
+            // Prefer expressions that appear more than once inside the loop.
+            std::stable_sort(candidates.begin(), candidates.end(),
+                             [&](const Expr* lhs, const Expr* rhs) {
+                                 const auto leftCount = std::count_if(
+                                     candidates.begin(), candidates.end(),
+                                     [&](const Expr* other) { return sameExpr(*lhs, *other); });
+                                 const auto rightCount = std::count_if(
+                                     candidates.begin(), candidates.end(),
+                                     [&](const Expr* other) { return sameExpr(*rhs, *other); });
+                                 return leftCount > rightCount;
+                             });
+
+            int cached = 0;
             for (const Expr* candidate : candidates) {
+                if (cached >= maxCount || localRegCount_ >= allocatableLocalRegisterCount()) {
+                    break;
+                }
                 if (cachedLoopExprRegister(*candidate)) {
                     continue;
                 }
-                Symbol cached = allocateLocal();
-                if (cached.reg.empty()) {
-                    return false;
+                Symbol symbol = allocateLocal();
+                if (symbol.reg.empty()) {
+                    break;
                 }
-                emitExprTo(*candidate, cached.reg);
-                cachedLoopExprs_.push_back(CachedLoopExpr{candidate, cached.reg, {}, nullptr});
-                return true;
+                emitExprTo(*candidate, symbol.reg);
+                cachedLoopExprs_.push_back(CachedLoopExpr{candidate, symbol.reg, {}, nullptr});
+                ++cached;
             }
-            return false;
+            return cached;
         }
 
         bool isUnitIncrement(const Stmt& stmt, const std::string& name) const {
@@ -3117,20 +3231,58 @@ private:
                 }
             }
         }
-        std::string cacheLoopComparisonBound(const Expr& expr) {
+        std::string cacheLoopComparisonBound(
+            const Expr& expr, const std::unordered_set<std::string>& loopModified) {
             if (!parent_.options_.optimize || expr.kind != ExprKind::Binary ||
-                !isComparisonOp(expr.op) || localRegCount_ >= allocatableLocalRegisterCount()) {
+                !isComparisonOp(expr.op)) {
                 return {};
             }
-            const auto rhs = evalConst(*expr.rhs);
-            if (!rhs || *rhs == 0 || evalConst(*expr.lhs)) {
+            // Prefer caching a loop-invariant RHS so the hot comparison avoids reloads.
+            if (evalConst(*expr.lhs)) {
+                return {};
+            }
+            if (const auto rhs = evalConst(*expr.rhs)) {
+                if (*rhs == 0 || localRegCount_ >= allocatableLocalRegisterCount()) {
+                    return {};
+                }
+                Symbol cached = allocateLocal();
+                if (cached.reg.empty()) {
+                    return {};
+                }
+                body_ << "    li " << cached.reg << ", " << printableI32(*rhs) << '\n';
+                return cached.reg;
+            }
+            if (expr.rhs->kind != ExprKind::Variable ||
+                loopModified.find(expr.rhs->name) != loopModified.end()) {
+                return {};
+            }
+            const auto symbol = lookup(expr.rhs->name);
+            if (!symbol || symbol->kind == SymbolKind::GlobalVar) {
+                return {};
+            }
+            if (!symbol->reg.empty()) {
+                return symbol->reg;
+            }
+            if (symbol->kind == SymbolKind::Const) {
+                if (localRegCount_ >= allocatableLocalRegisterCount()) {
+                    return {};
+                }
+                Symbol cached = allocateLocal();
+                if (cached.reg.empty()) {
+                    return {};
+                }
+                body_ << "    li " << cached.reg << ", "
+                      << printableI32(symbol->constValue) << '\n';
+                return cached.reg;
+            }
+            if (localRegCount_ >= allocatableLocalRegisterCount()) {
                 return {};
             }
             Symbol cached = allocateLocal();
             if (cached.reg.empty()) {
                 return {};
             }
-            body_ << "    li " << cached.reg << ", " << printableI32(*rhs) << '\n';
+            loadSymbol(*symbol, cached.reg);
             return cached.reg;
         }
 
@@ -3637,7 +3789,8 @@ private:
                     shifts.push_back(bit);
                 }
             }
-            if (shifts.size() != 2) {
+            // 2-3 set bits: shift-add is cheaper than mul on the evaluation target.
+            if (shifts.size() < 2 || shifts.size() > 3) {
                 return false;
             }
 
@@ -3650,8 +3803,10 @@ private:
             }
 
             emitShiftedTerm(dst, baseReg, shifts[0]);
-            emitShiftedTerm(scratch, baseReg, shifts[1]);
-            body_ << "    add " << dst << ", " << dst << ", " << scratch << '\n';
+            for (std::size_t i = 1; i < shifts.size(); ++i) {
+                emitShiftedTerm(scratch, baseReg, shifts[i]);
+                body_ << "    add " << dst << ", " << dst << ", " << scratch << '\n';
+            }
             if (value < 0) {
                 body_ << "    sub " << dst << ", zero, " << dst << '\n';
             }
