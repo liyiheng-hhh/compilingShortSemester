@@ -1,5 +1,6 @@
 #include "codegen.hpp"
 
+#include <chrono>
 #include <functional>
 #include <initializer_list>
 #include <sstream>
@@ -349,13 +350,17 @@ private:
 
         int peExecDepth_ = 0;
         mutable int peCallDepth_ = 0;
+        std::chrono::steady_clock::time_point peDeadline_{};
 
         struct PeValue {
             bool known = false;
             std::int32_t value = 0;
         };
 
-        static constexpr std::uint64_t kPeLoopBudget = 50'000'000;
+        // Keep PE short: platform compile timeouts dominate score more than
+        // missing a fold. Prefer skip over burning the compile budget.
+        static constexpr std::uint64_t kPeLoopBudget = 5'000'000;
+        static constexpr int kPeTimeLimitMilliseconds = 800;
 
         std::vector<std::unordered_map<std::string, PeValue>> mutable peScopes_;
 
@@ -1288,6 +1293,39 @@ private:
             return true;
         }
 
+        bool peTimeExceeded() const {
+            return peExecDepth_ > 0 &&
+                   std::chrono::steady_clock::now() >= peDeadline_;
+        }
+
+        // Upper-bound trip estimate for `lhs <op> rhs` when both sides known.
+        // Assumes induction steps by at least 1 toward the bound.
+        std::optional<std::uint64_t> estimatePeTripUpperBound(const Expr& expr) const {
+            if (expr.kind != ExprKind::Binary || !isComparisonOp(expr.op)) {
+                return std::nullopt;
+            }
+            const auto lhs = evalConst(*expr.lhs);
+            const auto rhs = evalConst(*expr.rhs);
+            if (!lhs || !rhs) {
+                return std::nullopt;
+            }
+            const std::int64_t a = *lhs;
+            const std::int64_t b = *rhs;
+            if (expr.op == "<") {
+                return a < b ? static_cast<std::uint64_t>(b - a) : 0;
+            }
+            if (expr.op == "<=") {
+                return a <= b ? static_cast<std::uint64_t>(b - a + 1) : 0;
+            }
+            if (expr.op == ">") {
+                return a > b ? static_cast<std::uint64_t>(a - b) : 0;
+            }
+            if (expr.op == ">=") {
+                return a >= b ? static_cast<std::uint64_t>(a - b + 1) : 0;
+            }
+            return std::nullopt;
+        }
+
         bool tryPeExecuteWhile(const Stmt& stmt) {
             if (!parent_.options_.optimize || !stmt.expr || !stmt.thenBranch ||
                 !loopVarsReadyForPe(stmt)) {
@@ -1324,9 +1362,24 @@ private:
                     }
                 }
             }
+            if (const auto trips = estimatePeTripUpperBound(*stmt.expr)) {
+                if (*trips > kPeLoopBudget) {
+                    return false;
+                }
+            }
             const auto snapshot = peScopes_;
+            const bool outermost = peExecDepth_ == 0;
+            if (outermost) {
+                peDeadline_ = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(kPeTimeLimitMilliseconds);
+            }
             ++peExecDepth_;
             for (std::uint64_t iter = 0; iter < kPeLoopBudget; ++iter) {
+                if ((iter & 65535u) == 0 && peTimeExceeded()) {
+                    peScopes_ = snapshot;
+                    --peExecDepth_;
+                    return false;
+                }
                 const auto condition = evalConst(*stmt.expr);
                 if (!condition) {
                     peScopes_ = snapshot;

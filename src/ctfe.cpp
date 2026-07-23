@@ -41,12 +41,14 @@ public:
     }
 
 private:
-    // Platform scores runtime; compile-time budget is comparatively loose.
-    // Prefer finishing whole-program CTFE (li+ret) over falling back to slow asm.
+    // Platform compile limits punish long CTFE. Use a hard 8s cap, but abort the
+    // slow AST/bytecode interpreter after 1.5s so only affine/dense fast paths
+    // may spend the remaining budget.
     static constexpr std::uint64_t kStepLimit = 4'000'000'000;
     static constexpr int kCallDepthLimit = 2048;
     static constexpr std::size_t kMemoEntryLimit = 500'000;
-    static constexpr int kCtfeTimeLimitSeconds = 30;
+    static constexpr int kCtfeTimeLimitSeconds = 8;
+    static constexpr int kCtfeSlowPathLimitMilliseconds = 1500;
     static constexpr std::size_t kAffineDimensionLimit = 40;
     static constexpr std::uint64_t kAffineMinIterations = 16;
     static constexpr std::uint64_t kLoopTickBatch = 64;
@@ -111,14 +113,27 @@ private:
     std::deque<Frame> framePool_;
     std::uint64_t steps_ = 0;
     int callDepth_ = 0;
+    int fastLoopDepth_ = 0;
     std::chrono::steady_clock::time_point start_;
 
     void checkTimeLimit() const {
-        if (std::chrono::steady_clock::now() - start_ >
-            std::chrono::seconds(kCtfeTimeLimitSeconds)) {
+        const auto elapsed = std::chrono::steady_clock::now() - start_;
+        if (elapsed > std::chrono::seconds(kCtfeTimeLimitSeconds)) {
+            throw CtfeAbort{};
+        }
+        if (fastLoopDepth_ == 0 &&
+            elapsed > std::chrono::milliseconds(kCtfeSlowPathLimitMilliseconds)) {
             throw CtfeAbort{};
         }
     }
+
+    struct FastLoopGuard {
+        int& depth;
+        explicit FastLoopGuard(int& d) : depth(d) { ++depth; }
+        ~FastLoopGuard() { --depth; }
+        FastLoopGuard(const FastLoopGuard&) = delete;
+        FastLoopGuard& operator=(const FastLoopGuard&) = delete;
+    };
 
     void tick() {
         ++steps_;
@@ -2073,6 +2088,7 @@ private:
 
         std::vector<std::int32_t> stack;
         stack.reserve(32);
+        FastLoopGuard fast(fastLoopDepth_);
         std::uint64_t done = 0;
         while (done < iterations) {
             if ((done & (kLoopTickBatch - 1)) == 0) {
@@ -2251,6 +2267,7 @@ private:
         }
         state.back() = 1;
 
+        FastLoopGuard fast(fastLoopDepth_);
         AffineMatrix power = std::move(transform);
         std::uint64_t remaining = iterations;
         while (remaining != 0) {
