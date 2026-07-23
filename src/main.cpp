@@ -952,11 +952,12 @@ public:
     }
 
 private:
-    // Compile time is not scored; prefer finishing CTFE over falling back to slow codegen.
+    // Platform scores runtime, but also enforces a compile-time limit.
+    // Prefer finishing CTFE quickly or falling back; never burn the compile budget.
     static constexpr std::uint64_t kStepLimit = 4'000'000'000;
-    static constexpr int kCallDepthLimit = 8192;
+    static constexpr int kCallDepthLimit = 1024;
     static constexpr std::size_t kMemoEntryLimit = 500'000;
-    static constexpr int kCtfeTimeLimitSeconds = 90;
+    static constexpr int kCtfeTimeLimitSeconds = 4;
     static constexpr std::size_t kAffineDimensionLimit = 40;
     static constexpr std::uint64_t kAffineMinIterations = 16;
 
@@ -1025,7 +1026,7 @@ private:
         if (steps_ > kStepLimit) {
             throw CtfeAbort{};
         }
-        if ((steps_ & 0xffff) == 0 &&
+        if ((steps_ & 0xfff) == 0 &&
             std::chrono::steady_clock::now() - start_ >
                 std::chrono::seconds(kCtfeTimeLimitSeconds)) {
             throw CtfeAbort{};
