@@ -1,7 +1,5 @@
 #include "codegen.hpp"
 
-#include <chrono>
-#include <functional>
 #include <initializer_list>
 #include <sstream>
 #include <unordered_map>
@@ -255,7 +253,6 @@ private:
                                                       : stmtContainsCall(*function_.body);
             if (parent_.options_.optimize) {
                 selectPreferredRegisterNames();
-                peClear();
             }
             body_ << "    # parameters\n";
             pushScope();
@@ -347,95 +344,6 @@ private:
         int activeLocalRegCount_ = 0;
         std::string bodyEntryLabel_;
         std::string returnLabel_;
-
-        int peExecDepth_ = 0;
-        mutable int peCallDepth_ = 0;
-        std::chrono::steady_clock::time_point peDeadline_{};
-
-        struct PeValue {
-            bool known = false;
-            std::int32_t value = 0;
-        };
-
-        // Keep PE short: platform compile timeouts dominate score more than
-        // missing a fold. Prefer skip over burning the compile budget.
-        static constexpr std::uint64_t kPeLoopBudget = 5'000'000;
-        static constexpr int kPeTimeLimitMilliseconds = 800;
-
-        std::vector<std::unordered_map<std::string, PeValue>> mutable peScopes_;
-
-        void peClear() {
-            peScopes_.clear();
-            peScopes_.push_back({});
-        }
-
-        void pePushScope() const {
-            peScopes_.push_back({});
-        }
-
-        void pePopScope() const {
-            if (peScopes_.size() > 1) {
-                peScopes_.pop_back();
-            }
-        }
-
-        std::optional<std::int32_t> peLookup(const std::string& name) const {
-            for (auto it = peScopes_.rbegin(); it != peScopes_.rend(); ++it) {
-                const auto found = it->find(name);
-                if (found != it->end()) {
-                    if (!found->second.known) {
-                        return std::nullopt;
-                    }
-                    return found->second.value;
-                }
-            }
-            return std::nullopt;
-        }
-
-        void peSetKnown(const std::string& name, std::int32_t value) {
-            for (auto it = peScopes_.rbegin(); it != peScopes_.rend(); ++it) {
-                const auto found = it->find(name);
-                if (found != it->end()) {
-                    found->second = PeValue{true, value};
-                    return;
-                }
-            }
-            peScopes_.back()[name] = PeValue{true, value};
-        }
-
-        void peInvalidate(const std::string& name) {
-            for (auto it = peScopes_.rbegin(); it != peScopes_.rend(); ++it) {
-                const auto found = it->find(name);
-                if (found != it->end()) {
-                    found->second.known = false;
-                    return;
-                }
-            }
-            peScopes_.back()[name] = PeValue{false, 0};
-        }
-
-        void peDeclare(const std::string& name, std::int32_t value) const {
-            peScopes_.back()[name] = PeValue{true, value};
-        }
-
-        void peDeclareUnknown(const std::string& name) {
-            peScopes_.back()[name] = PeValue{false, 0};
-        }
-
-        bool peTrackingEnabled() const {
-            return peExecDepth_ > 0 || loopStack_.empty();
-        }
-
-        void bindPeLocal(const std::string& name, const Expr& init) {
-            if (!parent_.options_.optimize || !peTrackingEnabled()) {
-                return;
-            }
-            if (const auto value = evalConst(init)) {
-                peSetKnown(name, *value);
-            } else {
-                peInvalidate(name);
-            }
-        }
 
         std::unordered_map<std::string, Symbol>& currentScope() {
             if (scopes_.empty()) {
@@ -623,23 +531,14 @@ private:
                 !function_.body->statements.empty() &&
                 function_.body->statements.back()->kind == StmtKind::Return) {
                 pushScope();
-                if (parent_.options_.optimize) {
-                    pePushScope();
-                }
                 for (std::size_t i = 0; i + 1 < function_.body->statements.size(); ++i) {
                     emitStmt(*function_.body->statements[i]);
                     if (stmtAlwaysTerminates(*function_.body->statements[i])) {
-                        if (parent_.options_.optimize) {
-                            pePopScope();
-                        }
                         popScope();
                         return true;
                     }
                 }
                 emitReturn(*function_.body->statements.back(), false);
-                if (parent_.options_.optimize) {
-                    pePopScope();
-                }
                 popScope();
                 return true;
             }
@@ -706,28 +605,9 @@ private:
                 case ExprKind::Number:
                     return toInt32(expr.number);
                 case ExprKind::Variable: {
-                    // Inside evalConstCall, bind only through the callee PE frame
-                    // (and global consts). Caller's locals/consts must not shadow
-                    // callee parameters of the same name.
-                    if (peCallDepth_ > 0 && parent_.options_.optimize &&
-                        peTrackingEnabled()) {
-                        if (const auto value = peLookup(expr.name)) {
-                            return *value;
-                        }
-                        const auto global = parent_.lookupGlobal(expr.name);
-                        if (global && global->kind == SymbolKind::Const) {
-                            return global->constValue;
-                        }
-                        return std::nullopt;
-                    }
                     const auto symbol = lookup(expr.name);
                     if (symbol && symbol->kind == SymbolKind::Const) {
                         return symbol->constValue;
-                    }
-                    if (parent_.options_.optimize && peTrackingEnabled()) {
-                        if (const auto value = peLookup(expr.name)) {
-                            return *value;
-                        }
                     }
                     return std::nullopt;
                 }
@@ -750,58 +630,9 @@ private:
                 case ExprKind::Binary:
                     return evalConstBinary(expr);
                 case ExprKind::Call:
-                    return evalConstCall(expr);
+                    return std::nullopt;
             }
             return std::nullopt;
-        }
-
-        std::optional<std::int32_t> evalConstCall(const Expr& expr) const {
-            if (!parent_.options_.optimize || !peTrackingEnabled() || peCallDepth_ >= 32) {
-                return std::nullopt;
-            }
-            const auto found = parent_.functions_.find(expr.name);
-            if (found == parent_.functions_.end() || !found->second.inlineReturn ||
-                !found->second.inlineBlock ||
-                found->second.params.size() != expr.args.size()) {
-                return std::nullopt;
-            }
-            const FunctionInfo& info = found->second;
-
-            std::vector<std::int32_t> argValues;
-            argValues.reserve(expr.args.size());
-            for (const auto& arg : expr.args) {
-                const auto value = evalConst(*arg);
-                if (!value) {
-                    return std::nullopt;
-                }
-                argValues.push_back(*value);
-            }
-
-            ++peCallDepth_;
-            pePushScope();
-            for (std::size_t i = 0; i < info.params.size(); ++i) {
-                peDeclare(info.params[i], argValues[i]);
-            }
-            for (std::size_t i = 0; i < info.inlineDeclCount; ++i) {
-                const Stmt& declStmt = *info.inlineBlock->statements[i];
-                if (declStmt.kind != StmtKind::DeclStmt || !declStmt.decl ||
-                    !declStmt.decl->init) {
-                    pePopScope();
-                    --peCallDepth_;
-                    return std::nullopt;
-                }
-                const auto init = evalConst(*declStmt.decl->init);
-                if (!init) {
-                    pePopScope();
-                    --peCallDepth_;
-                    return std::nullopt;
-                }
-                peDeclare(declStmt.decl->name, *init);
-            }
-            const auto result = evalConst(*info.inlineReturn);
-            pePopScope();
-            --peCallDepth_;
-            return result;
         }
 
         std::optional<std::int32_t> evalConstBinary(const Expr& expr) const {
@@ -888,17 +719,11 @@ private:
             switch (stmt.kind) {
                 case StmtKind::Block:
                     pushScope();
-                    if (parent_.options_.optimize) {
-                        pePushScope();
-                    }
                     for (const auto& child : stmt.statements) {
                         emitStmt(*child);
                         if (parent_.options_.optimize && stmtAlwaysTerminates(*child)) {
                             break;
                         }
-                    }
-                    if (parent_.options_.optimize) {
-                        pePopScope();
                     }
                     popScope();
                     break;
@@ -1002,7 +827,6 @@ private:
                 assignedNames_.find(decl.name) == assignedNames_.end()) {
                 if (const auto value = evalConst(*decl.init)) {
                     currentScope()[decl.name] = Symbol{SymbolKind::Const, 0, "", *value, ""};
-                    bindPeLocal(decl.name, *decl.init);
                     return;
                 }
                 if (decl.init->kind == ExprKind::Variable &&
@@ -1012,7 +836,6 @@ private:
                         Symbol alias = *source;
                         alias.ownsLocalRegister = false;
                         currentScope()[decl.name] = std::move(alias);
-                        bindPeLocal(decl.name, *decl.init);
                         return;
                     }
                 }
@@ -1023,13 +846,11 @@ private:
             if (parent_.options_.optimize && !symbol.reg.empty()) {
                 emitExprTo(*decl.init, symbol.reg);
                 currentScope()[decl.name] = std::move(symbol);
-                bindPeLocal(decl.name, *decl.init);
                 return;
             }
             emitExpr(*decl.init);
             storeSymbol(symbol, "a0");
             currentScope()[decl.name] = std::move(symbol);
-            bindPeLocal(decl.name, *decl.init);
         }
 
         void emitAssign(const Stmt& stmt) {
@@ -1039,14 +860,6 @@ private:
             }
             if (symbol->kind == SymbolKind::Const) {
                 fail(stmt.loc, "cannot assign to const: " + stmt.name);
-            }
-
-            if (parent_.options_.optimize && peTrackingEnabled()) {
-                if (const auto value = evalConst(*stmt.expr)) {
-                    peSetKnown(stmt.name, *value);
-                } else {
-                    peInvalidate(stmt.name);
-                }
             }
 
             if (parent_.options_.optimize && emitOptimizedAssign(stmt, *symbol)) {
@@ -1180,7 +993,7 @@ private:
         }
 
         void emitIf(const Stmt& stmt) {
-            if (parent_.options_.optimize && peTrackingEnabled()) {
+            if (parent_.options_.optimize) {
                 const auto condition = evalConst(*stmt.expr);
                 if (condition) {
                     if (*condition != 0) {
@@ -1192,8 +1005,6 @@ private:
                 }
             }
 
-            const std::vector<std::unordered_map<std::string, PeValue>> peSnapshot =
-                parent_.options_.optimize ? peScopes_ : std::vector<std::unordered_map<std::string, PeValue>>{};
             const std::string elseLabel = newLabel("else");
             const std::string endLabel = newLabel("endif");
             const bool thenTerminates = stmtAlwaysTerminates(*stmt.thenBranch);
@@ -1216,221 +1027,9 @@ private:
             } else {
                 body_ << elseLabel << ":\n";
             }
-            if (parent_.options_.optimize) {
-                peScopes_ = peSnapshot;
-            }
-        }
-
-        bool peExecStmt(const Stmt& stmt) {
-            switch (stmt.kind) {
-                case StmtKind::Block: {
-                    pePushScope();
-                    for (const auto& child : stmt.statements) {
-                        if (!peExecStmt(*child)) {
-                            pePopScope();
-                            return false;
-                        }
-                    }
-                    pePopScope();
-                    return true;
-                }
-                case StmtKind::Empty:
-                    return true;
-                case StmtKind::ExprStmt:
-                    return !exprContainsCall(*stmt.expr);
-                case StmtKind::Assign:
-                    if (const auto value = evalConst(*stmt.expr)) {
-                        peSetKnown(stmt.name, *value);
-                    } else {
-                        peInvalidate(stmt.name);
-                        return false;
-                    }
-                    return true;
-                case StmtKind::DeclStmt:
-                    if (stmt.decl->isConst) {
-                        if (!evalConst(*stmt.decl->init)) {
-                            return false;
-                        }
-                        peDeclare(stmt.decl->name, *evalConst(*stmt.decl->init));
-                        return true;
-                    }
-                    if (const auto value = evalConst(*stmt.decl->init)) {
-                        peDeclare(stmt.decl->name, *value);
-                    } else {
-                        peDeclareUnknown(stmt.decl->name);
-                    }
-                    return true;
-                case StmtKind::If: {
-                    const auto condition = evalConst(*stmt.expr);
-                    if (!condition) {
-                        return false;
-                    }
-                    if (*condition != 0) {
-                        pePushScope();
-                        const bool ok = peExecStmt(*stmt.thenBranch);
-                        pePopScope();
-                        return ok;
-                    }
-                    if (stmt.elseBranch) {
-                        pePushScope();
-                        const bool ok = peExecStmt(*stmt.elseBranch);
-                        pePopScope();
-                        return ok;
-                    }
-                    return true;
-                }
-                case StmtKind::While:
-                    // Nested loops: PE-execute inner while with the current env.
-                    return tryPeExecuteWhile(stmt);
-                case StmtKind::Break:
-                case StmtKind::Continue:
-                case StmtKind::Return:
-                    return false;
-            }
-            return false;
-        }
-
-        bool loopVarsReadyForPe(const Stmt& stmt) const {
-            std::unordered_set<std::string> modified;
-            collectLoopModifiedNames(*stmt.thenBranch, modified);
-            std::unordered_set<std::string> declaredInLoop;
-            collectLoopDeclaredNames(*stmt.thenBranch, declaredInLoop);
-            for (const std::string& name : modified) {
-                // Locals introduced inside the loop are declared during PE exec.
-                if (declaredInLoop.find(name) != declaredInLoop.end()) {
-                    continue;
-                }
-                if (!peLookup(name)) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
-        bool peTimeExceeded() const {
-            return peExecDepth_ > 0 &&
-                   std::chrono::steady_clock::now() >= peDeadline_;
-        }
-
-        // Upper-bound trip estimate for `lhs <op> rhs` when both sides known.
-        // Assumes induction steps by at least 1 toward the bound.
-        std::optional<std::uint64_t> estimatePeTripUpperBound(const Expr& expr) const {
-            if (expr.kind != ExprKind::Binary || !isComparisonOp(expr.op)) {
-                return std::nullopt;
-            }
-            const auto lhs = evalConst(*expr.lhs);
-            const auto rhs = evalConst(*expr.rhs);
-            if (!lhs || !rhs) {
-                return std::nullopt;
-            }
-            const std::int64_t a = *lhs;
-            const std::int64_t b = *rhs;
-            if (expr.op == "<") {
-                return a < b ? static_cast<std::uint64_t>(b - a) : 0;
-            }
-            if (expr.op == "<=") {
-                return a <= b ? static_cast<std::uint64_t>(b - a + 1) : 0;
-            }
-            if (expr.op == ">") {
-                return a > b ? static_cast<std::uint64_t>(a - b) : 0;
-            }
-            if (expr.op == ">=") {
-                return a >= b ? static_cast<std::uint64_t>(a - b + 1) : 0;
-            }
-            return std::nullopt;
-        }
-
-        bool tryPeExecuteWhile(const Stmt& stmt) {
-            if (!parent_.options_.optimize || !stmt.expr || !stmt.thenBranch ||
-                !loopVarsReadyForPe(stmt)) {
-                return false;
-            }
-            // Constant-true loops without a foldable exit cannot be PE-executed.
-            if (const auto always = evalConst(*stmt.expr)) {
-                if (*always != 0) {
-                    std::unordered_set<std::string> modified;
-                    collectLoopModifiedNames(*stmt.thenBranch, modified);
-                    bool conditionDependsOnModified = false;
-                    std::function<void(const Expr&)> visit = [&](const Expr& expr) {
-                        if (conditionDependsOnModified) {
-                            return;
-                        }
-                        if (expr.kind == ExprKind::Variable &&
-                            modified.find(expr.name) != modified.end()) {
-                            conditionDependsOnModified = true;
-                            return;
-                        }
-                        if (expr.lhs) {
-                            visit(*expr.lhs);
-                        }
-                        if (expr.rhs) {
-                            visit(*expr.rhs);
-                        }
-                        for (const auto& arg : expr.args) {
-                            visit(*arg);
-                        }
-                    };
-                    visit(*stmt.expr);
-                    if (!conditionDependsOnModified) {
-                        return false;
-                    }
-                }
-            }
-            if (const auto trips = estimatePeTripUpperBound(*stmt.expr)) {
-                if (*trips > kPeLoopBudget) {
-                    return false;
-                }
-            }
-            const auto snapshot = peScopes_;
-            const bool outermost = peExecDepth_ == 0;
-            if (outermost) {
-                peDeadline_ = std::chrono::steady_clock::now() +
-                              std::chrono::milliseconds(kPeTimeLimitMilliseconds);
-            }
-            ++peExecDepth_;
-            for (std::uint64_t iter = 0; iter < kPeLoopBudget; ++iter) {
-                if ((iter & 65535u) == 0 && peTimeExceeded()) {
-                    peScopes_ = snapshot;
-                    --peExecDepth_;
-                    return false;
-                }
-                const auto condition = evalConst(*stmt.expr);
-                if (!condition) {
-                    peScopes_ = snapshot;
-                    --peExecDepth_;
-                    return false;
-                }
-                if (*condition == 0) {
-                    --peExecDepth_;
-                    return true;
-                }
-                if (!peExecStmt(*stmt.thenBranch)) {
-                    peScopes_ = snapshot;
-                    --peExecDepth_;
-                    return false;
-                }
-            }
-            peScopes_ = snapshot;
-            --peExecDepth_;
-            return false;
         }
 
         void emitWhile(const Stmt& stmt) {
-            if (parent_.options_.optimize && tryPeExecuteWhile(stmt)) {
-                return;
-            }
-
-            std::unordered_set<std::string> loopModified;
-            collectLoopModifiedNames(*stmt.thenBranch, loopModified);
-            // PE may still hold the pre-loop values (e.g. i==0). If we keep them
-            // while emitting a real loop, emitValue*/evalConst will constant-fold
-            // the condition into `0 < N` and create an infinite loop at runtime.
-            if (parent_.options_.optimize) {
-                for (const std::string& name : loopModified) {
-                    peInvalidate(name);
-                }
-            }
-
             std::optional<std::int32_t> constantCondition;
             if (parent_.options_.optimize) {
                 constantCondition = evalConst(*stmt.expr);
@@ -1443,10 +1042,26 @@ private:
             if (cacheLoopInductionMultiply(*stmt.thenBranch)) {
                 ++cachedExprCount;
             }
+            if (constantCondition) {
+                const std::string bodyLabel = newLabel("while_body");
+                const std::string endLabel = newLabel("while_end");
+                body_ << bodyLabel << ":\n";
+                loopStack_.push_back({bodyLabel, endLabel});
+                emitStmt(*stmt.thenBranch);
+                loopStack_.pop_back();
+                while (cachedExprCount-- > 0) {
+                    cachedLoopExprs_.pop_back();
+                }
+                body_ << "    jal zero, " << bodyLabel << '\n';
+                body_ << endLabel << ":\n";
+                return;
+            }
 
             const std::string bodyLabel = newLabel("while_body");
             const std::string condLabel = newLabel("while_cond");
             const std::string endLabel = newLabel("while_end");
+            std::unordered_set<std::string> loopModified;
+            collectLoopModifiedNames(*stmt.thenBranch, loopModified);
             const std::string cachedBound =
                 cacheLoopComparisonBound(*stmt.expr, loopModified);
             body_ << "    jal zero, " << condLabel << '\n';
@@ -1469,11 +1084,6 @@ private:
                 body_ << "    bne a0, zero, " << bodyLabel << '\n';
             }
             body_ << endLabel << ":\n";
-            if (parent_.options_.optimize) {
-                for (const std::string& name : loopModified) {
-                    peInvalidate(name);
-                }
-            }
         }
 
         void collectLoopModifiedNames(const Stmt& stmt,
@@ -1501,36 +1111,6 @@ private:
                     return;
                 case StmtKind::Empty:
                 case StmtKind::ExprStmt:
-                case StmtKind::Break:
-                case StmtKind::Continue:
-                case StmtKind::Return:
-                    return;
-            }
-        }
-
-        void collectLoopDeclaredNames(const Stmt& stmt,
-                                      std::unordered_set<std::string>& names) const {
-            switch (stmt.kind) {
-                case StmtKind::Block:
-                    for (const auto& child : stmt.statements) {
-                        collectLoopDeclaredNames(*child, names);
-                    }
-                    return;
-                case StmtKind::DeclStmt:
-                    names.insert(stmt.decl->name);
-                    return;
-                case StmtKind::If:
-                    collectLoopDeclaredNames(*stmt.thenBranch, names);
-                    if (stmt.elseBranch) {
-                        collectLoopDeclaredNames(*stmt.elseBranch, names);
-                    }
-                    return;
-                case StmtKind::While:
-                    collectLoopDeclaredNames(*stmt.thenBranch, names);
-                    return;
-                case StmtKind::Empty:
-                case StmtKind::ExprStmt:
-                case StmtKind::Assign:
                 case StmtKind::Break:
                 case StmtKind::Continue:
                 case StmtKind::Return:
@@ -2066,29 +1646,10 @@ private:
             return false;
         }
 
-        bool exprUsesOnlyConstSymbols(const Expr& expr) const {
-            switch (expr.kind) {
-                case ExprKind::Number:
-                    return true;
-                case ExprKind::Variable: {
-                    const auto symbol = lookup(expr.name);
-                    return symbol && symbol->kind == SymbolKind::Const;
-                }
-                case ExprKind::Unary:
-                    return exprUsesOnlyConstSymbols(*expr.lhs);
-                case ExprKind::Binary:
-                    return exprUsesOnlyConstSymbols(*expr.lhs) &&
-                           exprUsesOnlyConstSymbols(*expr.rhs);
-                case ExprKind::Call:
-                    return false;
-            }
-            return false;
-        }
-
         void emitBranchIfFalse(const Expr& expr, const std::string& falseLabel) {
             if (parent_.options_.optimize) {
                 const auto value = evalConst(expr);
-                if (value && exprUsesOnlyConstSymbols(expr)) {
+                if (value) {
                     if (*value == 0) {
                         body_ << "    jal zero, " << falseLabel << '\n';
                     }
@@ -2126,7 +1687,7 @@ private:
         void emitBranchIfTrue(const Expr& expr, const std::string& trueLabel) {
             if (parent_.options_.optimize) {
                 const auto value = evalConst(expr);
-                if (value && exprUsesOnlyConstSymbols(expr)) {
+                if (value) {
                     if (*value != 0) {
                         body_ << "    jal zero, " << trueLabel << '\n';
                     }
@@ -2224,12 +1785,6 @@ private:
         }
 
         void emitValueTo(const Expr& expr, const std::string& reg) {
-            if (parent_.options_.optimize) {
-                if (const auto value = evalConst(expr)) {
-                    body_ << "    li " << reg << ", " << printableI32(*value) << '\n';
-                    return;
-                }
-            }
             if (expr.kind == ExprKind::Number) {
                 body_ << "    li " << reg << ", " << printableI32(toInt32(expr.number)) << '\n';
                 return;
@@ -2283,12 +1838,6 @@ private:
         }
 
         std::string emitValueAsRegister(const Expr& expr, const std::string& scratchReg) {
-            if (parent_.options_.optimize) {
-                if (const auto value = evalConst(expr)) {
-                    body_ << "    li " << scratchReg << ", " << printableI32(*value) << '\n';
-                    return scratchReg;
-                }
-            }
             if (expr.kind == ExprKind::Number) {
                 body_ << "    li " << scratchReg << ", " << printableI32(toInt32(expr.number)) << '\n';
                 return scratchReg;
@@ -2384,16 +1933,6 @@ private:
                         }
                     }
                     return false;
-            }
-            return false;
-        }
-
-        bool exprReferencesAnyName(const Expr& expr,
-                                   const std::unordered_set<std::string>& names) const {
-            for (const std::string& name : names) {
-                if (exprReferencesVariable(expr, name)) {
-                    return true;
-                }
             }
             return false;
         }
