@@ -41,15 +41,17 @@ public:
     }
 
 private:
-    // Platform scores runtime, but also enforces a compile-time limit.
-    // Prefer finishing CTFE quickly or falling back; never burn the compile budget.
+    // Platform scores runtime; compile-time budget is comparatively loose.
+    // Prefer finishing whole-program CTFE (li+ret) over falling back to slow asm.
     static constexpr std::uint64_t kStepLimit = 4'000'000'000;
     static constexpr int kCallDepthLimit = 2048;
     static constexpr std::size_t kMemoEntryLimit = 500'000;
-    static constexpr int kCtfeTimeLimitSeconds = 12;
+    static constexpr int kCtfeTimeLimitSeconds = 30;
     static constexpr std::size_t kAffineDimensionLimit = 40;
     static constexpr std::uint64_t kAffineMinIterations = 16;
     static constexpr std::uint64_t kLoopTickBatch = 64;
+    // Sample the wall clock far less often than step accounting.
+    static constexpr std::uint64_t kLoopClockBatch = 65536;
 
     struct Cell {
         std::int32_t value = 0;
@@ -111,15 +113,20 @@ private:
     int callDepth_ = 0;
     std::chrono::steady_clock::time_point start_;
 
+    void checkTimeLimit() const {
+        if (std::chrono::steady_clock::now() - start_ >
+            std::chrono::seconds(kCtfeTimeLimitSeconds)) {
+            throw CtfeAbort{};
+        }
+    }
+
     void tick() {
         ++steps_;
         if (steps_ > kStepLimit) {
             throw CtfeAbort{};
         }
-        if ((steps_ & 0xfff) == 0 &&
-            std::chrono::steady_clock::now() - start_ >
-                std::chrono::seconds(kCtfeTimeLimitSeconds)) {
-            throw CtfeAbort{};
+        if ((steps_ & (kLoopClockBatch - 1)) == 0) {
+            checkTimeLimit();
         }
     }
 
@@ -128,9 +135,9 @@ private:
         if (steps_ > kStepLimit) {
             throw CtfeAbort{};
         }
-        if (std::chrono::steady_clock::now() - start_ >
-            std::chrono::seconds(kCtfeTimeLimitSeconds)) {
-            throw CtfeAbort{};
+        // Dense/bytecode loops call this often; only sample the clock periodically.
+        if ((steps_ & (kLoopClockBatch - 1)) < count) {
+            checkTimeLimit();
         }
     }
 
@@ -949,20 +956,15 @@ private:
                     return Flow{FlowKind::TailCall, 0};
                 }
                 case BcTickBatch:
-                    // One iteration = one step. Only sample the wall clock every
-                    // kLoopTickBatch iterations (matching the AST fast-path).
-                    // The old tickMany(64)-per-iteration path inflated the step
-                    // counter 64x and called steady_clock every loop — large
-                    // non-affine workloads aborted before finishing.
+                    // One iteration = one step. Clock is sampled every
+                    // kLoopClockBatch iterations to keep large call-heavy loops
+                    // from dying on host timer overhead.
                     ++steps_;
-                    if ((steps_ & (kLoopTickBatch - 1)) == 0) {
-                        if (steps_ > kStepLimit) {
-                            throw CtfeAbort{};
-                        }
-                        if (std::chrono::steady_clock::now() - start_ >
-                            std::chrono::seconds(kCtfeTimeLimitSeconds)) {
-                            throw CtfeAbort{};
-                        }
+                    if (steps_ > kStepLimit) {
+                        throw CtfeAbort{};
+                    }
+                    if ((steps_ & (kLoopClockBatch - 1)) == 0) {
+                        checkTimeLimit();
                     }
                     break;
                 case BcAffineWhile: {
@@ -1457,6 +1459,47 @@ private:
         return false;
     }
 
+    // Leaf `return <expr>` bodies that only reference parameters — safe to
+    // inline into a dense loop without allocating callee locals.
+    static const Expr* denseInlineReturnExpr(const Function& function) {
+        if (function.returnType != ValueType::Int || !function.body ||
+            function.body->kind != StmtKind::Block ||
+            function.body->statements.size() != 1) {
+            return nullptr;
+        }
+        const Stmt& stmt = *function.body->statements.front();
+        if (stmt.kind != StmtKind::Return || !stmt.expr) {
+            return nullptr;
+        }
+        return stmt.expr.get();
+    }
+
+    bool validateDenseInlinedReturn(const Expr& expr, const Function& callee) const {
+        switch (expr.kind) {
+            case ExprKind::Number:
+                return true;
+            case ExprKind::Variable:
+                return !expr.ctfeGlobal && expr.ctfeSlot >= 0 &&
+                       static_cast<std::size_t>(expr.ctfeSlot) < callee.params.size();
+            case ExprKind::Unary:
+                return (expr.ctfeOp == CtfeOp::Positive ||
+                        expr.ctfeOp == CtfeOp::Negative ||
+                        expr.ctfeOp == CtfeOp::LogicalNot) &&
+                       validateDenseInlinedReturn(*expr.lhs, callee);
+            case ExprKind::Binary:
+                if (expr.ctfeOp == CtfeOp::LogicalAnd ||
+                    expr.ctfeOp == CtfeOp::LogicalOr ||
+                    expr.ctfeOp == CtfeOp::None) {
+                    return false;
+                }
+                return validateDenseInlinedReturn(*expr.lhs, callee) &&
+                       validateDenseInlinedReturn(*expr.rhs, callee);
+            case ExprKind::Call:
+                return false;
+        }
+        return false;
+    }
+
     bool validateDenseLoopExpr(const Expr& expr, Frame& frame) const {
         switch (expr.kind) {
             case ExprKind::Number:
@@ -1476,8 +1519,22 @@ private:
                 }
                 return validateDenseLoopExpr(*expr.lhs, frame) &&
                        validateDenseLoopExpr(*expr.rhs, frame);
-            case ExprKind::Call:
-                return false;
+            case ExprKind::Call: {
+                if (!expr.ctfeCallee || !expr.ctfeCallee->ctfeMemoizable ||
+                    expr.args.size() != expr.ctfeCallee->params.size()) {
+                    return false;
+                }
+                const Expr* ret = denseInlineReturnExpr(*expr.ctfeCallee);
+                if (!ret || !validateDenseInlinedReturn(*ret, *expr.ctfeCallee)) {
+                    return false;
+                }
+                for (const auto& arg : expr.args) {
+                    if (!validateDenseLoopExpr(*arg, frame)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
         }
         return false;
     }
@@ -1506,6 +1563,94 @@ private:
 
         void patchJump(std::size_t operandIndex, std::size_t target) {
             code[operandIndex] = static_cast<std::int32_t>(target);
+        }
+
+        void compileInlinedReturn(const Expr& expr, const Function& callee,
+                                  const Expr& call) {
+            switch (expr.kind) {
+                case ExprKind::Number:
+                    emit(DnLoadImm, toInt32(expr.number));
+                    return;
+                case ExprKind::Variable: {
+                    if (expr.ctfeGlobal || expr.ctfeSlot < 0 ||
+                        static_cast<std::size_t>(expr.ctfeSlot) >= callee.params.size() ||
+                        static_cast<std::size_t>(expr.ctfeSlot) >= call.args.size()) {
+                        ok = false;
+                        return;
+                    }
+                    compileExpr(*call.args[static_cast<std::size_t>(expr.ctfeSlot)]);
+                    return;
+                }
+                case ExprKind::Unary:
+                    compileInlinedReturn(*expr.lhs, callee, call);
+                    if (!ok) {
+                        return;
+                    }
+                    if (expr.ctfeOp == CtfeOp::Positive) {
+                        return;
+                    }
+                    if (expr.ctfeOp == CtfeOp::Negative) {
+                        emit(DnNeg);
+                        return;
+                    }
+                    if (expr.ctfeOp == CtfeOp::LogicalNot) {
+                        emit(DnNot);
+                        return;
+                    }
+                    ok = false;
+                    return;
+                case ExprKind::Binary:
+                    compileInlinedReturn(*expr.lhs, callee, call);
+                    if (!ok) {
+                        return;
+                    }
+                    compileInlinedReturn(*expr.rhs, callee, call);
+                    if (!ok) {
+                        return;
+                    }
+                    switch (expr.ctfeOp) {
+                        case CtfeOp::Add:
+                            emit(DnAdd);
+                            return;
+                        case CtfeOp::Subtract:
+                            emit(DnSub);
+                            return;
+                        case CtfeOp::Multiply:
+                            emit(DnMul);
+                            return;
+                        case CtfeOp::Divide:
+                            emit(DnDiv);
+                            return;
+                        case CtfeOp::Remainder:
+                            emit(DnRem);
+                            return;
+                        case CtfeOp::Less:
+                            emit(DnLt);
+                            return;
+                        case CtfeOp::Greater:
+                            emit(DnGt);
+                            return;
+                        case CtfeOp::LessEqual:
+                            emit(DnLe);
+                            return;
+                        case CtfeOp::GreaterEqual:
+                            emit(DnGe);
+                            return;
+                        case CtfeOp::Equal:
+                            emit(DnEq);
+                            return;
+                        case CtfeOp::NotEqual:
+                            emit(DnNe);
+                            return;
+                        default:
+                            ok = false;
+                            return;
+                    }
+                case ExprKind::Call:
+                    ok = false;
+                    return;
+            }
+            ok = false;
         }
 
         void compileExpr(const Expr& expr) {
@@ -1598,9 +1743,19 @@ private:
                             ok = false;
                             return;
                     }
-                case ExprKind::Call:
-                    ok = false;
+                case ExprKind::Call: {
+                    if (!expr.ctfeCallee) {
+                        ok = false;
+                        return;
+                    }
+                    const Expr* ret = denseInlineReturnExpr(*expr.ctfeCallee);
+                    if (!ret) {
+                        ok = false;
+                        return;
+                    }
+                    compileInlinedReturn(*ret, *expr.ctfeCallee, expr);
                     return;
+                }
             }
             ok = false;
         }
