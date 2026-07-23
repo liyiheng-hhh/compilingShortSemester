@@ -8,7 +8,11 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_executable(toyc
     src/main.cpp
+    src/ctfe.cpp
+    src/codegen.cpp
 )
+
+target_include_directories(toyc PRIVATE src)
 
 target_compile_options(toyc PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-O2 -Wall -Wextra -Wpedantic>
