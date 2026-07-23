@@ -63,7 +63,13 @@ cmake --build build
 │   ├── 竞赛资料与性能优化分析.md
 │   └── 性能提分方案-第二阶段.md
 ├── src/
-│   └── main.cpp
+│   ├── main.cpp          # 流水线入口
+│   ├── common.hpp        # Options / 诊断 / 公共工具
+│   ├── ast.hpp           # AST
+│   ├── lexer.hpp         # 词法
+│   ├── parser.hpp        # 语法
+│   ├── ctfe.hpp/.cpp     # 全程序编译期求值
+│   └── codegen.hpp/.cpp  # RISC-V32 代码生成
 └── tests/
     ├── README.md
     ├── decl/
