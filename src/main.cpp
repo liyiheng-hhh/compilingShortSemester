@@ -957,7 +957,7 @@ private:
     static constexpr std::uint64_t kStepLimit = 4'000'000'000;
     static constexpr int kCallDepthLimit = 1024;
     static constexpr std::size_t kMemoEntryLimit = 500'000;
-    static constexpr int kCtfeTimeLimitSeconds = 4;
+    static constexpr int kCtfeTimeLimitSeconds = 5;
     static constexpr std::size_t kAffineDimensionLimit = 40;
     static constexpr std::uint64_t kAffineMinIterations = 16;
 
@@ -1352,6 +1352,48 @@ private:
             throw CtfeAbort{};
         }
         return cell;
+    }
+
+    // Hot-path cell access: slots are bound during prepareBindings.
+    std::int32_t readSlot(Frame* frame, int slot, bool global) const {
+        if (global) {
+            if (slot < 0 || static_cast<std::size_t>(slot) >= globals_.size() ||
+                !globals_[static_cast<std::size_t>(slot)].initialized) {
+                throw CtfeAbort{};
+            }
+            return globals_[static_cast<std::size_t>(slot)].value;
+        }
+        if (!frame || slot < 0 ||
+            static_cast<std::size_t>(slot) >= frame->locals.size() ||
+            !frame->locals[static_cast<std::size_t>(slot)].initialized) {
+            throw CtfeAbort{};
+        }
+        return frame->locals[static_cast<std::size_t>(slot)].value;
+    }
+
+    void writeSlot(Frame* frame, int slot, bool global, std::int32_t value) {
+        if (global) {
+            if (slot < 0 || static_cast<std::size_t>(slot) >= globals_.size()) {
+                throw CtfeAbort{};
+            }
+            Cell& cell = globals_[static_cast<std::size_t>(slot)];
+            if (cell.isConst) {
+                throw CtfeAbort{};
+            }
+            cell.value = value;
+            cell.initialized = true;
+            return;
+        }
+        if (!frame || slot < 0 ||
+            static_cast<std::size_t>(slot) >= frame->locals.size()) {
+            throw CtfeAbort{};
+        }
+        Cell& cell = frame->locals[static_cast<std::size_t>(slot)];
+        if (cell.isConst) {
+            throw CtfeAbort{};
+        }
+        cell.value = value;
+        cell.initialized = true;
     }
 
     std::int32_t invoke(const Function& function, std::vector<std::int32_t> args) {
@@ -1826,15 +1868,15 @@ private:
         }
         return true;
     }
-    Flow executeStmt(const Stmt& stmt, Frame& frame) {
-        // Empty statements are structural only; skip step accounting.
-        if (stmt.kind != StmtKind::Empty) {
+    Flow executeStmt(const Stmt& stmt, Frame& frame, bool accountSteps = true) {
+        // Empty/While handle their own accounting; skip the shared pre-tick.
+        if (accountSteps && stmt.kind != StmtKind::Empty && stmt.kind != StmtKind::While) {
             tick();
         }
         switch (stmt.kind) {
             case StmtKind::Block:
                 for (const auto& child : stmt.statements) {
-                    Flow flow = executeStmt(*child, frame);
+                    Flow flow = executeStmt(*child, frame, accountSteps);
                     if (flow.kind != FlowKind::Normal) {
                         return flow;
                     }
@@ -1847,11 +1889,7 @@ private:
                 return {};
             case StmtKind::Assign: {
                 const std::int32_t value = evalExpr(*stmt.expr, &frame);
-                Cell* cell = boundCell(&frame, stmt.ctfeSlot, stmt.ctfeGlobal);
-                if (cell->isConst) {
-                    throw CtfeAbort{};
-                }
-                cell->value = value;
+                writeSlot(&frame, stmt.ctfeSlot, stmt.ctfeGlobal, value);
                 return {};
             }
             case StmtKind::DeclStmt: {
@@ -1863,18 +1901,23 @@ private:
             }
             case StmtKind::If:
                 if (evalExpr(*stmt.expr, &frame) != 0) {
-                    return executeStmt(*stmt.thenBranch, frame);
+                    return executeStmt(*stmt.thenBranch, frame, accountSteps);
                 }
                 if (stmt.elseBranch) {
-                    return executeStmt(*stmt.elseBranch, frame);
+                    return executeStmt(*stmt.elseBranch, frame, accountSteps);
                 }
                 return {};
             case StmtKind::While:
                 if (tryExecuteAffineLoop(stmt, frame)) {
                     return {};
                 }
-                while (evalExpr(*stmt.expr, &frame) != 0) {
-                    Flow flow = executeStmt(*stmt.thenBranch, frame);
+                // One tick per iteration; body runs without per-statement accounting.
+                while (true) {
+                    tick();
+                    if (evalExpr(*stmt.expr, &frame) == 0) {
+                        break;
+                    }
+                    Flow flow = executeStmt(*stmt.thenBranch, frame, false);
                     if (flow.kind == FlowKind::Break) {
                         return {};
                     }
@@ -1911,7 +1954,7 @@ private:
             case ExprKind::Number:
                 return toInt32(expr.number);
             case ExprKind::Variable:
-                return boundCell(frame, expr.ctfeSlot, expr.ctfeGlobal)->value;
+                return readSlot(frame, expr.ctfeSlot, expr.ctfeGlobal);
             case ExprKind::Unary: {
                 const std::int32_t value = evalExpr(*expr.lhs, frame);
                 switch (expr.ctfeOp) {
@@ -2837,7 +2880,7 @@ private:
                 }
             }
 
-            int cachedExprCount = cacheLoopInvariantMultiplies(*stmt.thenBranch, 4);
+            int cachedExprCount = cacheLoopInvariantExprs(*stmt.thenBranch, 6);
             if (cacheLoopInductionMultiply(*stmt.thenBranch)) {
                 ++cachedExprCount;
             }
@@ -2950,58 +2993,59 @@ private:
             return std::nullopt;
         }
 
-        void collectInvariantMultiplies(const Expr& expr,
-                                        const std::unordered_set<std::string>& modified,
-                                        std::vector<const Expr*>& candidates) const {
-            if (candidates.size() >= 8) {
+        void collectInvariantExprs(const Expr& expr,
+                                   const std::unordered_set<std::string>& modified,
+                                   std::vector<const Expr*>& candidates) const {
+            if (candidates.size() >= 16) {
                 return;
             }
-            if (expr.kind == ExprKind::Binary && expr.op == "*" && !evalConst(expr) &&
+            if (expr.kind == ExprKind::Binary && !evalConst(expr) &&
+                (expr.op == "*" || expr.op == "+" || expr.op == "-") &&
                 isLoopInvariantExpr(expr, modified)) {
                 candidates.push_back(&expr);
-                return;
+                // Keep walking children so nested invariants are also candidates.
             }
             if (expr.kind == ExprKind::Unary) {
-                collectInvariantMultiplies(*expr.lhs, modified, candidates);
+                collectInvariantExprs(*expr.lhs, modified, candidates);
             } else if (expr.kind == ExprKind::Binary) {
-                collectInvariantMultiplies(*expr.lhs, modified, candidates);
-                collectInvariantMultiplies(*expr.rhs, modified, candidates);
+                collectInvariantExprs(*expr.lhs, modified, candidates);
+                collectInvariantExprs(*expr.rhs, modified, candidates);
             } else if (expr.kind == ExprKind::Call) {
                 for (const auto& arg : expr.args) {
-                    collectInvariantMultiplies(*arg, modified, candidates);
+                    collectInvariantExprs(*arg, modified, candidates);
                 }
             }
         }
 
-        void collectInvariantMultiplies(const Stmt& stmt,
-                                        const std::unordered_set<std::string>& modified,
-                                        std::vector<const Expr*>& candidates) const {
+        void collectInvariantExprs(const Stmt& stmt,
+                                   const std::unordered_set<std::string>& modified,
+                                   std::vector<const Expr*>& candidates) const {
             switch (stmt.kind) {
                 case StmtKind::Block:
                     for (const auto& child : stmt.statements) {
-                        collectInvariantMultiplies(*child, modified, candidates);
+                        collectInvariantExprs(*child, modified, candidates);
                     }
                     return;
                 case StmtKind::ExprStmt:
                 case StmtKind::Assign:
                 case StmtKind::Return:
                     if (stmt.expr) {
-                        collectInvariantMultiplies(*stmt.expr, modified, candidates);
+                        collectInvariantExprs(*stmt.expr, modified, candidates);
                     }
                     return;
                 case StmtKind::DeclStmt:
-                    collectInvariantMultiplies(*stmt.decl->init, modified, candidates);
+                    collectInvariantExprs(*stmt.decl->init, modified, candidates);
                     return;
                 case StmtKind::If:
-                    collectInvariantMultiplies(*stmt.expr, modified, candidates);
-                    collectInvariantMultiplies(*stmt.thenBranch, modified, candidates);
+                    collectInvariantExprs(*stmt.expr, modified, candidates);
+                    collectInvariantExprs(*stmt.thenBranch, modified, candidates);
                     if (stmt.elseBranch) {
-                        collectInvariantMultiplies(*stmt.elseBranch, modified, candidates);
+                        collectInvariantExprs(*stmt.elseBranch, modified, candidates);
                     }
                     return;
                 case StmtKind::While:
-                    collectInvariantMultiplies(*stmt.expr, modified, candidates);
-                    collectInvariantMultiplies(*stmt.thenBranch, modified, candidates);
+                    collectInvariantExprs(*stmt.expr, modified, candidates);
+                    collectInvariantExprs(*stmt.thenBranch, modified, candidates);
                     return;
                 case StmtKind::Empty:
                 case StmtKind::Break:
@@ -3010,19 +3054,17 @@ private:
             }
         }
 
-        int cacheLoopInvariantMultiplies(const Stmt& body, int maxCount) {
+        int cacheLoopInvariantExprs(const Stmt& body, int maxCount) {
             if (!parent_.options_.optimize || maxCount <= 0 ||
                 localRegCount_ >= allocatableLocalRegisterCount()) {
                 return 0;
             }
 
-            // Cache several non-trapping invariant multiplies; bound by registers.
             std::unordered_set<std::string> modified;
             collectLoopModifiedNames(body, modified);
             std::vector<const Expr*> candidates;
-            collectInvariantMultiplies(body, modified, candidates);
+            collectInvariantExprs(body, modified, candidates);
 
-            // Prefer expressions that appear more than once inside the loop.
             std::stable_sort(candidates.begin(), candidates.end(),
                              [&](const Expr* lhs, const Expr* rhs) {
                                  const auto leftCount = std::count_if(
@@ -3031,13 +3073,26 @@ private:
                                  const auto rightCount = std::count_if(
                                      candidates.begin(), candidates.end(),
                                      [&](const Expr* other) { return sameExpr(*rhs, *other); });
-                                 return leftCount > rightCount;
+                                 if (leftCount != rightCount) {
+                                     return leftCount > rightCount;
+                                 }
+                                 // Prefer multiplies: they are more expensive than add/sub.
+                                 const int leftWeight = lhs->op == "*" ? 2 : 1;
+                                 const int rightWeight = rhs->op == "*" ? 2 : 1;
+                                 return leftWeight > rightWeight;
                              });
 
             int cached = 0;
             for (const Expr* candidate : candidates) {
                 if (cached >= maxCount || localRegCount_ >= allocatableLocalRegisterCount()) {
                     break;
+                }
+                const auto occurrences = std::count_if(
+                    candidates.begin(), candidates.end(),
+                    [&](const Expr* other) { return sameExpr(*candidate, *other); });
+                // Always hoist multiplies; hoist add/sub only when reused.
+                if (candidate->op != "*" && occurrences < 2) {
+                    continue;
                 }
                 if (cachedLoopExprRegister(*candidate)) {
                     continue;
@@ -3051,6 +3106,22 @@ private:
                 ++cached;
             }
             return cached;
+        }
+
+        void collectInvariantMultiplies(const Expr& expr,
+                                        const std::unordered_set<std::string>& modified,
+                                        std::vector<const Expr*>& candidates) const {
+            collectInvariantExprs(expr, modified, candidates);
+        }
+
+        void collectInvariantMultiplies(const Stmt& stmt,
+                                        const std::unordered_set<std::string>& modified,
+                                        std::vector<const Expr*>& candidates) const {
+            collectInvariantExprs(stmt, modified, candidates);
+        }
+
+        int cacheLoopInvariantMultiplies(const Stmt& body, int maxCount) {
+            return cacheLoopInvariantExprs(body, maxCount);
         }
 
         bool isUnitIncrement(const Stmt& stmt, const std::string& name) const {
