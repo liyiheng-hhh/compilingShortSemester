@@ -973,6 +973,9 @@ private:
                     }
                     if (tryExecuteAffineLoop(*function.ctfeWhileStmts[whileIndex], frame)) {
                         ip = end;
+                    } else if (tryExecuteNativeDenseLoop(
+                                   *function.ctfeWhileStmts[whileIndex], frame)) {
+                        ip = end;
                     }
                     break;
                 }
@@ -1313,6 +1316,634 @@ private:
         }
     }
 
+    enum DenseOp : std::int32_t {
+        DnLoadSlot = 1,
+        DnLoadImm,
+        DnStoreSlot,
+        DnAdd,
+        DnSub,
+        DnMul,
+        DnDiv,
+        DnRem,
+        DnNeg,
+        DnNot,
+        DnLt,
+        DnGt,
+        DnLe,
+        DnGe,
+        DnEq,
+        DnNe,
+        DnPop,
+        DnJump,
+        DnJumpIf0,
+        DnJumpIfNot0,
+    };
+
+    static std::size_t denseSlotIndex(int slot, bool global, std::size_t localCount,
+                                      std::size_t globalCount) {
+        if (global) {
+            return localCount + checkedSlot(slot, globalCount);
+        }
+        return checkedSlot(slot, localCount);
+    }
+
+    static bool tryParseInductionStep(const Expr& expr, std::size_t inductionIndex,
+                                      std::size_t localCount, std::size_t globalCount,
+                                      std::int32_t& step) {
+        if (expr.kind != ExprKind::Binary) {
+            return false;
+        }
+        const auto isInductionVar = [&](const Expr& value) {
+            return value.kind == ExprKind::Variable &&
+                   denseSlotIndex(value.ctfeSlot, value.ctfeGlobal, localCount,
+                                  globalCount) == inductionIndex;
+        };
+        const auto tryConstant = [&](const Expr& value, std::int32_t& out) {
+            if (value.kind != ExprKind::Number) {
+                return false;
+            }
+            out = toInt32(value.number);
+            return true;
+        };
+        if (expr.ctfeOp == CtfeOp::Add) {
+            std::int32_t constant = 0;
+            if (isInductionVar(*expr.lhs) && tryConstant(*expr.rhs, constant)) {
+                step = constant;
+                return true;
+            }
+            if (isInductionVar(*expr.rhs) && tryConstant(*expr.lhs, constant)) {
+                step = constant;
+                return true;
+            }
+        } else if (expr.ctfeOp == CtfeOp::Subtract) {
+            std::int32_t constant = 0;
+            if (isInductionVar(*expr.lhs) && tryConstant(*expr.rhs, constant)) {
+                step = -constant;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool validateDenseLoopBody(const Stmt& stmt, Frame& frame,
+                               std::vector<bool>& modified,
+                               std::vector<std::int8_t>& declarations,
+                               std::size_t inductionIndex, int& inductionUpdates,
+                               std::int32_t& step) {
+        switch (stmt.kind) {
+            case StmtKind::Block:
+                for (const auto& child : stmt.statements) {
+                    if (!validateDenseLoopBody(
+                            *child, frame, modified, declarations, inductionIndex,
+                            inductionUpdates, step)) {
+                        return false;
+                    }
+                }
+                return true;
+            case StmtKind::Empty:
+                return true;
+            case StmtKind::Assign: {
+                const std::size_t index = denseSlotIndex(
+                    stmt.ctfeSlot, stmt.ctfeGlobal, frame.locals.size(),
+                    globals_.size());
+                if (index == inductionIndex) {
+                    std::int32_t parsedStep = 0;
+                    if (!tryParseInductionStep(
+                            *stmt.expr, inductionIndex, frame.locals.size(),
+                            globals_.size(), parsedStep)) {
+                        return false;
+                    }
+                    if (inductionUpdates != 0 && parsedStep != step) {
+                        return false;
+                    }
+                    step = parsedStep;
+                    ++inductionUpdates;
+                } else if (declarations[index] >= 0) {
+                    if (declarations[index] != 0) {
+                        return false;
+                    }
+                } else if (boundCell(
+                               &frame, stmt.ctfeSlot, stmt.ctfeGlobal)->isConst) {
+                    return false;
+                }
+                modified[index] = true;
+                return true;
+            }
+            case StmtKind::DeclStmt: {
+                const std::size_t index = denseSlotIndex(
+                    stmt.decl->ctfeSlot, false, frame.locals.size(),
+                    globals_.size());
+                modified[index] = true;
+                declarations[index] = stmt.decl->isConst ? 1 : 0;
+                return true;
+            }
+            case StmtKind::ExprStmt:
+                return validateDenseLoopExpr(*stmt.expr, frame);
+            case StmtKind::If:
+                return validateDenseLoopExpr(*stmt.expr, frame) &&
+                       validateDenseLoopBody(
+                           *stmt.thenBranch, frame, modified, declarations,
+                           inductionIndex, inductionUpdates, step) &&
+                       (!stmt.elseBranch ||
+                        validateDenseLoopBody(
+                            *stmt.elseBranch, frame, modified, declarations,
+                            inductionIndex, inductionUpdates, step));
+            case StmtKind::While:
+            case StmtKind::Break:
+            case StmtKind::Continue:
+            case StmtKind::Return:
+                return false;
+        }
+        return false;
+    }
+
+    bool validateDenseLoopExpr(const Expr& expr, Frame& frame) const {
+        switch (expr.kind) {
+            case ExprKind::Number:
+            case ExprKind::Variable:
+                return true;
+            case ExprKind::Unary:
+                return expr.ctfeOp == CtfeOp::Positive ||
+                       expr.ctfeOp == CtfeOp::Negative ||
+                       expr.ctfeOp == CtfeOp::LogicalNot
+                    ? validateDenseLoopExpr(*expr.lhs, frame)
+                    : false;
+            case ExprKind::Binary:
+                if (expr.ctfeOp == CtfeOp::LogicalAnd ||
+                    expr.ctfeOp == CtfeOp::LogicalOr) {
+                    return validateDenseLoopExpr(*expr.lhs, frame) &&
+                           validateDenseLoopExpr(*expr.rhs, frame);
+                }
+                return validateDenseLoopExpr(*expr.lhs, frame) &&
+                       validateDenseLoopExpr(*expr.rhs, frame);
+            case ExprKind::Call:
+                return false;
+        }
+        return false;
+    }
+
+    struct DenseEmitter {
+        Frame& frame;
+        std::size_t globalCount;
+        std::vector<std::int32_t>& code;
+        bool ok = true;
+
+        std::size_t slotIndex(int slot, bool global) const {
+            return denseSlotIndex(slot, global, frame.locals.size(), globalCount);
+        }
+
+        void emit(DenseOp op) { code.push_back(op); }
+
+        void emit(DenseOp op, std::int32_t operand) {
+            code.push_back(op);
+            code.push_back(operand);
+        }
+
+        std::size_t emitJumpPlaceholder(DenseOp op) {
+            emit(op, 0);
+            return code.size() - 1;
+        }
+
+        void patchJump(std::size_t operandIndex, std::size_t target) {
+            code[operandIndex] = static_cast<std::int32_t>(target);
+        }
+
+        void compileExpr(const Expr& expr) {
+            switch (expr.kind) {
+                case ExprKind::Number:
+                    emit(DnLoadImm, toInt32(expr.number));
+                    return;
+                case ExprKind::Variable:
+                    emit(DnLoadSlot,
+                         static_cast<std::int32_t>(
+                             slotIndex(expr.ctfeSlot, expr.ctfeGlobal)));
+                    return;
+                case ExprKind::Unary:
+                    compileExpr(*expr.lhs);
+                    if (expr.ctfeOp == CtfeOp::Positive) {
+                        return;
+                    }
+                    if (expr.ctfeOp == CtfeOp::Negative) {
+                        emit(DnNeg);
+                        return;
+                    }
+                    if (expr.ctfeOp == CtfeOp::LogicalNot) {
+                        emit(DnNot);
+                        return;
+                    }
+                    ok = false;
+                    return;
+                case ExprKind::Binary:
+                    if (expr.ctfeOp == CtfeOp::LogicalAnd) {
+                        compileExpr(*expr.lhs);
+                        const std::size_t falseJump = emitJumpPlaceholder(DnJumpIf0);
+                        compileExpr(*expr.rhs);
+                        emit(DnNot);
+                        emit(DnNot);
+                        const std::size_t endJump = emitJumpPlaceholder(DnJump);
+                        patchJump(falseJump, code.size());
+                        emit(DnLoadImm, 0);
+                        patchJump(endJump, code.size());
+                        return;
+                    }
+                    if (expr.ctfeOp == CtfeOp::LogicalOr) {
+                        compileExpr(*expr.lhs);
+                        const std::size_t trueJump = emitJumpPlaceholder(DnJumpIfNot0);
+                        compileExpr(*expr.rhs);
+                        emit(DnNot);
+                        emit(DnNot);
+                        const std::size_t endJump = emitJumpPlaceholder(DnJump);
+                        patchJump(trueJump, code.size());
+                        emit(DnLoadImm, 1);
+                        patchJump(endJump, code.size());
+                        return;
+                    }
+                    compileExpr(*expr.lhs);
+                    compileExpr(*expr.rhs);
+                    switch (expr.ctfeOp) {
+                        case CtfeOp::Add:
+                            emit(DnAdd);
+                            return;
+                        case CtfeOp::Subtract:
+                            emit(DnSub);
+                            return;
+                        case CtfeOp::Multiply:
+                            emit(DnMul);
+                            return;
+                        case CtfeOp::Divide:
+                            emit(DnDiv);
+                            return;
+                        case CtfeOp::Remainder:
+                            emit(DnRem);
+                            return;
+                        case CtfeOp::Less:
+                            emit(DnLt);
+                            return;
+                        case CtfeOp::Greater:
+                            emit(DnGt);
+                            return;
+                        case CtfeOp::LessEqual:
+                            emit(DnLe);
+                            return;
+                        case CtfeOp::GreaterEqual:
+                            emit(DnGe);
+                            return;
+                        case CtfeOp::Equal:
+                            emit(DnEq);
+                            return;
+                        case CtfeOp::NotEqual:
+                            emit(DnNe);
+                            return;
+                        default:
+                            ok = false;
+                            return;
+                    }
+                case ExprKind::Call:
+                    ok = false;
+                    return;
+            }
+            ok = false;
+        }
+
+        void compileStmt(const Stmt& stmt) {
+            switch (stmt.kind) {
+                case StmtKind::Block:
+                    for (const auto& child : stmt.statements) {
+                        compileStmt(*child);
+                    }
+                    return;
+                case StmtKind::Empty:
+                    return;
+                case StmtKind::ExprStmt:
+                    compileExpr(*stmt.expr);
+                    emit(DnPop);
+                    return;
+                case StmtKind::Assign:
+                    compileExpr(*stmt.expr);
+                    emit(DnStoreSlot,
+                          static_cast<std::int32_t>(
+                              slotIndex(stmt.ctfeSlot, stmt.ctfeGlobal)));
+                    return;
+                case StmtKind::DeclStmt:
+                    compileExpr(*stmt.decl->init);
+                    emit(DnStoreSlot,
+                          static_cast<std::int32_t>(
+                              slotIndex(stmt.decl->ctfeSlot, false)));
+                    return;
+                case StmtKind::If: {
+                    compileExpr(*stmt.expr);
+                    const std::size_t elseJump = emitJumpPlaceholder(DnJumpIf0);
+                    compileStmt(*stmt.thenBranch);
+                    if (!stmt.elseBranch) {
+                        patchJump(elseJump, code.size());
+                        return;
+                    }
+                    const std::size_t endJump = emitJumpPlaceholder(DnJump);
+                    patchJump(elseJump, code.size());
+                    compileStmt(*stmt.elseBranch);
+                    patchJump(endJump, code.size());
+                    return;
+                }
+                default:
+                    ok = false;
+                    return;
+            }
+        }
+    };
+
+    static void runDenseProgram(const std::vector<std::int32_t>& code,
+                                std::vector<std::int32_t>& slots,
+                                std::vector<std::int32_t>& stack) {
+        stack.clear();
+        std::size_t ip = 0;
+        while (ip < code.size()) {
+            const DenseOp op = static_cast<DenseOp>(code[ip++]);
+            switch (op) {
+                case DnLoadSlot:
+                    stack.push_back(slots[static_cast<std::size_t>(code[ip++])]);
+                    break;
+                case DnLoadImm:
+                    stack.push_back(code[ip++]);
+                    break;
+                case DnStoreSlot: {
+                    const auto index = static_cast<std::size_t>(code[ip++]);
+                    slots[index] = popStack(stack);
+                    break;
+                }
+                case DnAdd: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(toInt32(static_cast<std::int64_t>(lhs) + rhs));
+                    break;
+                }
+                case DnSub: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(toInt32(static_cast<std::int64_t>(lhs) - rhs));
+                    break;
+                }
+                case DnMul: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(toInt32(static_cast<std::int64_t>(lhs) * rhs));
+                    break;
+                }
+                case DnDiv: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    if (rhs == 0) {
+                        throw CtfeAbort{};
+                    }
+                    stack.push_back(toInt32(static_cast<std::int64_t>(lhs) / rhs));
+                    break;
+                }
+                case DnRem: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    if (rhs == 0) {
+                        throw CtfeAbort{};
+                    }
+                    stack.push_back(toInt32(static_cast<std::int64_t>(lhs) % rhs));
+                    break;
+                }
+                case DnNeg:
+                    stack.push_back(
+                        toInt32(-static_cast<std::int64_t>(popStack(stack))));
+                    break;
+                case DnNot:
+                    stack.push_back(popStack(stack) == 0 ? 1 : 0);
+                    break;
+                case DnLt: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs < rhs ? 1 : 0);
+                    break;
+                }
+                case DnGt: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs > rhs ? 1 : 0);
+                    break;
+                }
+                case DnLe: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs <= rhs ? 1 : 0);
+                    break;
+                }
+                case DnGe: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs >= rhs ? 1 : 0);
+                    break;
+                }
+                case DnEq: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs == rhs ? 1 : 0);
+                    break;
+                }
+                case DnNe: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs != rhs ? 1 : 0);
+                    break;
+                }
+                case DnPop:
+                    popStack(stack);
+                    break;
+                case DnJump:
+                    ip = static_cast<std::size_t>(code[ip]);
+                    break;
+                case DnJumpIf0: {
+                    const std::size_t target = static_cast<std::size_t>(code[ip++]);
+                    if (popStack(stack) == 0) {
+                        ip = target;
+                    }
+                    break;
+                }
+                case DnJumpIfNot0: {
+                    const std::size_t target = static_cast<std::size_t>(code[ip++]);
+                    if (popStack(stack) != 0) {
+                        ip = target;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    bool tryExecuteNativeDenseLoop(const Stmt& stmt, Frame& frame) {
+        const Expr& condition = *stmt.expr;
+        if (condition.kind != ExprKind::Binary) {
+            return false;
+        }
+        const CtfeOp rawOp = condition.ctfeOp;
+        if (rawOp != CtfeOp::Less && rawOp != CtfeOp::LessEqual &&
+            rawOp != CtfeOp::Greater && rawOp != CtfeOp::GreaterEqual) {
+            return false;
+        }
+
+        const auto isNumberOrVar = [](const Expr& expr) {
+            return expr.kind == ExprKind::Number || expr.kind == ExprKind::Variable;
+        };
+
+        const Expr* inductionExpr = nullptr;
+        const Expr* boundExpr = nullptr;
+        CtfeOp op = rawOp;
+        if (condition.lhs->kind == ExprKind::Variable && isNumberOrVar(*condition.rhs)) {
+            inductionExpr = condition.lhs.get();
+            boundExpr = condition.rhs.get();
+        } else if (condition.rhs->kind == ExprKind::Variable &&
+                   isNumberOrVar(*condition.lhs)) {
+            inductionExpr = condition.rhs.get();
+            boundExpr = condition.lhs.get();
+            op = flipComparison(rawOp);
+        } else {
+            return false;
+        }
+
+        const std::size_t stateCount = frame.locals.size() + globals_.size();
+        if (stateCount + 1 > kAffineDimensionLimit) {
+            return false;
+        }
+
+        const std::size_t inductionIndex = denseSlotIndex(
+            inductionExpr->ctfeSlot, inductionExpr->ctfeGlobal,
+            frame.locals.size(), globals_.size());
+
+        std::vector<bool> modified(stateCount, false);
+        std::vector<std::int8_t> declarations(stateCount, -1);
+        int inductionUpdates = 0;
+        std::int32_t step = 0;
+        if (!validateDenseLoopBody(
+                *stmt.thenBranch, frame, modified, declarations,
+                inductionIndex, inductionUpdates, step)) {
+            return false;
+        }
+        if (inductionUpdates != 1) {
+            return false;
+        }
+
+        Cell* inductionCell = boundCell(
+            &frame, inductionExpr->ctfeSlot, inductionExpr->ctfeGlobal);
+
+        std::int32_t bound = 0;
+        if (boundExpr->kind == ExprKind::Number) {
+            bound = toInt32(boundExpr->number);
+        } else {
+            const std::size_t boundIndex = denseSlotIndex(
+                boundExpr->ctfeSlot, boundExpr->ctfeGlobal,
+                frame.locals.size(), globals_.size());
+            if (modified[boundIndex]) {
+                return false;
+            }
+            bound = boundCell(
+                &frame, boundExpr->ctfeSlot, boundExpr->ctfeGlobal)->value;
+        }
+
+        const std::int32_t start = inductionCell->value;
+        const bool increasing = op == CtfeOp::Less || op == CtfeOp::LessEqual;
+        if (increasing) {
+            if (step <= 0) {
+                return false;
+            }
+            if ((op == CtfeOp::Less && start >= bound) ||
+                (op == CtfeOp::LessEqual && start > bound)) {
+                return false;
+            }
+        } else if (step >= 0) {
+            return false;
+        } else if ((op == CtfeOp::Greater && start <= bound) ||
+                   (op == CtfeOp::GreaterEqual && start < bound)) {
+            return false;
+        }
+
+        std::uint64_t iterations = 0;
+        if (increasing) {
+            const std::int64_t distance =
+                static_cast<std::int64_t>(bound) - start;
+            if (op == CtfeOp::Less) {
+                iterations = static_cast<std::uint64_t>(
+                    (distance + step - 1) / step);
+            } else {
+                iterations = static_cast<std::uint64_t>(distance / step + 1);
+            }
+        } else {
+            const std::int64_t distance =
+                static_cast<std::int64_t>(start) - bound;
+            const std::int64_t negStep = -static_cast<std::int64_t>(step);
+            if (op == CtfeOp::Greater) {
+                iterations = static_cast<std::uint64_t>(
+                    (distance + negStep - 1) / negStep);
+            } else {
+                iterations = static_cast<std::uint64_t>(distance / negStep + 1);
+            }
+        }
+        if (iterations < kAffineMinIterations) {
+            return false;
+        }
+
+        const std::int64_t finalInduction =
+            static_cast<std::int64_t>(start) +
+            static_cast<std::int64_t>(iterations) * step;
+        if (finalInduction > std::numeric_limits<std::int32_t>::max() ||
+            finalInduction < std::numeric_limits<std::int32_t>::min()) {
+            return false;
+        }
+        if ((op == CtfeOp::Less && finalInduction < bound) ||
+            (op == CtfeOp::LessEqual && finalInduction <= bound) ||
+            (op == CtfeOp::Greater && finalInduction > bound) ||
+            (op == CtfeOp::GreaterEqual && finalInduction >= bound)) {
+            return false;
+        }
+
+        std::vector<std::int32_t> program;
+        program.reserve(64);
+        DenseEmitter emitter{frame, globals_.size(), program};
+        emitter.compileStmt(*stmt.thenBranch);
+        if (!emitter.ok || program.empty()) {
+            return false;
+        }
+
+        std::vector<std::int32_t> slots(stateCount, 0);
+        for (std::size_t i = 0; i < frame.locals.size(); ++i) {
+            if (frame.locals[i].initialized) {
+                slots[i] = frame.locals[i].value;
+            }
+        }
+        for (std::size_t i = 0; i < globals_.size(); ++i) {
+            slots[frame.locals.size() + i] = globals_[i].value;
+        }
+
+        std::vector<std::int32_t> stack;
+        stack.reserve(32);
+        std::uint64_t done = 0;
+        while (done < iterations) {
+            if ((done & (kLoopTickBatch - 1)) == 0) {
+                tickMany(kLoopTickBatch);
+            }
+            runDenseProgram(program, slots, stack);
+            ++done;
+        }
+
+        for (std::size_t i = 0; i < frame.locals.size(); ++i) {
+            if (frame.locals[i].initialized || modified[i] || declarations[i] >= 0) {
+                frame.locals[i].value = slots[i];
+            }
+            if (declarations[i] >= 0) {
+                frame.locals[i].isConst = declarations[i] != 0;
+                frame.locals[i].initialized = true;
+            }
+        }
+        for (std::size_t i = 0; i < globals_.size(); ++i) {
+            if (modified[frame.locals.size() + i]) {
+                globals_[i].value = slots[frame.locals.size() + i];
+            }
+        }
+        return true;
+    }
+
     bool tryExecuteAffineLoop(const Stmt& stmt, Frame& frame) {
         const Expr& condition = *stmt.expr;
         if (condition.kind != ExprKind::Binary) {
@@ -1579,6 +2210,9 @@ private:
                 if (tryExecuteAffineLoop(stmt, frame)) {
                     return {};
                 }
+                if (tryExecuteNativeDenseLoop(stmt, frame)) {
+                    return {};
+                }
                 // Batch step accounting: one host check per 64 iterations.
                 {
                     std::uint64_t iters = 0;
@@ -1723,6 +2357,7 @@ std::string emitConstantProgram(std::int32_t value) {
     out << "    .text\n";
     out << "    .globl main\n";
     out << "main:\n";
+    out << "    # toyc-ctfe: hit\n";
     out << "    li a0, " << printableI32(value) << '\n';
     out << "    ret\n";
     return out.str();

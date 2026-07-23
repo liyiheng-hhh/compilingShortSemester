@@ -21,6 +21,7 @@ int main(int argc, char** argv) {
                 return 0;
             }
         }
+        std::cout << "    # toyc-ctfe: miss\n";
         std::cout << toyc::generateRiscV(unit, options);
         return 0;
     } catch (const std::exception& error) {
