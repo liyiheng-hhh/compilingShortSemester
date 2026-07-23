@@ -186,6 +186,7 @@ private:
 
         for (const auto& function : unit_.functions) {
             bindFunction(*function);
+            compileFunction(*function);
         }
         analyzeMemoizableFunctions();
         memo_.clear();
@@ -497,6 +498,475 @@ private:
         cell.initialized = true;
     }
 
+    enum BcOp : std::int32_t {
+        BcLoadImm = 1,
+        BcLoadLocal,
+        BcLoadGlobal,
+        BcStoreLocal,
+        BcStoreLocalConst,
+        BcStoreGlobal,
+        BcAdd,
+        BcSub,
+        BcMul,
+        BcDiv,
+        BcRem,
+        BcLt,
+        BcGt,
+        BcLe,
+        BcGe,
+        BcEq,
+        BcNe,
+        BcNeg,
+        BcNot,
+        BcJump,
+        BcJumpIf0,
+        BcJumpIfNot0,
+        BcCall,
+        BcReturn,
+        BcReturn0,
+        BcTailSelf,
+        BcTickBatch,
+        BcAffineWhile,
+        BcPop,
+    };
+
+    void emitOp(Function& function, BcOp op) { function.ctfeCode.push_back(op); }
+
+    void emitOp(Function& function, BcOp op, std::int32_t a) {
+        function.ctfeCode.push_back(op);
+        function.ctfeCode.push_back(a);
+    }
+
+    void emitOp(Function& function, BcOp op, std::int32_t a, std::int32_t b) {
+        function.ctfeCode.push_back(op);
+        function.ctfeCode.push_back(a);
+        function.ctfeCode.push_back(b);
+    }
+
+    std::size_t emitJumpPlaceholder(Function& function, BcOp op) {
+        emitOp(function, op, 0);
+        return function.ctfeCode.size() - 1;
+    }
+
+    void patchJump(Function& function, std::size_t operandIndex, std::size_t target) {
+        function.ctfeCode[operandIndex] = static_cast<std::int32_t>(target);
+    }
+
+    int functionIndex(const Function* function) const {
+        for (std::size_t i = 0; i < unit_.functions.size(); ++i) {
+            if (unit_.functions[i].get() == function) {
+                return static_cast<int>(i);
+            }
+        }
+        throw CtfeAbort{};
+    }
+
+    void compileExpr(Function& function, const Expr& expr) {
+        switch (expr.kind) {
+            case ExprKind::Number:
+                emitOp(function, BcLoadImm, toInt32(expr.number));
+                return;
+            case ExprKind::Variable:
+                emitOp(function, expr.ctfeGlobal ? BcLoadGlobal : BcLoadLocal, expr.ctfeSlot);
+                return;
+            case ExprKind::Unary:
+                compileExpr(function, *expr.lhs);
+                if (expr.ctfeOp == CtfeOp::Positive) {
+                    return;
+                }
+                if (expr.ctfeOp == CtfeOp::Negative) {
+                    emitOp(function, BcNeg);
+                    return;
+                }
+                if (expr.ctfeOp == CtfeOp::LogicalNot) {
+                    emitOp(function, BcNot);
+                    return;
+                }
+                throw CtfeAbort{};
+            case ExprKind::Binary:
+                if (expr.ctfeOp == CtfeOp::LogicalAnd) {
+                    compileExpr(function, *expr.lhs);
+                    const std::size_t falseJump = emitJumpPlaceholder(function, BcJumpIf0);
+                    compileExpr(function, *expr.rhs);
+                    emitOp(function, BcNot);
+                    emitOp(function, BcNot);
+                    const std::size_t endJump = emitJumpPlaceholder(function, BcJump);
+                    patchJump(function, falseJump, function.ctfeCode.size());
+                    emitOp(function, BcLoadImm, 0);
+                    patchJump(function, endJump, function.ctfeCode.size());
+                    return;
+                }
+                if (expr.ctfeOp == CtfeOp::LogicalOr) {
+                    compileExpr(function, *expr.lhs);
+                    const std::size_t trueJump = emitJumpPlaceholder(function, BcJumpIfNot0);
+                    compileExpr(function, *expr.rhs);
+                    emitOp(function, BcNot);
+                    emitOp(function, BcNot);
+                    const std::size_t endJump = emitJumpPlaceholder(function, BcJump);
+                    patchJump(function, trueJump, function.ctfeCode.size());
+                    emitOp(function, BcLoadImm, 1);
+                    patchJump(function, endJump, function.ctfeCode.size());
+                    return;
+                }
+                compileExpr(function, *expr.lhs);
+                compileExpr(function, *expr.rhs);
+                switch (expr.ctfeOp) {
+                    case CtfeOp::Add:
+                        emitOp(function, BcAdd);
+                        return;
+                    case CtfeOp::Subtract:
+                        emitOp(function, BcSub);
+                        return;
+                    case CtfeOp::Multiply:
+                        emitOp(function, BcMul);
+                        return;
+                    case CtfeOp::Divide:
+                        emitOp(function, BcDiv);
+                        return;
+                    case CtfeOp::Remainder:
+                        emitOp(function, BcRem);
+                        return;
+                    case CtfeOp::Less:
+                        emitOp(function, BcLt);
+                        return;
+                    case CtfeOp::Greater:
+                        emitOp(function, BcGt);
+                        return;
+                    case CtfeOp::LessEqual:
+                        emitOp(function, BcLe);
+                        return;
+                    case CtfeOp::GreaterEqual:
+                        emitOp(function, BcGe);
+                        return;
+                    case CtfeOp::Equal:
+                        emitOp(function, BcEq);
+                        return;
+                    case CtfeOp::NotEqual:
+                        emitOp(function, BcNe);
+                        return;
+                    default:
+                        throw CtfeAbort{};
+                }
+            case ExprKind::Call:
+                for (const auto& arg : expr.args) {
+                    compileExpr(function, *arg);
+                }
+                if (!expr.ctfeCallee) {
+                    throw CtfeAbort{};
+                }
+                emitOp(function, BcCall, functionIndex(expr.ctfeCallee),
+                       static_cast<std::int32_t>(expr.args.size()));
+                return;
+        }
+        throw CtfeAbort{};
+    }
+
+    struct LoopEmit {
+        std::size_t continueTarget = 0;
+        std::vector<std::size_t> breakOperands;
+    };
+
+    void compileStmt(Function& function, const Stmt& stmt, std::vector<LoopEmit>& loops) {
+        switch (stmt.kind) {
+            case StmtKind::Block:
+                for (const auto& child : stmt.statements) {
+                    compileStmt(function, *child, loops);
+                }
+                return;
+            case StmtKind::Empty:
+                return;
+            case StmtKind::ExprStmt:
+                compileExpr(function, *stmt.expr);
+                emitOp(function, BcPop);
+                return;
+            case StmtKind::Assign:
+                compileExpr(function, *stmt.expr);
+                emitOp(function, stmt.ctfeGlobal ? BcStoreGlobal : BcStoreLocal, stmt.ctfeSlot);
+                return;
+            case StmtKind::DeclStmt:
+                compileExpr(function, *stmt.decl->init);
+                emitOp(function,
+                       stmt.decl->isConst ? BcStoreLocalConst : BcStoreLocal,
+                       stmt.decl->ctfeSlot);
+                return;
+            case StmtKind::If: {
+                compileExpr(function, *stmt.expr);
+                const std::size_t elseJump = emitJumpPlaceholder(function, BcJumpIf0);
+                compileStmt(function, *stmt.thenBranch, loops);
+                if (!stmt.elseBranch) {
+                    patchJump(function, elseJump, function.ctfeCode.size());
+                    return;
+                }
+                const std::size_t endJump = emitJumpPlaceholder(function, BcJump);
+                patchJump(function, elseJump, function.ctfeCode.size());
+                compileStmt(function, *stmt.elseBranch, loops);
+                patchJump(function, endJump, function.ctfeCode.size());
+                return;
+            }
+            case StmtKind::While: {
+                const std::size_t whileIndex = function.ctfeWhileStmts.size();
+                function.ctfeWhileStmts.push_back(&stmt);
+                emitOp(function, BcAffineWhile, static_cast<std::int32_t>(whileIndex), 0);
+                const std::size_t affineEndOperand = function.ctfeCode.size() - 1;
+
+                const std::size_t head = function.ctfeCode.size();
+                emitOp(function, BcTickBatch);
+                compileExpr(function, *stmt.expr);
+                const std::size_t exitJump = emitJumpPlaceholder(function, BcJumpIf0);
+
+                loops.push_back(LoopEmit{head, {}});
+                compileStmt(function, *stmt.thenBranch, loops);
+                emitOp(function, BcJump, static_cast<std::int32_t>(head));
+
+                const std::size_t end = function.ctfeCode.size();
+                patchJump(function, exitJump, end);
+                patchJump(function, affineEndOperand, end);
+                for (const std::size_t breakOperand : loops.back().breakOperands) {
+                    patchJump(function, breakOperand, end);
+                }
+                loops.pop_back();
+                return;
+            }
+            case StmtKind::Break:
+                if (loops.empty()) {
+                    throw CtfeAbort{};
+                }
+                loops.back().breakOperands.push_back(
+                    emitJumpPlaceholder(function, BcJump));
+                return;
+            case StmtKind::Continue:
+                if (loops.empty()) {
+                    throw CtfeAbort{};
+                }
+                emitOp(function, BcJump,
+                       static_cast<std::int32_t>(loops.back().continueTarget));
+                return;
+            case StmtKind::Return:
+                if (!stmt.expr) {
+                    emitOp(function, BcReturn0);
+                    return;
+                }
+                if (stmt.expr->kind == ExprKind::Call &&
+                    stmt.expr->ctfeCallee == &function) {
+                    for (const auto& arg : stmt.expr->args) {
+                        compileExpr(function, *arg);
+                    }
+                    emitOp(function, BcTailSelf,
+                           static_cast<std::int32_t>(stmt.expr->args.size()));
+                    return;
+                }
+                compileExpr(function, *stmt.expr);
+                emitOp(function, BcReturn);
+                return;
+        }
+        throw CtfeAbort{};
+    }
+
+    void compileFunction(Function& function) {
+        function.ctfeCode.clear();
+        function.ctfeWhileStmts.clear();
+        std::vector<LoopEmit> loops;
+        try {
+            compileStmt(function, *function.body, loops);
+            emitOp(function, BcReturn0);
+        } catch (const CtfeAbort&) {
+            function.ctfeCode.clear();
+            function.ctfeWhileStmts.clear();
+        }
+    }
+
+    static std::int32_t popStack(std::vector<std::int32_t>& stack) {
+        if (stack.empty()) {
+            throw CtfeAbort{};
+        }
+        const std::int32_t value = stack.back();
+        stack.pop_back();
+        return value;
+    }
+
+    Flow runBytecode(const Function& function, Frame& frame) {
+        const std::vector<std::int32_t>& code = function.ctfeCode;
+        std::vector<std::int32_t> stack;
+        stack.reserve(64);
+        std::size_t ip = 0;
+        while (ip < code.size()) {
+            const BcOp op = static_cast<BcOp>(code[ip++]);
+            switch (op) {
+                case BcLoadImm:
+                    stack.push_back(code[ip++]);
+                    break;
+                case BcLoadLocal:
+                    stack.push_back(readSlot(&frame, code[ip++], false));
+                    break;
+                case BcLoadGlobal:
+                    stack.push_back(readSlot(&frame, code[ip++], true));
+                    break;
+                case BcStoreLocal:
+                    writeSlot(&frame, code[ip++], false, popStack(stack));
+                    break;
+                case BcStoreLocalConst: {
+                    const int slot = code[ip++];
+                    const std::int32_t value = popStack(stack);
+                    Cell* cell = boundCell(&frame, slot, false, false);
+                    *cell = Cell{value, true, true};
+                    break;
+                }
+                case BcStoreGlobal:
+                    writeSlot(&frame, code[ip++], true, popStack(stack));
+                    break;
+                case BcAdd: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(toInt32(static_cast<std::int64_t>(lhs) + rhs));
+                    break;
+                }
+                case BcSub: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(toInt32(static_cast<std::int64_t>(lhs) - rhs));
+                    break;
+                }
+                case BcMul: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(toInt32(static_cast<std::int64_t>(lhs) * rhs));
+                    break;
+                }
+                case BcDiv: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    if (rhs == 0) {
+                        throw CtfeAbort{};
+                    }
+                    stack.push_back(toInt32(static_cast<std::int64_t>(lhs) / rhs));
+                    break;
+                }
+                case BcRem: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    if (rhs == 0) {
+                        throw CtfeAbort{};
+                    }
+                    stack.push_back(toInt32(static_cast<std::int64_t>(lhs) % rhs));
+                    break;
+                }
+                case BcLt: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs < rhs ? 1 : 0);
+                    break;
+                }
+                case BcGt: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs > rhs ? 1 : 0);
+                    break;
+                }
+                case BcLe: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs <= rhs ? 1 : 0);
+                    break;
+                }
+                case BcGe: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs >= rhs ? 1 : 0);
+                    break;
+                }
+                case BcEq: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs == rhs ? 1 : 0);
+                    break;
+                }
+                case BcNe: {
+                    const std::int32_t rhs = popStack(stack);
+                    const std::int32_t lhs = popStack(stack);
+                    stack.push_back(lhs != rhs ? 1 : 0);
+                    break;
+                }
+                case BcNeg:
+                    stack.push_back(toInt32(-static_cast<std::int64_t>(popStack(stack))));
+                    break;
+                case BcNot:
+                    stack.push_back(popStack(stack) == 0 ? 1 : 0);
+                    break;
+                case BcJump:
+                    ip = static_cast<std::size_t>(code[ip]);
+                    break;
+                case BcJumpIf0: {
+                    const std::size_t target = static_cast<std::size_t>(code[ip++]);
+                    if (popStack(stack) == 0) {
+                        ip = target;
+                    }
+                    break;
+                }
+                case BcJumpIfNot0: {
+                    const std::size_t target = static_cast<std::size_t>(code[ip++]);
+                    if (popStack(stack) != 0) {
+                        ip = target;
+                    }
+                    break;
+                }
+                case BcCall: {
+                    const int calleeIndex = code[ip++];
+                    const int argc = code[ip++];
+                    if (calleeIndex < 0 ||
+                        static_cast<std::size_t>(calleeIndex) >= unit_.functions.size() ||
+                        argc < 0 || static_cast<std::size_t>(argc) > stack.size()) {
+                        throw CtfeAbort{};
+                    }
+                    std::vector<std::int32_t> callArgs(static_cast<std::size_t>(argc));
+                    for (int i = argc - 1; i >= 0; --i) {
+                        callArgs[static_cast<std::size_t>(i)] = popStack(stack);
+                    }
+                    stack.push_back(
+                        invoke(*unit_.functions[static_cast<std::size_t>(calleeIndex)],
+                               std::move(callArgs)));
+                    break;
+                }
+                case BcReturn:
+                    return Flow{FlowKind::Return, popStack(stack)};
+                case BcReturn0:
+                    return Flow{FlowKind::Return, 0};
+                case BcTailSelf: {
+                    const int argc = code[ip++];
+                    if (argc < 0 ||
+                        static_cast<std::size_t>(argc) != function.params.size() ||
+                        static_cast<std::size_t>(argc) > stack.size()) {
+                        throw CtfeAbort{};
+                    }
+                    frame.tailArgs.resize(static_cast<std::size_t>(argc));
+                    for (int i = argc - 1; i >= 0; --i) {
+                        frame.tailArgs[static_cast<std::size_t>(i)] = popStack(stack);
+                    }
+                    return Flow{FlowKind::TailCall, 0};
+                }
+                case BcTickBatch:
+                    tickMany(kLoopTickBatch);
+                    break;
+                case BcAffineWhile: {
+                    const std::size_t whileIndex = static_cast<std::size_t>(code[ip++]);
+                    const std::size_t end = static_cast<std::size_t>(code[ip++]);
+                    if (whileIndex >= function.ctfeWhileStmts.size()) {
+                        throw CtfeAbort{};
+                    }
+                    if (tryExecuteAffineLoop(*function.ctfeWhileStmts[whileIndex], frame)) {
+                        ip = end;
+                    }
+                    break;
+                }
+                case BcPop:
+                    popStack(stack);
+                    break;
+                default:
+                    throw CtfeAbort{};
+            }
+        }
+        throw CtfeAbort{};
+    }
+
     std::int32_t invoke(const Function& function, std::vector<std::int32_t> args) {
         if (args.size() != function.params.size()) {
             throw CtfeAbort{};
@@ -523,6 +993,40 @@ private:
             framePool_.emplace_back();
         }
         Frame& frame = framePool_[frameIndex];
+
+        if (!function.ctfeCode.empty()) {
+            while (true) {
+                tick();
+                frame.function = &function;
+                frame.locals.assign(function.ctfeLocalCount, {});
+                frame.tailArgs.clear();
+                for (std::size_t i = 0; i < args.size(); ++i) {
+                    frame.locals[i] = Cell{args[i], false, true};
+                }
+
+                Flow flow = runBytecode(function, frame);
+                if (flow.kind == FlowKind::TailCall) {
+                    args = std::move(frame.tailArgs);
+                    if (args.size() != function.params.size()) {
+                        throw CtfeAbort{};
+                    }
+                    continue;
+                }
+
+                --callDepth_;
+                if (flow.kind == FlowKind::Return) {
+                    if (memo && memo->size() < kMemoEntryLimit) {
+                        memo->emplace(std::move(memoKey), flow.value);
+                    }
+                    return flow.value;
+                }
+                if (function.returnType == ValueType::Void) {
+                    return 0;
+                }
+                throw CtfeAbort{};
+            }
+        }
+
         while (true) {
             tick();
             frame.function = &function;

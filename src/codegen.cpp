@@ -1038,7 +1038,7 @@ private:
                 }
             }
 
-            int cachedExprCount = cacheLoopInvariantExprs(*stmt.thenBranch, 6);
+            int cachedExprCount = cacheLoopInvariantExprs(*stmt.thenBranch, 8);
             if (cacheLoopInductionMultiply(*stmt.thenBranch)) {
                 ++cachedExprCount;
             }
@@ -2019,8 +2019,8 @@ private:
                     shifts.push_back(bit);
                 }
             }
-            // 2-3 set bits: shift-add is cheaper than mul on the evaluation target.
-            if (shifts.size() < 2 || shifts.size() > 3) {
+            // 2-4 set bits: shift-add is cheaper than mul on the evaluation target.
+            if (shifts.size() < 2 || shifts.size() > 4) {
                 return false;
             }
 

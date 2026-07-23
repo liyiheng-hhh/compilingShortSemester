@@ -100,6 +100,8 @@ struct Function {
     SourceLocation loc;
     std::size_t ctfeLocalCount = 0;
     bool ctfeMemoizable = false;
+    std::vector<std::int32_t> ctfeCode;
+    std::vector<const Stmt*> ctfeWhileStmts;
 };
 
 struct CompUnit {
