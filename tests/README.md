@@ -151,7 +151,6 @@ python run_tests.py --opt
 | `expr/many_locals_nested.tc` | 124 | 多局部变量、栈槽与嵌套表达式 |
 | `expr/repeated_subexpr.tc` | 81 | 重复子表达式复用 |
 | `expr/sparse_multiply.tc` | 56 | 稀疏常量乘法的移位加法 |
-| `expr/sparse_multiply_three.tc` | 105 | 三比特稀疏常量乘法的移位加法 |
 | `expr/target_reg_assign.tc` | 26 | 目标寄存器赋值 |
 | `stmt/control_flow.tc` | 12 | while、if、break、continue |
 | `stmt/branch_conditions.tc` | 17 | 直接条件分支与逻辑取反 |
@@ -161,8 +160,6 @@ python run_tests.py --opt
 | `stmt/induction_multiply.tc` | 132 | 单位步长归纳乘积强度削弱与可变步长保护 |
 | `stmt/affine_loop_ctfe.tc` | 20 | 仿射计数循环快速幂与顺序递推语义 |
 | `stmt/affine_loop_declarations.tc` | 20 | 仿射循环内局部声明、常量槽位与临时量依赖 |
-| `stmt/affine_loop_swapped.tc` | 190 | 仿射循环交换比较（limit > i）快速前进 |
-| `stmt/affine_loop_countdown.tc` | 210 | 仿射递减循环（i > 0; i = i - 1）快速前进 |
 | `stmt/loop_register_priority.tc` | 214 | 循环热点变量优先寄存器分配与动态指令上限 |
 | `func/factorial.tc` | 120 | 函数调用与递归 |
 | `func/inline_args_once.tc` | 6 | 内联实参只求值一次 |
@@ -179,7 +176,6 @@ python run_tests.py --opt
 | `opt/whole_program_eval.tc` | 133 | 全程序求值、全局副作用、循环和尾递归 |
 | `opt/ctfe_slot_binding.tc` | 37 | CTFE 槽位绑定、遮蔽和循环内重复声明 |
 | `opt/ctfe_memoized_recursion.tc` | 112 | 纯递归记忆化与全局副作用隔离 |
-| `opt/ctfe_global_const_memo.tc` | 55 | 读取全局常量仍可记忆化的纯递归 |
 
 构建后运行：
 

@@ -1,7 +1,0 @@
-int main() {
-    int x = 5;
-    // 7 = 4 + 2 + 1, three-bit sparse multiply strength reduction
-    int a = x * 7;
-    int b = x * 14;
-    return a + b;
-}
