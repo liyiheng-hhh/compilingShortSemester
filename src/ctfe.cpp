@@ -54,6 +54,14 @@ private:
     static constexpr std::uint64_t kLoopTickBatch = 64;
     // Sample the wall clock far less often than step accounting.
     static constexpr std::uint64_t kLoopClockBatch = 65536;
+    static constexpr int kDenseInlineCallDepth = 3;
+
+    enum class AbortCause {
+        None,
+        StepLimit,
+        HardTimeLimit,
+        SlowPathTimeLimit,
+    };
 
     struct Cell {
         std::int32_t value = 0;
@@ -91,6 +99,16 @@ private:
         std::vector<const Function*> callees;
     };
 
+    // Pure leaf shapes that dense loops can inline via temp slots.
+    struct DenseLeafShape {
+        const Function* function = nullptr;
+        std::vector<const Decl*> decls;
+        const Expr* returnExpr = nullptr;
+        const Expr* branchCond = nullptr;
+        const Expr* thenReturn = nullptr;
+        const Expr* elseReturn = nullptr;
+    };
+
     struct ArgsHash {
         std::size_t operator()(const std::vector<std::int32_t>& args) const noexcept {
             std::size_t result = args.size();
@@ -114,15 +132,18 @@ private:
     std::uint64_t steps_ = 0;
     int callDepth_ = 0;
     int fastLoopDepth_ = 0;
+    AbortCause abortCause_ = AbortCause::None;
     std::chrono::steady_clock::time_point start_;
 
-    void checkTimeLimit() const {
+    void checkTimeLimit() {
         const auto elapsed = std::chrono::steady_clock::now() - start_;
         if (elapsed > std::chrono::seconds(kCtfeTimeLimitSeconds)) {
+            abortCause_ = AbortCause::HardTimeLimit;
             throw CtfeAbort{};
         }
         if (fastLoopDepth_ == 0 &&
             elapsed > std::chrono::milliseconds(kCtfeSlowPathLimitMilliseconds)) {
+            abortCause_ = AbortCause::SlowPathTimeLimit;
             throw CtfeAbort{};
         }
     }
@@ -138,6 +159,7 @@ private:
     void tick() {
         ++steps_;
         if (steps_ > kStepLimit) {
+            abortCause_ = AbortCause::StepLimit;
             throw CtfeAbort{};
         }
         if ((steps_ & (kLoopClockBatch - 1)) == 0) {
@@ -148,6 +170,7 @@ private:
     void tickMany(std::uint64_t count) {
         steps_ += count;
         if (steps_ > kStepLimit) {
+            abortCause_ = AbortCause::StepLimit;
             throw CtfeAbort{};
         }
         // Dense/bytecode loops call this often; only sample the clock periodically.
@@ -163,8 +186,24 @@ private:
         }
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - start_);
-        std::cerr << "toyc: ctfe aborted after " << steps_ << " steps, depth "
-                  << callDepth_ << ", " << elapsed.count() << " ms\n";
+        const char* cause = "other";
+        switch (abortCause_) {
+            case AbortCause::StepLimit:
+                cause = "step-limit";
+                break;
+            case AbortCause::HardTimeLimit:
+                cause = "hard-time-limit";
+                break;
+            case AbortCause::SlowPathTimeLimit:
+                cause = "slow-path-time-limit";
+                break;
+            case AbortCause::None:
+                cause = "unsupported-or-error";
+                break;
+        }
+        std::cerr << "toyc: ctfe aborted (" << cause << ") after " << steps_
+                  << " steps, depth " << callDepth_ << ", " << elapsed.count()
+                  << " ms\n";
     }
 
     static std::size_t checkedSlot(int slot, std::size_t size) {
@@ -976,6 +1015,7 @@ private:
                     // from dying on host timer overhead.
                     ++steps_;
                     if (steps_ > kStepLimit) {
+                        abortCause_ = AbortCause::StepLimit;
                         throw CtfeAbort{};
                     }
                     if ((steps_ & (kLoopClockBatch - 1)) == 0) {
@@ -1474,45 +1514,140 @@ private:
         return false;
     }
 
-    // Leaf `return <expr>` bodies that only reference parameters — safe to
-    // inline into a dense loop without allocating callee locals.
-    static const Expr* denseInlineReturnExpr(const Function& function) {
-        if (function.returnType != ValueType::Int || !function.body ||
-            function.body->kind != StmtKind::Block ||
-            function.body->statements.size() != 1) {
-            return nullptr;
+    static const Expr* singleDenseReturnExpr(const Stmt& stmt) {
+        if (stmt.kind == StmtKind::Return) {
+            return stmt.expr.get();
         }
-        const Stmt& stmt = *function.body->statements.front();
-        if (stmt.kind != StmtKind::Return || !stmt.expr) {
-            return nullptr;
+        if (stmt.kind == StmtKind::Block && stmt.statements.size() == 1) {
+            return singleDenseReturnExpr(*stmt.statements.front());
         }
-        return stmt.expr.get();
+        return nullptr;
     }
 
-    bool validateDenseInlinedReturn(const Expr& expr, const Function& callee) const {
+    static std::optional<DenseLeafShape> analyzeDenseLeaf(const Function& function) {
+        if (function.returnType != ValueType::Int || !function.body ||
+            function.body->kind != StmtKind::Block ||
+            function.body->statements.empty() ||
+            function.body->statements.size() > 8) {
+            return std::nullopt;
+        }
+
+        DenseLeafShape shape;
+        shape.function = &function;
+        std::size_t index = 0;
+        const auto& statements = function.body->statements;
+        while (index < statements.size() &&
+               statements[index]->kind == StmtKind::DeclStmt &&
+               statements[index]->decl && statements[index]->decl->init) {
+            shape.decls.push_back(statements[index]->decl.get());
+            ++index;
+        }
+        if (index >= statements.size()) {
+            return std::nullopt;
+        }
+
+        if (index + 1 == statements.size()) {
+            if (const Expr* ret = singleDenseReturnExpr(*statements[index])) {
+                shape.returnExpr = ret;
+                return shape;
+            }
+            return std::nullopt;
+        }
+
+        const Stmt& head = *statements[index];
+        if (head.kind == StmtKind::If && head.expr && head.thenBranch &&
+            head.elseBranch && index + 1 == statements.size()) {
+            const Expr* thenRet = singleDenseReturnExpr(*head.thenBranch);
+            const Expr* elseRet = singleDenseReturnExpr(*head.elseBranch);
+            if (thenRet && elseRet) {
+                shape.branchCond = head.expr.get();
+                shape.thenReturn = thenRet;
+                shape.elseReturn = elseRet;
+                return shape;
+            }
+        }
+        if (head.kind == StmtKind::If && head.expr && head.thenBranch &&
+            !head.elseBranch && index + 2 == statements.size()) {
+            const Expr* thenRet = singleDenseReturnExpr(*head.thenBranch);
+            const Expr* elseRet = singleDenseReturnExpr(*statements[index + 1]);
+            if (thenRet && elseRet) {
+                shape.branchCond = head.expr.get();
+                shape.thenReturn = thenRet;
+                shape.elseReturn = elseRet;
+                return shape;
+            }
+        }
+        return std::nullopt;
+    }
+
+    bool validateDenseLeafExpr(const Expr& expr, const Function& callee,
+                               int callDepth) const {
         switch (expr.kind) {
             case ExprKind::Number:
                 return true;
             case ExprKind::Variable:
-                return !expr.ctfeGlobal && expr.ctfeSlot >= 0 &&
-                       static_cast<std::size_t>(expr.ctfeSlot) < callee.params.size();
+                if (expr.ctfeGlobal) {
+                    if (expr.ctfeSlot < 0 ||
+                        static_cast<std::size_t>(expr.ctfeSlot) >= globals_.size()) {
+                        return false;
+                    }
+                    return globals_[static_cast<std::size_t>(expr.ctfeSlot)].isConst;
+                }
+                return expr.ctfeSlot >= 0 &&
+                       static_cast<std::size_t>(expr.ctfeSlot) < callee.ctfeLocalCount;
             case ExprKind::Unary:
                 return (expr.ctfeOp == CtfeOp::Positive ||
                         expr.ctfeOp == CtfeOp::Negative ||
                         expr.ctfeOp == CtfeOp::LogicalNot) &&
-                       validateDenseInlinedReturn(*expr.lhs, callee);
+                       validateDenseLeafExpr(*expr.lhs, callee, callDepth);
             case ExprKind::Binary:
-                if (expr.ctfeOp == CtfeOp::LogicalAnd ||
-                    expr.ctfeOp == CtfeOp::LogicalOr ||
-                    expr.ctfeOp == CtfeOp::None) {
+                if (expr.ctfeOp == CtfeOp::None) {
                     return false;
                 }
-                return validateDenseInlinedReturn(*expr.lhs, callee) &&
-                       validateDenseInlinedReturn(*expr.rhs, callee);
-            case ExprKind::Call:
-                return false;
+                return validateDenseLeafExpr(*expr.lhs, callee, callDepth) &&
+                       validateDenseLeafExpr(*expr.rhs, callee, callDepth);
+            case ExprKind::Call: {
+                if (callDepth >= kDenseInlineCallDepth || !expr.ctfeCallee ||
+                    expr.args.size() != expr.ctfeCallee->params.size()) {
+                    return false;
+                }
+                const auto nested = analyzeDenseLeaf(*expr.ctfeCallee);
+                if (!nested) {
+                    return false;
+                }
+                for (const auto& arg : expr.args) {
+                    if (!validateDenseLeafExpr(*arg, callee, callDepth)) {
+                        return false;
+                    }
+                }
+                if (nested->returnExpr) {
+                    return validateDenseLeafExpr(
+                        *nested->returnExpr, *nested->function, callDepth + 1);
+                }
+                return validateDenseLeafExpr(
+                           *nested->branchCond, *nested->function, callDepth + 1) &&
+                       validateDenseLeafExpr(
+                           *nested->thenReturn, *nested->function, callDepth + 1) &&
+                       validateDenseLeafExpr(
+                           *nested->elseReturn, *nested->function, callDepth + 1);
+            }
         }
         return false;
+    }
+
+    bool validateDenseLeafShape(const DenseLeafShape& shape, int callDepth) const {
+        for (const Decl* decl : shape.decls) {
+            if (!validateDenseLeafExpr(*decl->init, *shape.function, callDepth)) {
+                return false;
+            }
+        }
+        if (shape.returnExpr) {
+            return validateDenseLeafExpr(*shape.returnExpr, *shape.function, callDepth);
+        }
+        return shape.branchCond && shape.thenReturn && shape.elseReturn &&
+               validateDenseLeafExpr(*shape.branchCond, *shape.function, callDepth) &&
+               validateDenseLeafExpr(*shape.thenReturn, *shape.function, callDepth) &&
+               validateDenseLeafExpr(*shape.elseReturn, *shape.function, callDepth);
     }
 
     bool validateDenseLoopExpr(const Expr& expr, Frame& frame) const {
@@ -1535,12 +1670,12 @@ private:
                 return validateDenseLoopExpr(*expr.lhs, frame) &&
                        validateDenseLoopExpr(*expr.rhs, frame);
             case ExprKind::Call: {
-                if (!expr.ctfeCallee || !expr.ctfeCallee->ctfeMemoizable ||
+                if (!expr.ctfeCallee ||
                     expr.args.size() != expr.ctfeCallee->params.size()) {
                     return false;
                 }
-                const Expr* ret = denseInlineReturnExpr(*expr.ctfeCallee);
-                if (!ret || !validateDenseInlinedReturn(*ret, *expr.ctfeCallee)) {
+                const auto shape = analyzeDenseLeaf(*expr.ctfeCallee);
+                if (!shape || !validateDenseLeafShape(*shape, 1)) {
                     return false;
                 }
                 for (const auto& arg : expr.args) {
@@ -1557,12 +1692,17 @@ private:
     struct DenseEmitter {
         Frame& frame;
         std::size_t globalCount;
+        std::size_t stateCount;
+        std::size_t nextExtraSlot;
         std::vector<std::int32_t>& code;
+        const WholeProgramEvaluator* owner = nullptr;
         bool ok = true;
 
         std::size_t slotIndex(int slot, bool global) const {
             return denseSlotIndex(slot, global, frame.locals.size(), globalCount);
         }
+
+        std::size_t allocTemp() { return nextExtraSlot++; }
 
         void emit(DenseOp op) { code.push_back(op); }
 
@@ -1580,24 +1720,73 @@ private:
             code[operandIndex] = static_cast<std::int32_t>(target);
         }
 
-        void compileInlinedReturn(const Expr& expr, const Function& callee,
-                                  const Expr& call) {
+        void emitBinaryOp(CtfeOp op) {
+            switch (op) {
+                case CtfeOp::Add:
+                    emit(DnAdd);
+                    return;
+                case CtfeOp::Subtract:
+                    emit(DnSub);
+                    return;
+                case CtfeOp::Multiply:
+                    emit(DnMul);
+                    return;
+                case CtfeOp::Divide:
+                    emit(DnDiv);
+                    return;
+                case CtfeOp::Remainder:
+                    emit(DnRem);
+                    return;
+                case CtfeOp::Less:
+                    emit(DnLt);
+                    return;
+                case CtfeOp::Greater:
+                    emit(DnGt);
+                    return;
+                case CtfeOp::LessEqual:
+                    emit(DnLe);
+                    return;
+                case CtfeOp::GreaterEqual:
+                    emit(DnGe);
+                    return;
+                case CtfeOp::Equal:
+                    emit(DnEq);
+                    return;
+                case CtfeOp::NotEqual:
+                    emit(DnNe);
+                    return;
+                default:
+                    ok = false;
+                    return;
+            }
+        }
+
+        void compileLeafExpr(const Expr& expr, const Function& callee,
+                             const std::vector<std::size_t>& localTemps, int callDepth) {
             switch (expr.kind) {
                 case ExprKind::Number:
                     emit(DnLoadImm, toInt32(expr.number));
                     return;
-                case ExprKind::Variable: {
-                    if (expr.ctfeGlobal || expr.ctfeSlot < 0 ||
-                        static_cast<std::size_t>(expr.ctfeSlot) >= callee.params.size() ||
-                        static_cast<std::size_t>(expr.ctfeSlot) >= call.args.size()) {
+                case ExprKind::Variable:
+                    if (expr.ctfeGlobal) {
+                        emit(DnLoadSlot,
+                             static_cast<std::int32_t>(
+                                 slotIndex(expr.ctfeSlot, true)));
+                        return;
+                    }
+                    if (expr.ctfeSlot < 0 ||
+                        static_cast<std::size_t>(expr.ctfeSlot) >= localTemps.size() ||
+                        localTemps[static_cast<std::size_t>(expr.ctfeSlot)] ==
+                            static_cast<std::size_t>(-1)) {
                         ok = false;
                         return;
                     }
-                    compileExpr(*call.args[static_cast<std::size_t>(expr.ctfeSlot)]);
+                    emit(DnLoadSlot,
+                         static_cast<std::int32_t>(
+                             localTemps[static_cast<std::size_t>(expr.ctfeSlot)]));
                     return;
-                }
                 case ExprKind::Unary:
-                    compileInlinedReturn(*expr.lhs, callee, call);
+                    compileLeafExpr(*expr.lhs, callee, localTemps, callDepth);
                     if (!ok) {
                         return;
                     }
@@ -1615,57 +1804,110 @@ private:
                     ok = false;
                     return;
                 case ExprKind::Binary:
-                    compileInlinedReturn(*expr.lhs, callee, call);
+                    if (expr.ctfeOp == CtfeOp::LogicalAnd) {
+                        compileLeafExpr(*expr.lhs, callee, localTemps, callDepth);
+                        if (!ok) {
+                            return;
+                        }
+                        const std::size_t falseJump = emitJumpPlaceholder(DnJumpIf0);
+                        compileLeafExpr(*expr.rhs, callee, localTemps, callDepth);
+                        if (!ok) {
+                            return;
+                        }
+                        emit(DnNot);
+                        emit(DnNot);
+                        const std::size_t endJump = emitJumpPlaceholder(DnJump);
+                        patchJump(falseJump, code.size());
+                        emit(DnLoadImm, 0);
+                        patchJump(endJump, code.size());
+                        return;
+                    }
+                    if (expr.ctfeOp == CtfeOp::LogicalOr) {
+                        compileLeafExpr(*expr.lhs, callee, localTemps, callDepth);
+                        if (!ok) {
+                            return;
+                        }
+                        const std::size_t trueJump = emitJumpPlaceholder(DnJumpIfNot0);
+                        compileLeafExpr(*expr.rhs, callee, localTemps, callDepth);
+                        if (!ok) {
+                            return;
+                        }
+                        emit(DnNot);
+                        emit(DnNot);
+                        const std::size_t endJump = emitJumpPlaceholder(DnJump);
+                        patchJump(trueJump, code.size());
+                        emit(DnLoadImm, 1);
+                        patchJump(endJump, code.size());
+                        return;
+                    }
+                    compileLeafExpr(*expr.lhs, callee, localTemps, callDepth);
                     if (!ok) {
                         return;
                     }
-                    compileInlinedReturn(*expr.rhs, callee, call);
+                    compileLeafExpr(*expr.rhs, callee, localTemps, callDepth);
                     if (!ok) {
                         return;
                     }
-                    switch (expr.ctfeOp) {
-                        case CtfeOp::Add:
-                            emit(DnAdd);
-                            return;
-                        case CtfeOp::Subtract:
-                            emit(DnSub);
-                            return;
-                        case CtfeOp::Multiply:
-                            emit(DnMul);
-                            return;
-                        case CtfeOp::Divide:
-                            emit(DnDiv);
-                            return;
-                        case CtfeOp::Remainder:
-                            emit(DnRem);
-                            return;
-                        case CtfeOp::Less:
-                            emit(DnLt);
-                            return;
-                        case CtfeOp::Greater:
-                            emit(DnGt);
-                            return;
-                        case CtfeOp::LessEqual:
-                            emit(DnLe);
-                            return;
-                        case CtfeOp::GreaterEqual:
-                            emit(DnGe);
-                            return;
-                        case CtfeOp::Equal:
-                            emit(DnEq);
-                            return;
-                        case CtfeOp::NotEqual:
-                            emit(DnNe);
-                            return;
-                        default:
-                            ok = false;
-                            return;
-                    }
+                    emitBinaryOp(expr.ctfeOp);
+                    return;
                 case ExprKind::Call:
-                    ok = false;
+                    compileLeafCall(expr, callDepth);
                     return;
             }
             ok = false;
+        }
+
+        void compileLeafCall(const Expr& call, int callDepth) {
+            if (!owner || !call.ctfeCallee || callDepth >= kDenseInlineCallDepth) {
+                ok = false;
+                return;
+            }
+            const auto shape = analyzeDenseLeaf(*call.ctfeCallee);
+            if (!shape) {
+                ok = false;
+                return;
+            }
+            const Function& callee = *shape->function;
+            std::vector<std::size_t> localTemps(callee.ctfeLocalCount,
+                                                static_cast<std::size_t>(-1));
+            for (std::size_t i = 0; i < call.args.size(); ++i) {
+                const std::size_t temp = allocTemp();
+                compileExpr(*call.args[i]);
+                if (!ok) {
+                    return;
+                }
+                emit(DnStoreSlot, static_cast<std::int32_t>(temp));
+                localTemps[i] = temp;
+            }
+            for (const Decl* decl : shape->decls) {
+                const std::size_t temp = allocTemp();
+                compileLeafExpr(*decl->init, callee, localTemps, callDepth + 1);
+                if (!ok) {
+                    return;
+                }
+                emit(DnStoreSlot, static_cast<std::int32_t>(temp));
+                if (decl->ctfeSlot >= 0 &&
+                    static_cast<std::size_t>(decl->ctfeSlot) < localTemps.size()) {
+                    localTemps[static_cast<std::size_t>(decl->ctfeSlot)] = temp;
+                }
+            }
+            if (shape->returnExpr) {
+                compileLeafExpr(*shape->returnExpr, callee, localTemps, callDepth + 1);
+                return;
+            }
+            compileLeafExpr(*shape->branchCond, callee, localTemps, callDepth + 1);
+            if (!ok) {
+                return;
+            }
+            const std::size_t elseJump = emitJumpPlaceholder(DnJumpIf0);
+            compileLeafExpr(*shape->thenReturn, callee, localTemps, callDepth + 1);
+            if (!ok) {
+                return;
+            }
+            const std::size_t endJump = emitJumpPlaceholder(DnJump);
+            patchJump(elseJump, code.size());
+            compileLeafExpr(*shape->elseReturn, callee, localTemps, callDepth + 1);
+            patchJump(endJump, code.size());
         }
 
         void compileExpr(const Expr& expr) {
@@ -1720,57 +1962,11 @@ private:
                     }
                     compileExpr(*expr.lhs);
                     compileExpr(*expr.rhs);
-                    switch (expr.ctfeOp) {
-                        case CtfeOp::Add:
-                            emit(DnAdd);
-                            return;
-                        case CtfeOp::Subtract:
-                            emit(DnSub);
-                            return;
-                        case CtfeOp::Multiply:
-                            emit(DnMul);
-                            return;
-                        case CtfeOp::Divide:
-                            emit(DnDiv);
-                            return;
-                        case CtfeOp::Remainder:
-                            emit(DnRem);
-                            return;
-                        case CtfeOp::Less:
-                            emit(DnLt);
-                            return;
-                        case CtfeOp::Greater:
-                            emit(DnGt);
-                            return;
-                        case CtfeOp::LessEqual:
-                            emit(DnLe);
-                            return;
-                        case CtfeOp::GreaterEqual:
-                            emit(DnGe);
-                            return;
-                        case CtfeOp::Equal:
-                            emit(DnEq);
-                            return;
-                        case CtfeOp::NotEqual:
-                            emit(DnNe);
-                            return;
-                        default:
-                            ok = false;
-                            return;
-                    }
-                case ExprKind::Call: {
-                    if (!expr.ctfeCallee) {
-                        ok = false;
-                        return;
-                    }
-                    const Expr* ret = denseInlineReturnExpr(*expr.ctfeCallee);
-                    if (!ret) {
-                        ok = false;
-                        return;
-                    }
-                    compileInlinedReturn(*ret, *expr.ctfeCallee, expr);
+                    emitBinaryOp(expr.ctfeOp);
                     return;
-                }
+                case ExprKind::Call:
+                    compileLeafCall(expr, 0);
+                    return;
             }
             ok = false;
         }
@@ -2070,13 +2266,13 @@ private:
 
         std::vector<std::int32_t> program;
         program.reserve(64);
-        DenseEmitter emitter{frame, globals_.size(), program};
+        DenseEmitter emitter{frame, globals_.size(), stateCount, stateCount, program, this};
         emitter.compileStmt(*stmt.thenBranch);
         if (!emitter.ok || program.empty()) {
             return false;
         }
 
-        std::vector<std::int32_t> slots(stateCount, 0);
+        std::vector<std::int32_t> slots(emitter.nextExtraSlot, 0);
         for (std::size_t i = 0; i < frame.locals.size(); ++i) {
             if (frame.locals[i].initialized) {
                 slots[i] = frame.locals[i].value;
